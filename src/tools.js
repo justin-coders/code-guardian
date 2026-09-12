@@ -2,7 +2,7 @@
  * Code Guardian v2 — Tools Module
  *
  * Production-readiness enforcer for all AI coding agents.
- * Works with: Claude Code, Cursor, Windsurf, Devin, Codex, Emni, Antigravity, and any MCP-capable agent.
+ * Works with: Claude Code, Cursor, Windsurf, Devin, Codex, Gemini, Antigravity, and any MCP-capable agent.
  */
 
 import { spawn } from "node:child_process";

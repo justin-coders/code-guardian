@@ -3,7 +3,7 @@
  *
  * Entry point for Claude Code plugin installation.
  * Reads JSON-RPC messages from stdin and responds on stdout.
- * Also works with Cursor, Windsurf, Devin, Codex, Emni, Antigravity and any MCP-capable agent.
+ * Also works with Cursor, Windsurf, Devin, Codex, Gemini, Antigravity and any MCP-capable agent.
  */
 
 import {
@@ -147,7 +147,7 @@ const TOOLS = [
   {
     name: "detect_agent",
     description:
-      "Detect which AI coding agent is in use (Claude Code, Cursor, Windsurf, Devin, Codex, Emni, Antigravity) by scanning for agent-specific config files (.cursorrules, .windsurfrules, CLAUDE.md, AGENTS.md). Returns detected agents and all supported agents with best practices.",
+      "Detect which AI coding agent is in use (Claude Code, Cursor, Windsurf, Devin, Codex, Gemini, Antigravity) by scanning for agent-specific config files (.cursorrules, .windsurfrules, CLAUDE.md, AGENTS.md). Returns detected agents and all supported agents with best practices.",
     inputSchema: { type: "object", properties: { cwd: { type: "string" } } },
   },
   {

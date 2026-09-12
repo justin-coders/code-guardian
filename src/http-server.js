@@ -3,7 +3,7 @@
  *
  * Listens on port 8765 by default and serves the same MCP tools over HTTP
  * with Server-Sent Events for streaming and POST for requests.
- * Cross-agent: Claude Code, Cursor, Windsurf, Devin, Codex, Emni, Antigravity.
+ * Cross-agent: Claude Code, Cursor, Windsurf, Devin, Codex, Gemini, Antigravity.
  */
 
 import { createServer } from "node:http";
