@@ -117,7 +117,7 @@ const TOOLS = [
   },
   {
     name: "get_agent_guidance",
-    description: "Get agent-specific best practices. Supported: claude-code, cursor, windsurf, devin, codex, emni, antigravity.",
+    description: "Get agent-specific best practices. Supported: claude-code, cursor, windsurf, devin, codex, gemini, antigravity.",
     inputSchema: { type: "object", properties: { agent: { type: "string" } } },
   },
   {
@@ -215,7 +215,7 @@ const server = createServer(async (req, res) => {
       name: "code-guardian",
       version: "2.0.0",
       description: "Cross-agent production-readiness enforcer for AI coding tools",
-      supportsAgents: ["claude-code", "cursor", "windsurf", "devin", "codex", "emni", "antigravity"],
+      supportsAgents: ["claude-code", "cursor", "windsurf", "devin", "codex", "gemini", "antigravity"],
       transports: ["stdio", "http-sse"],
       tools: TOOLS.map((t) => t.name),
     });
@@ -279,7 +279,7 @@ const PORT = Number(process.env.CODE_GUARDIAN_PORT || 8765);
 server.listen(PORT, () => {
   console.error("[code-guardian v2.0.0] HTTP server listening on port " + PORT);
   console.error("[code-guardian] Tools: " + TOOLS.map((t) => t.name).join(", "));
-  console.error("[code-guardian] Agents: claude-code, cursor, windsurf, devin, codex, emni, antigravity");
+  console.error("[code-guardian] Agents: claude-code, cursor, windsurf, devin, codex, gemini, antigravity");
   console.error("[code-guardian] Open http://localhost:" + PORT + " for info");
 });
 

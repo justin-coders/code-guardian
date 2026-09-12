@@ -1,6 +1,6 @@
-# Node
 node_modules/
 dist/
+build/
 *.log
 .env
 .env.local
@@ -11,10 +11,17 @@ dist/
 .idea/
 *.swp
 *.swo
+*.sublime-*
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Claude Code
+# Claude Code runtime
 .claude/
+.claude-plugin/
+.in_use/
+
+# Tests
+coverage/
+.nyc_output/

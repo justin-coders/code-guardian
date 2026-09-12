@@ -153,11 +153,11 @@ const TOOLS = [
   {
     name: "get_agent_guidance",
     description:
-      "Get agent-specific best practices and configuration guidance. Supported agents: claude-code, cursor, windsurf, devin, codex, emni, antigravity.",
+      "Get agent-specific best practices and configuration guidance. Supported agents: claude-code, cursor, windsurf, devin, codex, gemini, antigravity.",
     inputSchema: {
       type: "object",
       properties: {
-        agent: { type: "string", description: "Agent name: claude-code, cursor, windsurf, devin, codex, emni, antigravity" },
+        agent: { type: "string", description: "Agent name: claude-code, cursor, windsurf, devin, codex, gemini, antigravity" },
       },
     },
   },

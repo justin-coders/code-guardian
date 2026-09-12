@@ -286,12 +286,12 @@ const AGENT_CONFIGS = {
       "Use --diff for reviewing changes",
     ],
   },
-  emni: {
-    name: "Emni",
+  gemini: {
+    name: "Google Gemini",
     pluginSystem: false,
     mcpSupport: false,
     pluginDir: null,
-    skillFormat: "Context instructions",
+    skillFormat: "Context instructions in prompt",
     bestPractices: [
       "Set clear expectations in system prompt",
       "Request production-ready code with error handling",
