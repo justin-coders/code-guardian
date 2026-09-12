@@ -1,6 +1,7 @@
 {
   "name": "code-guardian",
-  "description": "Production-readiness enforcer for Claude Code. Audits codebases against industry standards, enforces branch strategy, validates testing coverage, checks CI/CD readiness, and ensures every change ships at production quality.",
+  "description": "Cross-agent production-readiness enforcer. Audits codebases against industry standards, generates production-grade code with reference patterns, enforces quality gates, and works across all AI coding agents (Claude Code, Cursor, Windsurf, Devin, Codex, Emni, Antigravity).",
+  "version": "2.0.0",
   "author": {
     "name": "code-guardian"
   }
