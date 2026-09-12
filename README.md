@@ -33,10 +33,41 @@ Works with every major AI coding agent out of the box:
 
 ## Quick Start
 
-### In Claude Code (zero setup)
+### Claude Code — Step-by-step install
 
-The plugin loads automatically. Just ask:
+Code Guardian ships as a Claude Code plugin. Here's how to get it working:
 
+**1. Clone this repo**
+```bash
+git clone https://github.com/justin-coders/code-guardian.git
+cd code-guardian
+```
+
+**2. Copy the plugin into Claude Code's cache**
+```bash
+cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+```
+
+**3. Register the plugin**
+Add this entry to `~/.claude/plugins/installed_plugins.json`:
+```json
+{
+  "code-guardian": [
+    {
+      "scope": "user",
+      "installPath": "~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1",
+      "version": "2.0.0"
+    }
+  ]
+}
+```
+
+**4. Restart Claude Code**
+
+Close all Claude Code windows and reopen. The plugin loads automatically.
+
+**5. Start using it**
+Just ask naturally:
 ```
 "Audit this project for production readiness"
 "Generate a production REST API with NestJS and Zod validation"
@@ -44,34 +75,28 @@ The plugin loads automatically. Just ask:
 "Create a GitHub Actions CI/CD pipeline for my Express app"
 ```
 
-### As a standalone MCP server
+### Cursor — Quick add
 
-```bash
-# Clone and run — no dependencies to install
-git clone https://github.com/justin-coders/code-guardian.git
-cd code-guardian
-node src/stdio-server.js
-```
-
-Point any MCP-compatible agent at the server:
-
+Add one entry to your `~/.cursor/mcp.json`:
 ```json
 {
   "mcpServers": {
     "code-guardian": {
       "command": "node",
-      "args": ["/path/to/code-guardian/src/stdio-server.js"]
+      "args": ["/absolute/path/to/code-guardian/v1/src/stdio-server.js"]
     }
   }
 }
 ```
+Restart Cursor. The tools are now available in your prompts.
 
-### HTTP/SSE mode (for browser-based agents)
+### Windsurf — Same as Cursor
 
-```bash
-node src/http-server.js
-# → http://localhost:8765
-```
+Add the same MCP config to `~/.windsurf/mcp.json`.
+
+### Other agents (Devin, Codex, Gemini, Antigravity)
+
+These agents don't support MCP plugins directly. Use Code Guardian as a standalone tool — clone the repo and run it, then paste the output into your agent's context, or follow the agent-specific guidance in [INSTALLATION.md](INSTALLATION.md).
 
 ## What It Does
 
