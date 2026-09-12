@@ -1,0 +1,7 @@
+{
+  "name": "code-guardian",
+  "description": "Production-readiness enforcer for Claude Code. Audits codebases against industry standards, enforces branch strategy, validates testing coverage, checks CI/CD readiness, and ensures every change ships at production quality.",
+  "author": {
+    "name": "code-guardian"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "code-guardian",
+  "description": "Production-readiness enforcer for Claude Code. Audits codebases against industry standards, enforces branch strategy, validates testing coverage, checks CI/CD readiness, and ensures every change ships at production quality. Uses both stdio and HTTP transports.",
+  "version": "1.0.0",
+  "author": {
+    "name": "code-guardian"
+  },
+  "type": "module",
+  "main": "./src/stdio-server.js",
+  "bin": {
+    "code-guardian": "./src/stdio-server.js"
+  },
+  "scripts": {
+    "start": "node src/stdio-server.js",
+    "start:http": "node src/http-server.js"
+  },
+  "keywords": ["claude-code", "plugin", "mcp", "production", "quality", "audit"],
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

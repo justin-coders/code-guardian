@@ -1,0 +1,15 @@
+{
+  "code-guardian": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["${PLUGIN_DIR}/src/stdio-server.js"],
+    "env": {
+      "CODE_GUARDIAN_TRANSPORT": "stdio"
+    }
+  },
+  "code-guardian-http": {
+    "type": "http",
+    "url": "http://localhost:8765/sse",
+    "headers": {}
+  }
+}
