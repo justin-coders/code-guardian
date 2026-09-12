@@ -98,6 +98,35 @@ Add the same MCP config to `~/.windsurf/mcp.json`.
 
 These agents don't support MCP plugins directly. Use Code Guardian as a standalone tool — clone the repo and run it, then paste the output into your agent's context, or follow the agent-specific guidance in [INSTALLATION.md](INSTALLATION.md).
 
+### Updating an existing install
+
+When a new version is released, update is a one-command sync:
+
+```bash
+# 1. Pull the latest changes
+cd /path/to/code-guardian
+git pull origin dev    # or your branch
+
+# 2. Overwrite the installed copy
+cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+
+# 3. Restart your agent
+# Claude Code: close and reopen
+# Cursor/Windsurf: restart the editor
+```
+
+That's it — no config changes needed. The plugin manifest and version are baked into the files themselves.
+
+For Cursor/Windsurf users with absolute paths in `mcp.json`, also verify the path still points to the updated directory:
+
+```bash
+# Check where your mcp.json points
+grep code-guardian ~/.cursor/mcp.json ~/.windsurf/mcp.json
+
+# If it points to the repo root (not the cache), just git pull
+# If it points to the cache, copy the new files there as shown above
+```
+
 ## What It Does
 
 ### 1. Audit Everything
