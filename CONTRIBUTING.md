@@ -179,7 +179,7 @@ feat: add new tool for X
 fix: handle empty args in tool Y
 docs: update README with new patterns
 test: add coverage for security checks
-chore: bump version to 2.1.0
+chore: bump version to 2.1.2
 ```
 
 ### Types

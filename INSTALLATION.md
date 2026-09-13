@@ -12,11 +12,18 @@ The plugin is auto-discovered when placed in the correct directory.
 ### Step 1 — Clone or copy the plugin
 
 ```bash
-# Option A: Clone the repo and copy
+
+# Option A: ZIP Upload (Easiest)
+1. Download the plugin package from the [Releases page](https://github.com/justin-coders/code-guardian/releases)
+2. In Claude Code, click **Plugins** (sidebar)
+3. Click **Upload Plugin** and select the ZIP file
+4. Restart Claude Code
+
+# Option B: Clone the repo and copy
 git clone https://github.com/justin-coders/code-guardian.git
 cp -r code-guardian/v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
 
-# Option B: Copy from local path
+# Option C: Copy from local path
 cp -r /path/to/code-guardian/v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
 ```
 
@@ -30,7 +37,7 @@ The plugin manifest at `~/.claude/plugins/installed_plugins.json` should include
     {
       "scope": "user",
       "installPath": "~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1",
-      "version": "2.0.0",
+      "version": "2.0.2",
       "installedAt": "..."
     }
   ]

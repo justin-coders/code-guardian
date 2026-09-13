@@ -1,7 +1,7 @@
 {
   "name": "code-guardian",
   "description": "Cross-agent production-readiness enforcer. Audits codebases against industry standards, generates production-grade code with reference patterns, enforces quality gates, and works across all AI coding agents (Claude Code, Cursor, Windsurf, Devin, Codex, Gemini, Antigravity).",
-  "version": "2.0.1.0",
+  "version": "2.0.2",
   "author": {
     "name": "code-guardian"
   }

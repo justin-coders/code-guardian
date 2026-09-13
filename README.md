@@ -303,3 +303,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 ---
 
 **Made with care by [justin-coders](https://github.com/justin-coders). Questions? Open an issue.**
+
+*Copyright (c) 2026 Yeast Technologies- @justin-coders/code-guardian*
