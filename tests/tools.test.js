@@ -12,15 +12,15 @@ import { fileURLToPath } from "node:url";
 
 const PLUGIN_DIR = fileURLToPath(new URL("..", import.meta.url));
 
-// ─── Tool imports ───────────────────────────────────────────────────────────
+// ─── Tool imports ────────────────────────────────────────────────────────────
 
 const tools = await import("file:///" + PLUGIN_DIR.replace(/\\/g, "/") + "/src/tools.js");
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 /** Create a temp fixture directory with given files. */
 async function createFixture(files) {
-  const dir = join(PLUGIN_DIR, "..", "test-fixture-" + Date.now());
+  const dir = join(PLUGIN_DIR, ".test-tmp", "test-fixture-" + Date.now());
   mkdirSync(dir, { recursive: true });
   for (const [path, content] of Object.entries(files)) {
     const fullPath = join(dir, path);
@@ -290,6 +290,111 @@ describe("tools.js", () => {
       } finally {
         await cleanup(dir);
       }
+    });
+  });
+
+  describe("toolCheckTests", () => {
+    it("should detect test files in a fixture", async () => {
+      const dir = await createFixture({
+        "src/app.test.ts": "test('ok', () => {})",
+        "src/utils.spec.ts": "test('ok', () => {})",
+        "src/app.js": "console.log('hello')",
+      });
+      try {
+        const result = await tools.toolCheckTests({ cwd: dir });
+        assert.equal(result.tool, "check_tests");
+        assert.equal(result.version, "2.0.0");
+        const testReport = result.reports.find((r) => r.area === "test-files");
+        assert(testReport, "Should have test-files report");
+        assert.equal(testReport.count, 2, "Should find 2 test files");
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("should handle empty args", async () => {
+      const result = await tools.toolCheckTests({});
+      assert.equal(result.tool, "check_tests");
+      assert(Array.isArray(result.reports));
+    });
+  });
+
+  describe("toolCheckCICD", () => {
+    it("should detect package scripts", async () => {
+      const dir = await createFixture({
+        "package.json": JSON.stringify({
+          scripts: { build: "tsc", test: "jest", lint: "eslint ." },
+        }),
+      });
+      try {
+        const result = await tools.toolCheckCICD({ cwd: dir });
+        assert.equal(result.tool, "check_cicd");
+        const scriptsReport = result.reports.find((r) => r.name === "package-scripts");
+        assert(scriptsReport, "Should have package-scripts report");
+        assert.equal(scriptsReport.build, true);
+        assert.equal(scriptsReport.test, true);
+        assert.equal(scriptsReport.lint, true);
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("should handle empty args", async () => {
+      const result = await tools.toolCheckCICD({});
+      assert.equal(result.tool, "check_cicd");
+      assert(Array.isArray(result.reports));
+    });
+  });
+
+  describe("toolCheckLinting", () => {
+    it("should return lint results with or without installed tools", async () => {
+      const result = await tools.toolCheckLinting({ cwd: PLUGIN_DIR });
+      assert.equal(result.tool, "check_linting");
+      assert.equal(result.version, "2.0.0");
+      // The function returns linterVersions as an array
+      assert(Array.isArray(result.linterVersions));
+      // Each entry should have tool name and installed flag
+      result.linterVersions.forEach((l) => {
+        assert(l.tool, "Should have tool property");
+        assert(typeof l.installed === "boolean", "Should have installed boolean");
+      });
+    });
+  });
+
+  describe("toolCheckSecurity", () => {
+    it("should return security report for a fixture", async () => {
+      const dir = await createFixture({
+        "package.json": JSON.stringify({ name: "test", version: "1.0.0" }),
+      });
+      try {
+        const result = await tools.toolCheckSecurity({ cwd: dir });
+        assert.equal(result.tool, "check_security");
+        assert.equal(result.version, "2.0.0");
+        assert(Array.isArray(result.reports));
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("should handle empty args", async () => {
+      const result = await tools.toolCheckSecurity({});
+      assert.equal(result.tool, "check_security");
+      assert(Array.isArray(result.reports));
+    });
+  });
+
+  describe("toolGenerateSecurityChecklist", () => {
+    it("should return a security checklist", async () => {
+      const result = await tools.toolGenerateSecurityChecklist({});
+      assert.equal(result.tool, "generate_security_checklist");
+      assert.equal(result.version, "2.0.0");
+      assert(Array.isArray(result.checklist));
+      assert(result.checklist.length > 0, "Should have checklist items");
+    });
+
+    it("should accept stack parameter", async () => {
+      const result = await tools.toolGenerateSecurityChecklist({ stack: "nestjs" });
+      assert(Array.isArray(result.checklist));
     });
   });
 });

@@ -14,14 +14,26 @@ const PLUGIN_DIR = process.env.PLUGIN_DIR || dirname(fileURLToPath(import.meta.u
 
 // ─── IO helpers ─────────────────────────────────────────────────────────────
 
-export function run(cmd, args = [], cwd = process.cwd()) {
+export function run(cmd, args = [], cwd = process.cwd(), timeoutMs = 30000) {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: true });
+    let timedOut = false;
+    const proc = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true });
     let out = "",
       err = "";
     proc.stdout.on("data", (d) => (out += d.toString()));
     proc.stderr.on("data", (d) => (err += d.toString()));
-    proc.on("close", (code) => resolve({ stdout: out, stderr: err, code: code ?? 1 }));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+    }, timeoutMs);
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ stdout: out, stderr: err, code: timedOut ? null : code ?? 0, timedOut });
+    });
+    proc.on("error", (error) => {
+      clearTimeout(timer);
+      resolve({ stdout: out, stderr: err, code: null, error: error.message });
+    });
   });
 }
 
@@ -49,6 +61,50 @@ export async function listDirs(dir, max = 100) {
   } catch {
     return [];
   }
+}
+
+/** Recursively find files matching a predicate, cross-platform. */
+async function findFilesRecursive(dir, predicate, maxDepth = 10, currentDepth = 0, results = []) {
+  if (currentDepth > maxDepth || results.length >= 500) return results;
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  for (const entry of entries) {
+    const fullPath = join(dir, entry.name);
+    if (entry.isDirectory() && !["node_modules", ".git", "dist", "build"].includes(entry.name)) {
+      await findFilesRecursive(fullPath, predicate, maxDepth, currentDepth + 1, results);
+    } else if (entry.isFile() && predicate(entry.name)) {
+      results.push(fullPath);
+    }
+    if (results.length >= 500) break;
+  }
+  return results;
+}
+
+/** Recursively find directories up to a given depth, cross-platform. */
+async function findDirsRecursive(dir, maxDepth = 2, currentDepth = 0, results = []) {
+  if (currentDepth > maxDepth || results.length >= 100) return results;
+  const relPath = currentDepth === 0 ? "." : join(".", dir.slice(dir.length - dir.length));
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return results;
+  }
+  const sorted = entries.sort((a, b) => a.name.localeCompare(b.name));
+  for (const entry of sorted) {
+    if (entry.isDirectory() && !["node_modules", ".git", "dist", "build"].includes(entry.name)) {
+      const fullPath = join(dir, entry.name);
+      const rel = fullPath === dir ? "." : fullPath;
+      results.push(rel);
+      await findDirsRecursive(fullPath, maxDepth, currentDepth + 1, results);
+    }
+    if (results.length >= 100) break;
+  }
+  return results;
 }
 
 // ─── Industry Standard Patterns ─────────────────────────────────────────────
@@ -482,14 +538,10 @@ export async function toolCheckTests(args) {
   const cwd = (args.cwd || process.cwd()).toString();
   const reports = [];
 
-  const { execSync } = await import("node:child_process");
   try {
-    const testFiles = execSync(
-      'find . -type f \\( -name "*.test.ts" -o -name "*.test.tsx" -o -name "*.spec.ts" -o -name "*.spec.tsx" \\) 2>/dev/null | head -50',
-      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    );
-    const files = testFiles.trim().split("\n").filter(Boolean);
-    reports.push({ area: "test-files", count: files.length, message: "Found " + files.length + " test/spec file(s)." });
+    const testExtensions = [".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"];
+    const testFiles = await findFilesRecursive(cwd, (name) => testExtensions.some((ext) => name.endsWith(ext)));
+    reports.push({ area: "test-files", count: testFiles.length, files: testFiles.slice(0, 20), message: "Found " + testFiles.length + " test/spec file(s)." });
 
     const hasJest = (await tryRead(cwd + "/jest.config.js")) !== null || (await tryRead(cwd + "/jest.config.ts")) !== null;
     const hasVitest = (await tryRead(cwd + "/vitest.config.ts")) !== null || (await tryRead(cwd + "/vitest.config.tsx")) !== null;
@@ -566,7 +618,6 @@ export async function toolCheckCICD(args) {
 
 export async function toolCheckLinting(args) {
   const cwd = (args.cwd || process.cwd()).toString();
-  const { execSync } = await import("node:child_process");
 
   const lintCmds = [
     { name: "eslint", cmd: ["npx", "eslint", "--version"] },
@@ -578,10 +629,10 @@ export async function toolCheckLinting(args) {
 
   const results = [];
   for (const { name, cmd } of lintCmds) {
-    try {
-      const ver = execSync(cmd.join(" "), { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-      results.push({ tool: name, installed: true, version: ver });
-    } catch {
+    const r = await run(cmd[0], cmd.slice(1), cwd);
+    if (r.code === 0) {
+      results.push({ tool: name, installed: true, version: r.stdout.trim() });
+    } else {
       results.push({ tool: name, installed: false });
     }
   }
@@ -657,9 +708,7 @@ export async function toolCheckArchitecture(args) {
   const reports = [];
 
   try {
-    const { execSync } = await import("node:child_process");
-    const tree = execSync("find . -maxdepth " + depth + " -type d | grep -v node_modules | grep -v '.git' | sort", { cwd, encoding: "utf8" });
-    const dirs = tree.trim().split("\n").filter(Boolean);
+    const dirs = await findDirsRecursive(cwd, depth);
     reports.push({ area: "directory-structure", directories: dirs.slice(0, 30) });
 
     const hasSrc = dirs.some((d) => d.includes("/src") || d === "./src");
@@ -1247,7 +1296,30 @@ function getProductionConfig(framework, language) {
   };
 }
 
-function generateGitHubWorkflow(stack, deployTarget, name) {
+function generateGitHubWorkflow(stack = "nodejs", deployTarget = "docker", name = "CI") {
+  const deploySteps =
+    deployTarget === "docker"
+      ? `      - name: Build Docker image
+      - run: docker build -t app:${"$"}{{ github.sha }} .
+      - name: Push to registry
+        run: echo "docker push <your-registry>/app:${"$"}{{ github.sha }}"`
+      : deployTarget === "vercel"
+        ? `      - name: Deploy to Vercel
+      - run: npx vercel --prod --confirm`
+        : deployTarget === "aws"
+          ? `      - name: Deploy to AWS
+      - run: |
+          npm install -g @aws-cdk/cli
+          cdk deploy --require-approval never`
+        : deployTarget === "k8s"
+          ? `      - name: Deploy to Kubernetes
+      - run: |
+          kubectl config set-context --current=${"{"}${"{"} }}
+          kubectl apply -f k8s/`
+        : `      - run: npm run build`;
+
+  const buildScript = stack === "nestjs" || stack === "express" || stack === "fastify" ? "npm run build" : "npm run build";
+
   return `name: ${name}
 
 on:
@@ -1303,5 +1375,17 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: npm run build`;
+      - run: ${buildScript}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+${deploySteps}`;
 }

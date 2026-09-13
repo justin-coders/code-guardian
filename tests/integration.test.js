@@ -20,7 +20,7 @@ const SERVER = join(PLUGIN_DIR, "src", "stdio-server.js");
 
 /** Create a temp fixture directory with given files. */
 async function createFixture(files) {
-  const dir = join(PLUGIN_DIR, "..", "fixture-" + Date.now());
+  const dir = join(PLUGIN_DIR, ".test-tmp", "fixture-" + Date.now());
   mkdirSync(dir, { recursive: true });
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = join(dir, relPath);
@@ -55,14 +55,14 @@ function sendRequest(proc, id, method, params = {}) {
     };
     proc.stdout.on("data", handler);
     proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-    // Timeout after 8s for slow tools (lint, npm audit)
+    // Timeout after 30s for slow tools (lint, npm audit, npx commands)
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
         proc.stdout.off("data", handler);
         resolve({ error: "timeout", id });
       }
-    }, 8000);
+    }, 30000);
   });
 }
 
@@ -95,7 +95,7 @@ async function createProductionFixture() {
   });
 }
 
-// ─── Server lifecycle ───────────────────────────────────────────────────────
+// ─── Server lifecycle ────────────────────────────────────────────────────────
 
 describe("code-guardian v2 integration", () => {
   let proc;
@@ -108,6 +108,8 @@ describe("code-guardian v2 integration", () => {
 
   after(() => {
     proc.kill();
+    // Clean up temp test dirs
+    try { rmSync(join(PLUGIN_DIR, ".test-tmp"), { recursive: true, force: true }); } catch {}
   });
 
   // ─── Protocol ────────────────────────────────────────────────────────────
@@ -375,6 +377,94 @@ describe("code-guardian v2 integration", () => {
       assert(data.recommendedStructure);
       assert(data.essentialPackages);
       assert(data.productionConfig);
+    });
+  });
+
+  describe("check_tests", () => {
+    it("should detect test files", async () => {
+      const dir = await createProductionFixture();
+      try {
+        const res = await sendRequest(proc, 120, "tools/call", {
+          name: "check_tests",
+          arguments: { cwd: dir },
+        });
+        const data = JSON.parse(res.result.content[0].text);
+        assert.equal(data.tool, "check_tests");
+        assert(Array.isArray(data.reports));
+      } finally {
+        await cleanup(dir);
+      }
+    });
+  });
+
+  describe("check_cicd", () => {
+    it("should detect CI/CD configs", async () => {
+      const dir = await createProductionFixture();
+      try {
+        const res = await sendRequest(proc, 130, "tools/call", {
+          name: "check_cicd",
+          arguments: { cwd: dir },
+        });
+        const data = JSON.parse(res.result.content[0].text);
+        assert.equal(data.tool, "check_cicd");
+        assert(Array.isArray(data.reports));
+      } finally {
+        await cleanup(dir);
+      }
+    });
+  });
+
+  describe("check_linting", () => {
+    it("should check for linting tools", async () => {
+      const res = await sendRequest(proc, 140, "tools/call", {
+        name: "check_linting",
+        arguments: { cwd: PLUGIN_DIR },
+      });
+      const data = JSON.parse(res.result.content[0].text);
+      assert.equal(data.tool, "check_linting");
+      assert(Array.isArray(data.linterVersions));
+    });
+  });
+
+  describe("generate_security_checklist", () => {
+    it("should generate security checklist", async () => {
+      const res = await sendRequest(proc, 150, "tools/call", {
+        name: "generate_security_checklist",
+        arguments: { stack: "nestjs" },
+      });
+      const data = JSON.parse(res.result.content[0].text);
+      assert.equal(data.tool, "generate_security_checklist");
+      assert(Array.isArray(data.checklist));
+      assert(data.checklist.length > 0);
+    });
+  });
+
+  describe("generate_github_workflow deploy targets", () => {
+    it("should generate workflow with vercel deploy", async () => {
+      const res = await sendRequest(proc, 160, "tools/call", {
+        name: "generate_github_workflow",
+        arguments: { stack: "nest", deployTarget: "vercel" },
+      });
+      const data = JSON.parse(res.result.content[0].text);
+      assert(data.workflow.includes("Deploy to Vercel"));
+    });
+
+    it("should generate workflow with AWS deploy", async () => {
+      const res = await sendRequest(proc, 170, "tools/call", {
+        name: "generate_github_workflow",
+        arguments: { stack: "express", deployTarget: "aws" },
+      });
+      const data = JSON.parse(res.result.content[0].text);
+      assert(data.workflow.includes("Deploy to AWS"));
+    });
+
+    it("should generate workflow with k8s deploy", async () => {
+      const res = await sendRequest(proc, 180, "tools/call", {
+        name: "generate_github_workflow",
+        arguments: { stack: "nestjs", deployTarget: "k8s" },
+      });
+      const data = JSON.parse(res.result.content[0].text);
+      assert(data.workflow.includes("Deploy to Kubernetes"));
     });
   });
 });
