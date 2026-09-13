@@ -1,15 +1,19 @@
 {
-  "code-guardian": {
-    "type": "stdio",
-    "command": "node",
-    "args": ["${PLUGIN_DIR}/src/stdio-server.js"],
-    "env": {
-      "CODE_GUARDIAN_TRANSPORT": "stdio"
+  "mcpServers": {
+    "code-guardian": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["src/stdio-server.js"],
+      "cwd": "c:\\Users\\Aaqib\\Desktop\\Code Playground\\code-guardian",
+      "env": {
+        "PLUGIN_DIR": "c:\\Users\\Aaqib\\Desktop\\Code Playground\\code-guardian",
+        "CODE_GUARDIAN_TRANSPORT": "stdio"
+      }
+    },
+    "code-guardian-http": {
+      "type": "http",
+      "url": "http://localhost:8765/sse",
+      "headers": {}
     }
-  },
-  "code-guardian-http": {
-    "type": "http",
-    "url": "http://localhost:8765/sse",
-    "headers": {}
   }
 }

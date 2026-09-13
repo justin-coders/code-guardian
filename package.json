@@ -1,5 +1,5 @@
 {
-  "name": "code-guardian",
+  "name": "@justin-coders/code-guardian",
   "description": "Cross-agent production-readiness enforcer for AI coding tools. Audits codebases against industry standards, generates production-grade code with reference patterns, and works across all major AI coding agents.",
   "version": "2.0.0",
   "author": {
@@ -9,11 +9,11 @@
   "type": "module",
   "main": "./src/stdio-server.js",
   "bin": {
-    "code-guardian": "./src/stdio-server.js"
+    "code-guardian": "bin/cli.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/justin-coders/code-guardian.git"
+    "url": "git+https://github.com/justin-coders/code-guardian.git"
   },
   "bugs": {
     "url": "https://github.com/justin-coders/code-guardian/issues"
@@ -43,10 +43,38 @@
     "start": "node src/stdio-server.js",
     "start:http": "CODE_GUARDIAN_TRANSPORT=http node src/http-server.js",
     "test": "node --test tests/**/*.test.js",
+    "test:unit": "node --test tests/tools.test.js",
+    "test:integration": "node --test tests/integration.test.js",
     "test:coverage": "node --test --experimental-test-coverage tests/**/*.test.js",
     "lint": "npx eslint src tests",
-    "format": "npx prettier --write src tests"
+    "format": "npx prettier --write src tests",
+    "release": "npx release-it"
   },
-  "devDependencies": {},
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "src/",
+    "bin/",
+    "tests/",
+    "package.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "release-it": "^17.5.0"
+  },
+  "release-it": {
+    "git": {
+      "tagName": "v${version}",
+      "commit": true,
+      "push": true
+    },
+    "npm": {
+      "publish": true
+    }
+  },
   "dependencies": {}
 }

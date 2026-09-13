@@ -182,6 +182,7 @@ async function handleRequest(msg) {
   switch (method) {
     case "initialize":
       return {
+        jsonrpc: "2.0",
         id,
         result: {
           protocolVersion: "2024-11-05",
@@ -190,7 +191,7 @@ async function handleRequest(msg) {
         },
       };
     case "tools/list":
-      return { id, result: { tools: TOOLS } };
+      return { jsonrpc: "2.0", id, result: { tools: TOOLS } };
     case "tools/call": {
       const { name, arguments: args } = params;
       try {
@@ -245,15 +246,16 @@ async function handleRequest(msg) {
             throw new Error("Unknown tool: " + name);
         }
         return {
+          jsonrpc: "2.0",
           id,
           result: { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] },
         };
       } catch (err) {
-        return { id, error: { code: -32603, message: err.message } };
+        return { jsonrpc: "2.0", id, error: { code: -32603, message: err.message } };
       }
     }
     default:
-      return { id, error: { code: -32601, message: "Method not found: " + method } };
+      return { jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found: " + method } };
   }
 }
 
@@ -266,6 +268,8 @@ async function main() {
   reader.on("line", async (line) => {
     try {
       const msg = JSON.parse(line);
+      // MCP notifications have no "id" — they do not get a response
+      if (msg.id === undefined || msg.id === null) return;
       const resp = await handleRequest(msg);
       if (resp) send(resp);
     } catch (err) {
