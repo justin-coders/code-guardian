@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-46_passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-62_passing-brightgreen.svg)](tests/)
 [![MCP Ready](https://img.shields.io/badge/MCP-compatible-blue.svg)](https://modelcontextprotocol.io)
 
 > **Stop shipping code that isn't ready for production.** Code Guardian audits your project against industry standards, generates production-ready patterns, and enforces quality gates — across every AI coding agent.
@@ -74,7 +74,7 @@ Add one entry to your `~/.cursor/mcp.json`:
   "mcpServers": {
     "code-guardian": {
       "command": "node",
-      "args": ["/absolute/path/to/code-guardian/v1/src/stdio-server.js"]
+      "args": ["/absolute/path/to/code-guardian/src/stdio-server.js"]
     }
   }
 }
