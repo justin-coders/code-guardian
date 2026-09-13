@@ -1,5 +1,5 @@
 # Code Guardian
-
+[![Build Status](https://img.shields.io/github/actions/workflow/status/justin-coders/code-guardian/ci.yml?branch=master&label=CI&logo=github&style=flat-square&color=success)](https://github.com/justin-coders/code-guardian/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
 [![Tests](https://img.shields.io/badge/tests-62_passing-brightgreen.svg)](tests/)
