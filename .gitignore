@@ -25,3 +25,4 @@ Thumbs.db
 # Tests
 coverage/
 .nyc_output/
+.test-tmp/
