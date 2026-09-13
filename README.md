@@ -33,41 +33,32 @@ Works with every major AI coding agent out of the box:
 
 ## Quick Start
 
-### Claude Code — Step-by-step install
+### Claude Code — Two ways to install
 
-Code Guardian ships as a Claude Code plugin. Here's how to get it working:
+**Option 1: ZIP Upload (Easiest)**
 
-**1. Clone this repo**
+1. Download the plugin package from the [Releases page](https://github.com/justin-coders/code-guardian/releases)
+2. In Claude Code, click **Plugins** (sidebar)
+3. Click **Upload Plugin** and select the ZIP file
+4. Restart Claude Code
+
+**Option 2: Manual Install**
+
 ```bash
+# Clone the repo
 git clone https://github.com/justin-coders/code-guardian.git
 cd code-guardian
-```
 
-**2. Copy the plugin into Claude Code's cache**
-```bash
+# Copy to Claude Code's plugin cache
 cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+
+# Restart Claude Code
 ```
 
-**3. Register the plugin**
-Add this entry to `~/.claude/plugins/installed_plugins.json`:
-```json
-{
-  "code-guardian": [
-    {
-      "scope": "user",
-      "installPath": "~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1",
-      "version": "2.0.0"
-    }
-  ]
-}
-```
+### After Installation
 
-**4. Restart Claude Code**
+The plugin loads automatically. Just ask:
 
-Close all Claude Code windows and reopen. The plugin loads automatically.
-
-**5. Start using it**
-Just ask naturally:
 ```
 "Audit this project for production readiness"
 "Generate a production REST API with NestJS and Zod validation"
