@@ -1,15 +1,16 @@
 # Code Guardian
 
+[![Build Status](https://img.shields.io/github/actions/workflow/status/justin-coders/code-guardian/ci.yml?branch=master&label=CI&logo=github&style=flat-square&color=success)](https://github.com/justin-coders/code-guardian/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-62_passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-83_passing-brightgreen.svg)](tests/)
 [![MCP Ready](https://img.shields.io/badge/MCP-compatible-blue.svg)](https://modelcontextprotocol.io)
 
 > **Stop shipping code that isn't ready for production.** Code Guardian audits your project against industry standards, generates production-ready patterns, and enforces quality gates — across every AI coding agent.
 
 ## What is this?
 
-You're building an app. You ask an AI agent to write code. It delivers something that *works* — but doesn't have tests, error handling, CI/CD, security headers, or proper logging. You ship it, and three days later production burns down.
+You're building an app. You ask an AI agent to write code. It delivers something that _works_ — but doesn't have tests, error handling, CI/CD, security headers, or proper logging. You ship it, and three days later production burns down.
 
 **Code Guardian exists to fix that.**
 
@@ -21,39 +22,53 @@ Think of it as a senior engineer who reviews every line of code the AI writes �
 
 Works with every major AI coding agent out of the box:
 
-| Agent | Integration | How it works |
-|---|---|---|
-| [**Claude Code**](https://claude.ai/code) | Plugin | Auto-installed, zero config |
-| [**Cursor**](https://cursor.sh) | MCP Server | Add to `~/.cursor/mcp.json` |
-| [**Windsurf**](https://windsurf.com) | MCP Server | Add to `~/.windsurf/mcp.json` |
-| [**Devin**](https://devin.ai) | Context | Follow agent-specific guidance |
-| [**Codex**](https://openai.com/index/codex/) | CLI | Use with memory files & flags |
-| [**Gemini**](https://gemini.google.com) | Context | Set expectations in system prompt |
-| [**Antigravity**](https://antigravity.sh) | Context | Define requirements explicitly |
+| Agent                                        | Integration         | How it works                                                   |
+| -------------------------------------------- | ------------------- | -------------------------------------------------------------- |
+| [**Claude Code**](https://claude.ai/code)    | Plugin / MCP Server | Auto-installed via plugin marketplace or manual stdio config   |
+| [**Cursor**](https://cursor.sh)              | MCP Server          | Add to `~/.cursor/mcp.json`                                    |
+| [**Windsurf**](https://windsurf.com)         | MCP Server          | Add to `~/.windsurf/mcp.json`                                  |
+| [**Devin**](https://devin.ai)                | Context             | Use output directly — paste audit results into Devin's context |
+| [**Codex**](https://openai.com/index/codex/) | CLI                 | Run standalone and pipe output into Codex sessions             |
+| [**Gemini**](https://gemini.google.com)      | Context             | Set expectations in system prompt with audit findings          |
+| [**Antigravity**](https://antigravity.sh)    | Context             | Define requirements explicitly; run audit as pre-step          |
 
 ## Quick Start
 
 ### Claude Code — Two ways to install
 
-**Option 1: ZIP Upload (Easiest)**
-
-1. Download the plugin package from the [Releases page](https://github.com/justin-coders/code-guardian/releases)
-2. In Claude Code, click **Plugins** (sidebar)
-3. Click **Upload Plugin** and select the ZIP file
-4. Restart Claude Code
-
-**Option 2: Manual Install**
+**Option 1: npm link (Recommended)**
 
 ```bash
 # Clone the repo
 git clone https://github.com/justin-coders/code-guardian.git
 cd code-guardian
 
-# Copy to Claude Code's plugin cache
-cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+# Build (no dependencies, but validate the entry point)
+node --check src/stdio-server.js
 
-# Restart Claude Code
+# Install as a global CLI so Claude Code can find it
+npm link
+
+# In Claude Code, enable the plugin:
+#   /plugin marketplace add justin-coders/code-guardian
+#   /plugin install
 ```
+
+**Option 2: Manual MCP config**
+
+Add this to your `~/.claude/settings.json` under `mcpServers`:
+
+```json
+{
+  "code-guardian": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["/absolute/path/to/code-guardian/src/stdio-server.js"]
+  }
+}
+```
+
+Then restart Claude Code.
 
 ### After Installation
 
@@ -69,6 +84,7 @@ The plugin loads automatically. Just ask:
 ### Cursor — Quick add
 
 Add one entry to your `~/.cursor/mcp.json`:
+
 ```json
 {
   "mcpServers": {
@@ -79,6 +95,7 @@ Add one entry to your `~/.cursor/mcp.json`:
   }
 }
 ```
+
 Restart Cursor. The tools are now available in your prompts.
 
 ### Windsurf — Same as Cursor
@@ -91,31 +108,18 @@ These agents don't support MCP plugins directly. Use Code Guardian as a standalo
 
 ### Updating an existing install
 
-When a new version is released, update is a one-command sync:
-
 ```bash
-# 1. Pull the latest changes
 cd /path/to/code-guardian
 git pull origin dev    # or your branch
 
-# 2. Overwrite the installed copy
-cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+# If using npm link:
+npm unlink && npm link
 
-# 3. Restart your agent
+# If using manual MCP config: no action needed — path still points to repo
+
+# Restart your agent
 # Claude Code: close and reopen
 # Cursor/Windsurf: restart the editor
-```
-
-That's it — no config changes needed. The plugin manifest and version are baked into the files themselves.
-
-For Cursor/Windsurf users with absolute paths in `mcp.json`, also verify the path still points to the updated directory:
-
-```bash
-# Check where your mcp.json points
-grep code-guardian ~/.cursor/mcp.json ~/.windsurf/mcp.json
-
-# If it points to the repo root (not the cache), just git pull
-# If it points to the cache, copy the new files there as shown above
 ```
 
 ## What It Does
@@ -130,18 +134,18 @@ Run a full production-readiness audit on any project in seconds:
 
 Covers 10 dimensions and gives you an **A–F grade** with specific remediation steps for every failure:
 
-| Dimension | What it checks |
-|---|---|
-| `package.json` | Scripts, engines, name, version |
-| Lock file | Dependency pinning for reproducible builds |
-| README | Documentation quality |
-| `.gitignore` | Sensitive files excluded |
-| ESLint | Code quality enforcement |
-| TypeScript strict mode | Type safety settings |
-| Tests | Coverage and framework config |
-| CI/CD | Pipeline detection |
-| `.env` safety | Secret management |
-| Build script | Deployment readiness |
+| Dimension              | What it checks                             |
+| ---------------------- | ------------------------------------------ |
+| `package.json`         | Scripts, engines, name, version            |
+| Lock file              | Dependency pinning for reproducible builds |
+| README                 | Documentation quality                      |
+| `.gitignore`           | Sensitive files excluded                   |
+| ESLint                 | Code quality enforcement                   |
+| TypeScript strict mode | Type safety settings                       |
+| Tests                  | Coverage and framework config              |
+| CI/CD                  | Pipeline detection                         |
+| `.env` safety          | Secret management                          |
+| Build script           | Deployment readiness                       |
 
 ### 2. Generate Production-Ready Code
 
@@ -155,18 +159,18 @@ Stop copying Stack Overflow snippets. Get templates that follow industry convent
 
 Available templates:
 
-| Feature | Frameworks | What's included |
-|---|---|---|
-| **REST API** | NestJS, Express, Fastify | Controllers, DTOs, validation, Swagger docs, pagination |
-| **Authentication** | NestJS, Express | JWT, refresh tokens, RBAC, MFA, brute-force protection |
-| **Database** | Prisma, TypeORM, Knex | Migrations, connection pooling, soft deletes, indexing |
-| **Error Handling** | All frameworks | Global handlers, custom error classes, structured logging |
-| **Logging** | Winston, Pino | JSON structured logs, correlation IDs, log levels |
-| **Security** | All frameworks | OWASP Top 10, helmet, CORS, rate limiting, input sanitization |
-| **CI/CD** | GitHub Actions | Lint → test → build → deploy pipeline with caching |
-| **Docker** | Docker | Multi-stage builds, non-root user, healthchecks, compose |
-| **Testing** | Jest, Vitest | 80% coverage thresholds, Arrange-Act-Assert, mock strategies |
-| **Branch Strategy** | Git | Feature/bugfix/hotfix/release patterns, PR requirements |
+| Feature             | Frameworks               | What's included                                               |
+| ------------------- | ------------------------ | ------------------------------------------------------------- |
+| **REST API**        | NestJS, Express, Fastify | Controllers, DTOs, validation, Swagger docs, pagination       |
+| **Authentication**  | NestJS, Express          | JWT, refresh tokens, RBAC, MFA, brute-force protection        |
+| **Database**        | Prisma, TypeORM, Knex    | Migrations, connection pooling, soft deletes, indexing        |
+| **Error Handling**  | All frameworks           | Global handlers, custom error classes, structured logging     |
+| **Logging**         | Winston, Pino            | JSON structured logs, correlation IDs, log levels             |
+| **Security**        | All frameworks           | OWASP Top 10, helmet, CORS, rate limiting, input sanitization |
+| **CI/CD**           | GitHub Actions           | Lint → test → build → deploy pipeline with caching            |
+| **Docker**          | Docker                   | Multi-stage builds, non-root user, healthchecks, compose      |
+| **Testing**         | Jest, Vitest             | 80% coverage thresholds, Arrange-Act-Assert, mock strategies  |
+| **Branch Strategy** | Git                      | Feature/bugfix/hotfix/release patterns, PR requirements       |
 
 ### 3. Enforce Standards
 
@@ -218,8 +222,8 @@ code-guardian/
 │   ├── stdio-server.js       # stdio MCP server (Claude Code, Cursor, Windsurf)
 │   └── http-server.js        # HTTP/SSE server (port 8765)
 ├── tests/
-│   ├── tools.test.js         # 28 unit tests
-│   └── integration.test.js   # 18 integration tests
+│   ├── tools.test.js         # 57 unit tests
+│   └── integration.test.js   # 26 integration tests
 ├── .claude-plugin/
 │   └── plugin.json           # Plugin manifest
 ├── .mcp.json                 # Dual transport config (stdio + HTTP)
@@ -228,6 +232,7 @@ code-guardian/
 ├── README.md
 ├── INSTALLATION.md
 ├── CONTRIBUTING.md
+├── UPCOMING_FEATURES.md
 └── CHANGELOG.md
 ```
 
@@ -235,33 +240,33 @@ code-guardian/
 
 ## Complete Tool Reference
 
-| Tool | Command | Description |
-|---|---|---|
-| `audit_codebase` | `audit_codebase({ cwd })` | Full 10-dimension audit with A-F grade and remediation |
-| `check_branch` | `check_branch({ cwd })` | Verify git branch naming conventions |
-| `check_tests` | `check_tests({ cwd })` | Discover test framework and run execution check |
-| `check_cicd` | `check_cicd({ cwd })` | Detect CI/CD configs and package scripts |
-| `check_linting` | `check_linting({ cwd })` | Find linters and run ESLint if present |
-| `check_security` | `check_security({ cwd })` | Scan for secrets + run `npm audit` |
-| `check_architecture` | `check_architecture({ cwd, depth })` | Review directory structure and monorepo setup |
-| `production_readiness` | `production_readiness({ cwd })` | A-F scorecard with per-item guidance |
-| `generate_production_code` | `generate_production_code({ feature, stack })` | Production-ready code templates |
-| `get_industry_patterns` | `get_industry_patterns({ category })` | Full checklist for any architectural concern |
-| `generate_security_checklist` | `generate_security_checklist({ cwd })` | OWASP Top 10 tailored to your project |
-| `generate_github_workflow` | `generate_github_workflow({ stack, deployTarget })` | CI/CD YAML generation |
-| `detect_agent` | `detect_agent({ cwd })` | Auto-detect your AI coding agent |
-| `get_agent_guidance` | `get_agent_guidance({ agent })` | Agent-specific best practices |
-| `generate_starter_repo` | `generate_starter_repo({ framework })` | Complete project scaffold with production defaults |
+| Tool                          | Command                                             | Description                                            |
+| ----------------------------- | --------------------------------------------------- | ------------------------------------------------------ |
+| `audit_codebase`              | `audit_codebase({ cwd })`                           | Full 10-dimension audit with A-F grade and remediation |
+| `check_branch`                | `check_branch({ cwd })`                             | Verify git branch naming conventions                   |
+| `check_tests`                 | `check_tests({ cwd })`                              | Discover test framework and run execution check        |
+| `check_cicd`                  | `check_cicd({ cwd })`                               | Detect CI/CD configs and package scripts               |
+| `check_linting`               | `check_linting({ cwd })`                            | Find linters and run ESLint if present                 |
+| `check_security`              | `check_security({ cwd })`                           | Scan for secrets + run `npm audit`                     |
+| `check_architecture`          | `check_architecture({ cwd, depth })`                | Review directory structure and monorepo setup          |
+| `production_readiness`        | `production_readiness({ cwd })`                     | A-F scorecard with per-item guidance                   |
+| `generate_production_code`    | `generate_production_code({ feature, stack })`      | Production-ready code templates                        |
+| `get_industry_patterns`       | `get_industry_patterns({ category })`               | Full checklist for any architectural concern           |
+| `generate_security_checklist` | `generate_security_checklist({ cwd })`              | OWASP Top 10 tailored to your project                  |
+| `generate_github_workflow`    | `generate_github_workflow({ stack, deployTarget })` | CI/CD YAML generation                                  |
+| `detect_agent`                | `detect_agent({ cwd })`                             | Auto-detect your AI coding agent                       |
+| `get_agent_guidance`          | `get_agent_guidance({ agent })`                     | Agent-specific best practices                          |
+| `generate_starter_repo`       | `generate_starter_repo({ framework })`              | Complete project scaffold with production defaults     |
 
 ## Production Readiness Grading
 
-| Grade | Score | What it means |
-|---|---|---|
-| **A** | 90–100% | Production-ready. Ship it. |
-| **B** | 75–89% | Good. Address the warnings before deploying. |
-| **C** | 60–74% | Partial. Significant gaps need fixing. |
-| **D** | 40–59% | Below standard. Don't ship without major work. |
-| **F** | 0–39% | Not production-ready. Comprehensive remediation needed. |
+| Grade | Score   | What it means                                           |
+| ----- | ------- | ------------------------------------------------------- |
+| **A** | 90–100% | Production-ready. Ship it.                              |
+| **B** | 75–89%  | Good. Address the warnings before deploying.            |
+| **C** | 60–74%  | Partial. Significant gaps need fixing.                  |
+| **D** | 40–59%  | Below standard. Don't ship without major work.          |
+| **F** | 0–39%   | Not production-ready. Comprehensive remediation needed. |
 
 ## Development
 
@@ -278,7 +283,7 @@ node --check src/stdio-server.js
 node --check src/http-server.js
 ```
 
-**46 tests passing.** 28 unit tests + 18 integration tests covering all 15 tools.
+**83 tests passing.** 57 unit tests + 26 integration tests covering all 15 tools.
 
 ## Adding a New Tool
 
@@ -304,4 +309,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 **Made with care by [justin-coders](https://github.com/justin-coders). Questions? Open an issue.**
 
-*Copyright (c) 2026 Yeast Technologies- @justin-coders/code-guardian*
+_Copyright (c) 2026 justin-coders_

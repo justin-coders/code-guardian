@@ -7,7 +7,8 @@ on:
 
 permissions:
   contents: read
-  id-token: write
+  id-token: write   # For npmjs.org OIDC Trusted Publishing
+  packages: write   # For GitHub Packages publishing
 
 jobs:
   release:
@@ -25,6 +26,13 @@ jobs:
       - run: npm ci
       - run: npm run test:unit
       - run: npm run test:integration
-
+      
+      # Step A: Publish to npmjs.org via OIDC Trusted Publishing
       - name: Publish to npm
         run: npm publish --access public --provenance
+
+      # Step B: Publish to GitHub Packages using GITHUB_TOKEN
+      - name: Publish to GitHub Packages
+        run: npm publish --registry=https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -9,46 +9,33 @@
 
 The plugin is auto-discovered when placed in the correct directory.
 
-### Step 1 — Clone or copy the plugin
+### Step 1 — Clone the repo
 
 ```bash
-
-# Option A: ZIP Upload (Easiest)
-1. Download the plugin package from the [Releases page](https://github.com/justin-coders/code-guardian/releases)
-2. In Claude Code, click **Plugins** (sidebar)
-3. Click **Upload Plugin** and select the ZIP file
-4. Restart Claude Code
-
-# Option B: Clone the repo and copy
 git clone https://github.com/justin-coders/code-guardian.git
-cp -r code-guardian/v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
-
-# Option C: Copy from local path
-cp -r /path/to/code-guardian/v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+cd code-guardian
 ```
 
-### Step 2 — Verify installation
+### Step 2 — Install via npm link
 
-The plugin manifest at `~/.claude/plugins/installed_plugins.json` should include:
-
-```json
-{
-  "code-guardian": [
-    {
-      "scope": "user",
-      "installPath": "~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1",
-      "version": "2.0.2",
-      "installedAt": "..."
-    }
-  ]
-}
+```bash
+npm link
 ```
 
-### Step 3 — Restart Claude Code
+This makes `code-guardian` available system-wide so Claude Code can locate it.
 
-Close and reopen Claude Code. The plugin will be auto-loaded.
+### Step 3 — Enable in Claude Code
 
-### Step 4 — Verify tools are available
+In Claude Code, run:
+
+```
+/plugin marketplace add justin-coders/code-guardian
+/plugin install
+```
+
+Or manually add the stdio config (see Method 2 below).
+
+### Step 4 — Verify installation
 
 In Claude Code, type:
 ```
@@ -58,7 +45,7 @@ You should see all 15 code-guardian tools listed.
 
 ---
 
-## Method 2: Standalone MCP Server
+## Method 2: Manual MCP Config (Any Agent)
 
 ### Step 1 — Clone the repo
 
@@ -67,18 +54,21 @@ git clone https://github.com/justin-coders/code-guardian.git
 cd code-guardian
 ```
 
-### Step 2 — Test the server
+### Step 2 — Add MCP config
 
-```bash
-# stdio mode (for MCP clients)
-node src/stdio-server.js
-
-# HTTP/SSE mode (for direct API access)
-node src/http-server.js
-# → Server listening on http://localhost:8765
+**Claude Code** (`~/.claude/settings.json`):
+```json
+{
+  "mcpServers": {
+    "code-guardian": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["<absolute-path>/src/stdio-server.js"],
+      "cwd": "<absolute-path>"
+    }
+  }
+}
 ```
-
-### Step 3 — Add to your MCP client config
 
 **Cursor** (`~/.cursor/mcp.json`):
 ```json
@@ -86,7 +76,7 @@ node src/http-server.js
   "mcpServers": {
     "code-guardian": {
       "command": "node",
-      "args": ["/absolute/path/to/code-guardian/src/stdio-server.js"]
+      "args": ["<absolute-path>/src/stdio-server.js"]
     }
   }
 }
@@ -98,37 +88,54 @@ node src/http-server.js
   "mcpServers": {
     "code-guardian": {
       "command": "node",
-      "args": ["/absolute/path/to/code-guardian/src/stdio-server.js"]
+      "args": ["<absolute-path>/src/stdio-server.js"]
     }
   }
 }
 ```
 
-**Custom MCP client**:
-```json
-{
-  "mcpServers": {
-    "code-guardian": {
-      "command": "node",
-      "args": ["<path>/src/stdio-server.js"]
-    }
-  }
-}
-```
+Replace `<absolute-path>` with the real path to the cloned repo.
+
+### Step 3 — Restart your agent
+
+Close and reopen Claude Code / Cursor / Windsurf.
 
 ---
 
-## Method 3: From npm (when published)
+## Method 3: Standalone Server
+
+### Step 1 — Clone the repo
 
 ```bash
-# Install globally
-npm install -g code-guardian
+git clone https://github.com/justin-coders/code-guardian.git
+cd code-guardian
+```
 
-# Or as a project dependency
-npm install code-guardian --save-dev
+### Step 2 — Run the server
 
-# Run
-npx code-guardian
+```bash
+# stdio mode (for MCP clients)
+node src/stdio-server.js
+
+# HTTP/SSE mode (for direct API access)
+node src/http-server.js
+# → Server listening on http://localhost:8765
+```
+
+### Step 3 — Use with any JSON-RPC client
+
+Send JSON-RPC 2.0 messages over stdio or HTTP. Example tool call:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "audit_codebase",
+    "arguments": { "cwd": "/path/to/your/project" }
+  }
+}
 ```
 
 ---
@@ -141,7 +148,25 @@ After installation, run the test suite:
 node --test tests/**/*.test.js
 ```
 
-All tests should pass.
+All 83 tests should pass.
+
+---
+
+## Updating an Existing Install
+
+```bash
+cd /path/to/code-guardian
+git pull origin main    # or your branch
+
+# If using npm link:
+npm unlink && npm link
+
+# If using manual MCP config: no action needed — path still points to repo
+
+# Restart your agent
+# Claude Code: close and reopen
+# Cursor/Windsurf: restart the editor
+```
 
 ---
 
@@ -149,15 +174,15 @@ All tests should pass.
 
 ### Plugin not loading in Claude Code
 
-1. Verify the path exists: `ls ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1/`
-2. Check `installed_plugins.json` has the entry
+1. Verify the path in your config points to the actual `src/stdio-server.js`
+2. Check `~/.claude/settings.json` has the correct `mcpServers` entry
 3. Restart Claude Code completely (close all windows)
-4. Check stderr output: `node ~/.claude/plugins/.../code-guardian/v1/src/stdio-server.js`
+4. Check stderr output: `node <path>/src/stdio-server.js`
 
 ### Tools not appearing in `/tools`
 
-1. Confirm the plugin is registered in `installed_plugins.json`
-2. Check that `.claude-plugin/plugin.json` has the correct name
+1. Confirm the MCP config is valid JSON
+2. Check that the server starts without errors (run it manually first)
 3. Restart Claude Code
 
 ### Server won't start
@@ -165,17 +190,14 @@ All tests should pass.
 1. Ensure Node.js >= 18: `node --version`
 2. The project uses ESM — ensure `package.json` has `"type": "module"`
 3. No external dependencies needed — if `import` fails, check Node version
+4. Verify `src/stdio-server.js` exists and is the correct entry point
 
 ---
 
 ## Uninstall
 
 ### Claude Code plugin
-Remove from `~/.claude/plugins/installed_plugins.json` and delete the cache directory:
+Remove the `mcpServers` entry from `~/.claude/settings.json`.
 
-```bash
-rm -rf ~/.claude/plugins/cache/claude-plugins-official/code-guardian
-```
-
-### Standalone installation
-Simply delete the cloned directory.
+### Manual MCP config
+Remove the entry from your agent's MCP config file and delete the cloned directory.
