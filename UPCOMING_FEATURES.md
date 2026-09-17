@@ -1,6 +1,6 @@
 # Upcoming Features — Code Guardian v2.1.0+
 
-This document tracks planned features, enhancements, and known limitations for future releases of Code Guardian. All items below are tracked as future work and are **not** implemented in v2.0.3.
+This document tracks planned features, enhancements, and known limitations for future releases of Code Guardian. All items below are tracked as future work and are **not** implemented in v2.0.4.
 
 ---
 

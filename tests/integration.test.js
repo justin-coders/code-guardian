@@ -120,7 +120,7 @@ describe("code-guardian v2 integration", () => {
       assert(res.result);
       assert.equal(res.result.protocolVersion, "2024-11-05");
       assert.equal(res.result.serverInfo.name, "code-guardian");
-      assert.equal(res.result.serverInfo.version, "2.0.3");
+      assert.equal(res.result.serverInfo.version, "2.0.4");
     });
 
     it("should list all 15 tools", async () => {
@@ -158,7 +158,7 @@ describe("code-guardian v2 integration", () => {
         assert(res.result);
         const data = JSON.parse(res.result.content[0].text);
         assert.equal(data.tool, "audit_codebase");
-        assert.equal(data.version, "2.0.3");
+        assert.equal(data.version, "2.0.4");
         assert(Array.isArray(data.reports));
         assert(data.summary);
         assert(typeof data.summary.totalChecks === "number");

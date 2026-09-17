@@ -91,7 +91,7 @@ describe("tools.js", () => {
       const dir = await createFixture({});
       try {
         const result = await tools.toolProductionReadiness({ cwd: dir });
-        assert.equal(result.version, "2.0.3");
+        assert.equal(result.version, "2.0.4");
         assert.equal(result.score.grade, "F");
         assert.equal(result.score.total, 10);
         // Empty dir passes only "No .env at root", so passed should be 1
@@ -160,7 +160,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolAuditCodebase({ cwd: dir });
         assert.equal(result.tool, "audit_codebase");
-        assert.equal(result.version, "2.0.3");
+        assert.equal(result.version, "2.0.4");
         assert(Array.isArray(result.reports));
         assert(result.summary);
         assert(typeof result.summary.totalChecks === "number");
@@ -397,7 +397,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolCheckTests({ cwd: dir });
         assert.equal(result.tool, "check_tests");
-        assert.equal(result.version, "2.0.3");
+        assert.equal(result.version, "2.0.4");
         const testReport = result.reports.find((r) => r.area === "test-files");
         assert(testReport, "Should have test-files report");
         assert.equal(testReport.count, 2, "Should find 2 test files");
@@ -482,7 +482,7 @@ describe("tools.js", () => {
     it("should return lint results with or without installed tools", async () => {
       const result = await tools.toolCheckLinting({ cwd: PLUGIN_DIR });
       assert.equal(result.tool, "check_linting");
-      assert.equal(result.version, "2.0.3");
+      assert.equal(result.version, "2.0.4");
       // The function returns linterVersions as an array
       assert(Array.isArray(result.linterVersions));
       // Each entry should have tool name and installed flag
@@ -501,7 +501,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolCheckSecurity({ cwd: dir });
         assert.equal(result.tool, "check_security");
-        assert.equal(result.version, "2.0.3");
+        assert.equal(result.version, "2.0.4");
         assert(Array.isArray(result.reports));
       } finally {
         await cleanup(dir);
@@ -597,7 +597,7 @@ describe("tools.js", () => {
     it("should return a security checklist", async () => {
       const result = await tools.toolGenerateSecurityChecklist({});
       assert.equal(result.tool, "generate_security_checklist");
-      assert.equal(result.version, "2.0.3");
+      assert.equal(result.version, "2.0.4");
       assert(Array.isArray(result.checklist));
       assert(result.checklist.length > 0, "Should have checklist items");
     });
