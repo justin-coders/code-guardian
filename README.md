@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Node.js >= 18](https://img.shields.io/badge/node-%3E%3D18-green.svg)](https://nodejs.org)
-[![Tests](https://img.shields.io/badge/tests-62_passing-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-83_passing-brightgreen.svg)](tests/)
 [![MCP Ready](https://img.shields.io/badge/MCP-compatible-blue.svg)](https://modelcontextprotocol.io)
 
 > **Stop shipping code that isn't ready for production.** Code Guardian audits your project against industry standards, generates production-ready patterns, and enforces quality gates — across every AI coding agent.
@@ -23,37 +23,49 @@ Works with every major AI coding agent out of the box:
 
 | Agent | Integration | How it works |
 |---|---|---|
-| [**Claude Code**](https://claude.ai/code) | Plugin | Auto-installed, zero config |
+| [**Claude Code**](https://claude.ai/code) | Plugin / MCP Server | Auto-installed via plugin marketplace or manual stdio config |
 | [**Cursor**](https://cursor.sh) | MCP Server | Add to `~/.cursor/mcp.json` |
 | [**Windsurf**](https://windsurf.com) | MCP Server | Add to `~/.windsurf/mcp.json` |
-| [**Devin**](https://devin.ai) | Context | Follow agent-specific guidance |
-| [**Codex**](https://openai.com/index/codex/) | CLI | Use with memory files & flags |
-| [**Gemini**](https://gemini.google.com) | Context | Set expectations in system prompt |
-| [**Antigravity**](https://antigravity.sh) | Context | Define requirements explicitly |
+| [**Devin**](https://devin.ai) | Context | Use output directly — paste audit results into Devin's context |
+| [**Codex**](https://openai.com/index/codex/) | CLI | Run standalone and pipe output into Codex sessions |
+| [**Gemini**](https://gemini.google.com) | Context | Set expectations in system prompt with audit findings |
+| [**Antigravity**](https://antigravity.sh) | Context | Define requirements explicitly; run audit as pre-step |
 
 ## Quick Start
 
 ### Claude Code — Two ways to install
 
-**Option 1: ZIP Upload (Easiest)**
-
-1. Download the plugin package from the [Releases page](https://github.com/justin-coders/code-guardian/releases)
-2. In Claude Code, click **Plugins** (sidebar)
-3. Click **Upload Plugin** and select the ZIP file
-4. Restart Claude Code
-
-**Option 2: Manual Install**
+**Option 1: npm link (Recommended)**
 
 ```bash
 # Clone the repo
 git clone https://github.com/justin-coders/code-guardian.git
 cd code-guardian
 
-# Copy to Claude Code's plugin cache
-cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+# Build (no dependencies, but validate the entry point)
+node --check src/stdio-server.js
 
-# Restart Claude Code
+# Install as a global CLI so Claude Code can find it
+npm link
+
+# In Claude Code, enable the plugin:
+#   /plugin marketplace add justin-coders/code-guardian
+#   /plugin install
 ```
+
+**Option 2: Manual MCP config**
+
+Add this to your `~/.claude/settings.json` under `mcpServers`:
+```json
+{
+  "code-guardian": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["/absolute/path/to/code-guardian/src/stdio-server.js"]
+  }
+}
+```
+Then restart Claude Code.
 
 ### After Installation
 
@@ -91,31 +103,18 @@ These agents don't support MCP plugins directly. Use Code Guardian as a standalo
 
 ### Updating an existing install
 
-When a new version is released, update is a one-command sync:
-
 ```bash
-# 1. Pull the latest changes
 cd /path/to/code-guardian
 git pull origin dev    # or your branch
 
-# 2. Overwrite the installed copy
-cp -r v1 ~/.claude/plugins/cache/claude-plugins-official/code-guardian/v1
+# If using npm link:
+npm unlink && npm link
 
-# 3. Restart your agent
+# If using manual MCP config: no action needed — path still points to repo
+
+# Restart your agent
 # Claude Code: close and reopen
 # Cursor/Windsurf: restart the editor
-```
-
-That's it — no config changes needed. The plugin manifest and version are baked into the files themselves.
-
-For Cursor/Windsurf users with absolute paths in `mcp.json`, also verify the path still points to the updated directory:
-
-```bash
-# Check where your mcp.json points
-grep code-guardian ~/.cursor/mcp.json ~/.windsurf/mcp.json
-
-# If it points to the repo root (not the cache), just git pull
-# If it points to the cache, copy the new files there as shown above
 ```
 
 ## What It Does
@@ -218,8 +217,8 @@ code-guardian/
 │   ├── stdio-server.js       # stdio MCP server (Claude Code, Cursor, Windsurf)
 │   └── http-server.js        # HTTP/SSE server (port 8765)
 ├── tests/
-│   ├── tools.test.js         # 28 unit tests
-│   └── integration.test.js   # 18 integration tests
+│   ├── tools.test.js         # 57 unit tests
+│   └── integration.test.js   # 26 integration tests
 ├── .claude-plugin/
 │   └── plugin.json           # Plugin manifest
 ├── .mcp.json                 # Dual transport config (stdio + HTTP)
@@ -228,6 +227,7 @@ code-guardian/
 ├── README.md
 ├── INSTALLATION.md
 ├── CONTRIBUTING.md
+├── UPCOMING_FEATURES.md
 └── CHANGELOG.md
 ```
 
@@ -278,7 +278,7 @@ node --check src/stdio-server.js
 node --check src/http-server.js
 ```
 
-**46 tests passing.** 28 unit tests + 18 integration tests covering all 15 tools.
+**83 tests passing.** 57 unit tests + 26 integration tests covering all 15 tools.
 
 ## Adding a New Tool
 
@@ -304,4 +304,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 **Made with care by [justin-coders](https://github.com/justin-coders). Questions? Open an issue.**
 
-*Copyright (c) 2026 Yeast Technologies- @justin-coders/code-guardian*
+*Copyright (c) 2026 justin-coders*
