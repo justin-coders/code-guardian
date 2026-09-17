@@ -1,7 +1,7 @@
 {
   "name": "@justin-coders/code-guardian",
   "description": "Cross-agent production-readiness enforcer for AI coding tools. Audits codebases against industry standards, generates production-grade code with reference patterns, and works across all major AI coding agents.",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "author": {
     "name": "justin-coders"
   },
