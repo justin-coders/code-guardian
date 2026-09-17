@@ -75,7 +75,7 @@ describe("tools.js", () => {
 
   describe("run", () => {
     it("should execute a simple command", async () => {
-      const result = await tools.run("echo", ["hello"]);
+      const result = await tools.run("node", ["-e", "process.stdout.write('hello')"]);
       assert.ok(result.stdout.includes("hello"));
       assert.equal(result.code, 0);
     });
@@ -91,7 +91,7 @@ describe("tools.js", () => {
       const dir = await createFixture({});
       try {
         const result = await tools.toolProductionReadiness({ cwd: dir });
-        assert.equal(result.version, "2.0.0");
+        assert.equal(result.version, "2.0.3");
         assert.equal(result.score.grade, "F");
         assert.equal(result.score.total, 10);
         // Empty dir passes only "No .env at root", so passed should be 1
@@ -137,6 +137,21 @@ describe("tools.js", () => {
       const result = await tools.toolProductionReadiness({});
       assert.ok(result.score, "Should return score even with no cwd arg");
     });
+
+    it("Y7: should detect pnpm-lock.yaml and npm-shrinkwrap.json as lockfiles", async () => {
+      const dir = await createFixture({
+        "package.json": JSON.stringify({ name: "y7-test" }),
+        "pnpm-lock.yaml": "lockfileVersion: 5.4",
+      });
+      try {
+        const result = await tools.toolProductionReadiness({ cwd: dir });
+        const lockItem = result.items.find((item) => item.check === "Lock file present");
+        assert.ok(lockItem, "Should have lockfile check item");
+        assert.ok(lockItem.passed, "Should detect pnpm-lock.yaml as lockfile");
+      } finally {
+        await cleanup(dir);
+      }
+    });
   });
 
   describe("toolAuditCodebase", () => {
@@ -145,7 +160,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolAuditCodebase({ cwd: dir });
         assert.equal(result.tool, "audit_codebase");
-        assert.equal(result.version, "2.0.0");
+        assert.equal(result.version, "2.0.3");
         assert(Array.isArray(result.reports));
         assert(result.summary);
         assert(typeof result.summary.totalChecks === "number");
@@ -159,6 +174,37 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolAuditCodebase({ cwd: dir });
         assert(Array.isArray(result.guidance));
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("Y6: audit_codebase should detect .test.mjs files as test files", async () => {
+      const dir = await createFixture({
+        "src/app.test.mjs": "test('ok', async () => {})",
+        "package.json": JSON.stringify({ name: "y6-audit" }),
+      });
+      try {
+        const result = await tools.toolAuditCodebase({ cwd: dir });
+        const testReport = result.reports.find((r) => r.area === "testing");
+        assert(testReport, "Should have testing report");
+        assert.ok(testReport.message.includes("Test") || testReport.severity !== "warn",
+          "Should detect .test.mjs as test presence, not warn 'no test config': " + testReport.message);
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("Y7: audit_codebase should detect pnpm-lock.yaml and npm-shrinkwrap.json", async () => {
+      const dir = await createFixture({
+        "package.json": JSON.stringify({ name: "y7-audit" }),
+        "pnpm-lock.yaml": "lockfileVersion: 5.4",
+      });
+      try {
+        const result = await tools.toolAuditCodebase({ cwd: dir });
+        const depReport = result.reports.find((r) => r.area === "dependencies");
+        assert(depReport, "Should have dependencies report");
+        assert.equal(depReport.severity, "info", "Should report info (not warn) when pnpm-lock.yaml present");
       } finally {
         await cleanup(dir);
       }
@@ -224,6 +270,44 @@ describe("tools.js", () => {
     it("should handle empty args", async () => {
       const result = await tools.toolGenerateGitHubWorkflow({});
       assert(result.workflow.length > 0);
+    });
+
+    it("should produce valid YAML with correct step nesting for docker", async () => {
+      const result = await tools.toolGenerateGitHubWorkflow({ stack: "nestjs", deployTarget: "docker" });
+      // - name: and - run: must not be at the same indent level (that creates two list items)
+      const lines = result.workflow.split("\n");
+      const deployLine = lines.findIndex((l) => l.includes("name: Build Docker image"));
+      assert.notEqual(deployLine, -1, "should contain Build Docker image step");
+      // The line after '- name: Build Docker image' should be '        run:' (8 spaces), not '      - run:' (6 spaces)
+      const runLine = lines[deployLine + 1];
+      assert.ok(runLine.startsWith("        run:"), "run: should be indented under name:, not at same level: " + runLine);
+      // Should contain GitHub Actions expression syntax
+      assert.ok(result.workflow.includes("${{ github.sha }}"), "should contain ${{ }} expression");
+      // Check no bare {{ }} without preceding $ (would indicate malformed expression)
+      const bareBraces = result.workflow.match(/(?<!\$)\{\{[^$]/g);
+      assert.ok(!bareBraces || bareBraces.length === 0, "should NOT contain bare {{ }} without dollar sign");
+    });
+
+    it("should produce valid YAML with correct step nesting for k8s", async () => {
+      const result = await tools.toolGenerateGitHubWorkflow({ stack: "nestjs", deployTarget: "k8s" });
+      const lines = result.workflow.split("\n");
+      const deployLine = lines.findIndex((l) => l.includes("name: Deploy to Kubernetes"));
+      assert.notEqual(deployLine, -1, "should contain Deploy to Kubernetes step");
+      const runLine = lines[deployLine + 1];
+      assert.ok(runLine.startsWith("              run:"), "run: should be indented under name: for k8s: " + runLine);
+      // kubectl command should use ${{ }} not bare {{ }}
+      assert.ok(result.workflow.includes("${{ }}"), "should contain ${{ }} expression for k8s context");
+    });
+
+    it("should produce valid YAML with correct step nesting for vercel and aws", async () => {
+      for (const [target, expectedName] of [["vercel", "Deploy to Vercel"], ["aws", "Deploy to AWS"]]) {
+        const result = await tools.toolGenerateGitHubWorkflow({ stack: "nest", deployTarget: target });
+        const lines = result.workflow.split("\n");
+        const deployLine = lines.findIndex((l) => l.includes("name: " + expectedName));
+        assert.notEqual(deployLine, -1, "should contain step for " + target);
+        const runLine = lines[deployLine + 1];
+        assert.ok(runLine.startsWith("          run:") || runLine.startsWith("            run:"), "run: should be indented under name: for " + target + ": " + runLine);
+      }
     });
   });
 
@@ -291,6 +375,16 @@ describe("tools.js", () => {
         await cleanup(dir);
       }
     });
+
+    it("should detect current branch in a git repo (B3 regression)", async () => {
+      // Use the project's own git repo to avoid fixture-git-conflict issues
+      const result = await tools.toolCheckBranch({ cwd: PLUGIN_DIR });
+      // git rev-parse --abbrev-ref HEAD should return the actual current branch
+      assert.ok(result.currentBranch !== null, "should detect current branch (not null)");
+      assert.ok(typeof result.currentBranch === "string", "currentBranch should be a string");
+      assert.ok(result.allBranches.length > 0, "should list branches");
+      assert.ok(Array.isArray(result.patterns), "should return patterns");
+    });
   });
 
   describe("toolCheckTests", () => {
@@ -303,7 +397,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolCheckTests({ cwd: dir });
         assert.equal(result.tool, "check_tests");
-        assert.equal(result.version, "2.0.0");
+        assert.equal(result.version, "2.0.3");
         const testReport = result.reports.find((r) => r.area === "test-files");
         assert(testReport, "Should have test-files report");
         assert.equal(testReport.count, 2, "Should find 2 test files");
@@ -316,6 +410,44 @@ describe("tools.js", () => {
       const result = await tools.toolCheckTests({});
       assert.equal(result.tool, "check_tests");
       assert(Array.isArray(result.reports));
+    });
+
+    it("Y6: should detect .mjs/.cjs test files and jest.config.mjs", async () => {
+      const dir = await createFixture({
+        "src/app.test.mjs": "test('ok', async () => {})",
+        "src/app.test.cjs": "test('ok', async () => {})",
+        "src/app.spec.ts": "test('ok', () => {})",
+        "jest.config.mjs": "export default { preset: 'ts-jest' };",
+        "package.json": JSON.stringify({ name: "y6-test" }),
+      });
+      try {
+        const result = await tools.toolCheckTests({ cwd: dir });
+        const testReport = result.reports.find((r) => r.area === "test-files");
+        assert(testReport, "Should have test-files report");
+        assert.equal(testReport.count, 3, "Should find 3 test files (.mjs, .cjs, .ts)");
+        const configReport = result.reports.find((r) => r.area === "test-config");
+        assert.ok(configReport.message.includes("Jest"), "Should detect jest.config.mjs as Jest: " + configReport.message);
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("Y6: should detect package.json#jest field and node --test script", async () => {
+      const dir = await createFixture({
+        "package.json": JSON.stringify({
+          name: "y6-pkg-jest",
+          jest: { collectCoverageFrom: ["src/**/*.{ts,tsx}"] },
+          scripts: { test: "node --test" },
+        }),
+      });
+      try {
+        const result = await tools.toolCheckTests({ cwd: dir });
+        const configReport = result.reports.find((r) => r.area === "test-config");
+        assert.ok(configReport.message.includes("Jest") || configReport.message.includes("node"),
+          "Should detect package.json#jest or node --test: " + configReport.message);
+      } finally {
+        await cleanup(dir);
+      }
     });
   });
 
@@ -350,7 +482,7 @@ describe("tools.js", () => {
     it("should return lint results with or without installed tools", async () => {
       const result = await tools.toolCheckLinting({ cwd: PLUGIN_DIR });
       assert.equal(result.tool, "check_linting");
-      assert.equal(result.version, "2.0.0");
+      assert.equal(result.version, "2.0.3");
       // The function returns linterVersions as an array
       assert(Array.isArray(result.linterVersions));
       // Each entry should have tool name and installed flag
@@ -369,7 +501,7 @@ describe("tools.js", () => {
       try {
         const result = await tools.toolCheckSecurity({ cwd: dir });
         assert.equal(result.tool, "check_security");
-        assert.equal(result.version, "2.0.0");
+        assert.equal(result.version, "2.0.3");
         assert(Array.isArray(result.reports));
       } finally {
         await cleanup(dir);
@@ -383,11 +515,89 @@ describe("tools.js", () => {
     });
   });
 
+  describe("safeParseJSON", () => {
+    it("should parse valid JSON correctly", () => {
+      const result = tools.safeParseJSON('{"name": "test"}');
+      assert.equal(result.name, "test");
+    });
+
+    it("should return null for invalid JSON with comments", () => {
+      const result = tools.safeParseJSON('{ /* comment */ "name": "test" }');
+      assert.equal(result, null);
+    });
+
+    it("should return fallback for invalid JSON", () => {
+      const result = tools.safeParseJSON('not valid json', { fallback: true });
+      assert.deepEqual(result, { fallback: true });
+    });
+
+    it("should return fallback for null input", () => {
+      const result = tools.safeParseJSON(null, "fallback");
+      assert.equal(result, "fallback");
+    });
+
+    it("should return fallback for empty string", () => {
+      const result = tools.safeParseJSON("", { default: true });
+      assert.deepEqual(result, { default: true });
+    });
+  });
+
+  describe("parseNpmAuditOutput", () => {
+    it("should parse modern npm metadata.vulnerabilities format", () => {
+      const json = JSON.stringify({
+        auditReportVersion: 2,
+        vulnerabilities: {},
+        metadata: { vulnerabilities: { info: 1, low: 2, moderate: 3, high: 4, critical: 5, total: 15 } },
+      });
+      const result = tools.parseNpmAuditOutput(json);
+      assert.equal(result.total, 15);
+      assert.equal(result.info, 1);
+      assert.equal(result.low, 2);
+      assert.equal(result.moderate, 3);
+      assert.equal(result.high, 4);
+      assert.equal(result.critical, 5);
+    });
+
+    it("should parse legacy top-level severity keys", () => {
+      const json = JSON.stringify({ fine: 0, low: 1, moderate: 2, high: 3, critical: 4 });
+      const result = tools.parseNpmAuditOutput(json);
+      assert.equal(result.total, 10);
+      assert.equal(result.info, 0);
+      assert.equal(result.low, 1);
+      assert.equal(result.moderate, 2);
+      assert.equal(result.high, 3);
+      assert.equal(result.critical, 4);
+    });
+
+    it("should strip npm warnings before JSON", () => {
+      const text = 'npm warn config production Use `--omit=dev` instead.\n{"auditReportVersion":2,"vulnerabilities":{},"metadata":{"vulnerabilities":{"low":1}}}\n';
+      const result = tools.parseNpmAuditOutput(text);
+      assert.equal(result.total, 1);
+      assert.equal(result.low, 1);
+    });
+
+    it("should return null for invalid JSON", () => {
+      assert.equal(tools.parseNpmAuditOutput("not json"), null);
+    });
+
+    it("should return null for empty input", () => {
+      assert.equal(tools.parseNpmAuditOutput(""), null);
+    });
+
+    it("should handle missing metadata (legacy format without metadata)", () => {
+      const json = JSON.stringify({ auditReportVersion: 1, vulnerabilities: {}, fine: 0, low: 0, moderate: 0, high: 1, critical: 2 });
+      const result = tools.parseNpmAuditOutput(json);
+      assert.equal(result.total, 3);
+      assert.equal(result.high, 1);
+      assert.equal(result.critical, 2);
+    });
+  });
+
   describe("toolGenerateSecurityChecklist", () => {
     it("should return a security checklist", async () => {
       const result = await tools.toolGenerateSecurityChecklist({});
       assert.equal(result.tool, "generate_security_checklist");
-      assert.equal(result.version, "2.0.0");
+      assert.equal(result.version, "2.0.3");
       assert(Array.isArray(result.checklist));
       assert(result.checklist.length > 0, "Should have checklist items");
     });

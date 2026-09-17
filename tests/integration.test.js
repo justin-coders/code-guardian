@@ -120,7 +120,7 @@ describe("code-guardian v2 integration", () => {
       assert(res.result);
       assert.equal(res.result.protocolVersion, "2024-11-05");
       assert.equal(res.result.serverInfo.name, "code-guardian");
-      assert.equal(res.result.serverInfo.version, "2.0.0");
+      assert.equal(res.result.serverInfo.version, "2.0.3");
     });
 
     it("should list all 15 tools", async () => {
@@ -158,7 +158,7 @@ describe("code-guardian v2 integration", () => {
         assert(res.result);
         const data = JSON.parse(res.result.content[0].text);
         assert.equal(data.tool, "audit_codebase");
-        assert.equal(data.version, "2.0.0");
+        assert.equal(data.version, "2.0.3");
         assert(Array.isArray(data.reports));
         assert(data.summary);
         assert(typeof data.summary.totalChecks === "number");
@@ -268,6 +268,22 @@ describe("code-guardian v2 integration", () => {
         const data = JSON.parse(res.result.content[0].text);
         assert(Array.isArray(data.reports));
         assert(data.reports.some((r) => r.area === "directory-structure"));
+      } finally {
+        await cleanup(dir);
+      }
+    });
+
+    it("should detect src and test dirs on Windows with backslash paths", async () => {
+      const dir = await createProductionFixture();
+      try {
+        const res = await sendRequest(proc, 50, "tools/call", {
+          name: "check_architecture",
+          arguments: { cwd: dir, depth: 2 },
+        });
+        const data = JSON.parse(res.result.content[0].text);
+        const structureReport = data.reports.find((r) => r.area === "structure-convention");
+        assert.ok(structureReport, "should have structure-convention report");
+        assert.ok(structureReport.hasSrc, "should detect src/ directory (cross-platform path handling)");
       } finally {
         await cleanup(dir);
       }

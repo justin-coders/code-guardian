@@ -12,17 +12,23 @@ build/
 *.swp
 *.swo
 *.sublime-*
-
+*freebuff
 # OS
 .DS_Store
 Thumbs.db
 
 # Claude Code runtime
 .claude/
-.claude-plugin/
 .in_use/
 
 # Tests
 coverage/
 .nyc_output/
 .test-tmp/
+
+# MCP config (contains local paths)
+.mcp.json
+
+#AUDITS
+audit_codebase/
+AUDIT_REPORT.md

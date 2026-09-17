@@ -4,9 +4,8 @@
       "type": "stdio",
       "command": "node",
       "args": ["src/stdio-server.js"],
-      "cwd": "c:\\Users\\Aaqib\\Desktop\\Code Playground\\code-guardian",
+      "cwd": "${workspaceFolder}",
       "env": {
-        "PLUGIN_DIR": "c:\\Users\\Aaqib\\Desktop\\Code Playground\\code-guardian",
         "CODE_GUARDIAN_TRANSPORT": "stdio"
       }
     },

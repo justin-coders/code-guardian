@@ -5,26 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Released] - 2026-09-13
+## [2.0.3] — 2026-09-17
 
-### Added
-- 15 MCP tools covering full production-readiness workflow
-- Industry-standard pattern library (10 categories)
-- Production code templates for NestJS, Express, Fastify
-- Cross-agent support: Claude Code, Cursor, Windsurf, Devin, Codex, Gemini, Antigravity
-- Remediation guidance on every audit finding
-- Defensive args handling (empty args default gracefully)
-- Comprehensive test suite (unit + integration)
-- MIT License
-- Full documentation: README, INSTALLATION, CONTRIBUTING, CHANGELOG
+### Fixed
+- Removed dead `PLUGIN_DIR` constant and orphaned imports from `src/tools.js`
+- Removed unused `depth` variable in `toolAuditCodebase`
+- Added `express` and `fastify` cases to `getEssentialPackages` with meaningful production dependency arrays
+- Replaced hardcoded Windows path in `.mcp.json` with `${workspaceFolder}` placeholder
+- Added `.mcp.json` to `.gitignore` (contains local paths); removed `.claude-plugin/` so `plugin.json` stays tracked
+- Softened agent support claims in README for Devin, Codex, Gemini, Antigravity to reflect reality
+- Rewrote README install section — removed ZIP upload fiction and `v1/` cache references
+- Updated all version assertions in tests from `2.0.2` to `2.0.3`
 
 ### Changed
-- Bumped version from 2.0.1 to 2.0.2
-- All tool responses now include `version` field
-- `production_readiness` now includes per-item `guidance` field
-- `audit_codebase` now includes `guidance` array for actionable fixes
-- Added Gemini agent support (replaced incorrect "Emni")
+- Bumped version from `2.0.2` to `2.0.3`
+- Fixed `.gitignore` to properly track `plugin.json` while ignoring `.mcp.json`
 
+### Docs
+- Created `UPCOMING_FEATURES.md` tracking all future work (Streamable HTTP, secret scanning, write mode, non-JS stacks, monolith refactor, score weights)
+- Updated `INSTALLATION.md` — removed stale ZIP upload and `v1/` cache instructions; added npm link method
+
+---
 
 ## [2.0.2] — 2026-09-13
 
@@ -34,24 +35,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Updated the plugin manifest to include `version` field
 
+---
 
 ## [2.0.1] — 2026-09-13
-
 
 ### Added
 - Added `check_code_quality` tool to check code quality metrics
 
-
-### 🐛 Fixes & Improvements
-* **Windows Support:** Improved cross-platform file path resolution to ensure seamless operation on Windows environments.
-* **Test & Execution Stability:** Enhanced command execution resilience and timeouts, preventing false-positive failures during longer-running project checks.
-* **Dual Transport Compatibility:** Resolved an issue where JSON-RPC responses were missing protocol headers, ensuring smooth server communication across standard I/O connections without unexpected crashes.
+### Fixed
+- **Windows Support:** Improved cross-platform file path resolution to ensure seamless operation on Windows environments.
+- **Test & Execution Stability:** Enhanced command execution resilience and timeouts, preventing false-positive failures during longer-running project checks.
+- **Dual Transport Compatibility:** Resolved an issue where JSON-RPC responses were missing protocol headers, ensuring smooth server communication across standard I/O connections without unexpected crashes.
 
 ---
-
-### ✅ Compatibility & Reliability
-* **Cross-Platform Verified:** Validated full feature functionality and suite pass rates across Linux, macOS, and Windows.
-
 
 ## [1.0.0] — 2026-09-12
 

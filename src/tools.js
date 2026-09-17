@@ -7,17 +7,36 @@
 
 import { spawn } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { createRequire } from "node:module";
 
-const PLUGIN_DIR = process.env.PLUGIN_DIR || dirname(fileURLToPath(import.meta.url));
+const _require = createRequire(import.meta.url);
+export const VERSION = _require("../package.json").version;
+
+/** Safely parse JSON text, returning fallback on any error (handles comments, trailing commas, etc.). */
+export function safeParseJSON(text, fallback = null) {
+  if (text == null) return fallback;
+  try { return JSON.parse(text); } catch { return fallback; }
+}
 
 // ─── IO helpers ─────────────────────────────────────────────────────────────
 
 export function run(cmd, args = [], cwd = process.cwd(), timeoutMs = 30000) {
   return new Promise((resolve) => {
     let timedOut = false;
-    const proc = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], shell: true, windowsHide: true });
+    // Validate cwd is an existing directory
+    if (cwd && typeof cwd === "string") {
+      try {
+        const { existsSync } = require("node:fs");
+        if (!existsSync(cwd)) {
+          resolve({ stdout: "", stderr: `cwd does not exist: ${cwd}`, code: null, error: "Invalid cwd" });
+          return;
+        }
+      } catch {
+        // ignore fs check errors
+      }
+    }
+    const proc = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
     let out = "",
       err = "";
     proc.stdout.on("data", (d) => (out += d.toString()));
@@ -25,6 +44,10 @@ export function run(cmd, args = [], cwd = process.cwd(), timeoutMs = 30000) {
     const timer = setTimeout(() => {
       timedOut = true;
       proc.kill("SIGTERM");
+      // Escalate to SIGKILL after 5 seconds if process is still alive
+      setTimeout(() => {
+        try { proc.kill("SIGKILL"); } catch {}
+      }, 5000);
     }, timeoutMs);
     proc.on("close", (code) => {
       clearTimeout(timer);
@@ -63,25 +86,26 @@ export async function listDirs(dir, max = 100) {
   }
 }
 
-/** Recursively find files matching a predicate, cross-platform. */
+/** Recursively find files matching a predicate, cross-platform. Returns { results, truncated } when 500 cap is hit. */
 async function findFilesRecursive(dir, predicate, maxDepth = 10, currentDepth = 0, results = []) {
-  if (currentDepth > maxDepth || results.length >= 500) return results;
+  if (currentDepth > maxDepth || results.length >= 500) return { results, truncated: results.length >= 500 };
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
   } catch {
-    return results;
+    return { results, truncated: false };
   }
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory() && !["node_modules", ".git", "dist", "build"].includes(entry.name)) {
-      await findFilesRecursive(fullPath, predicate, maxDepth, currentDepth + 1, results);
+      const sub = await findFilesRecursive(fullPath, predicate, maxDepth, currentDepth + 1, results);
+      if (sub.truncated) return { results, truncated: true };
     } else if (entry.isFile() && predicate(entry.name)) {
       results.push(fullPath);
     }
-    if (results.length >= 500) break;
+    if (results.length >= 500) return { results, truncated: true };
   }
-  return results;
+  return { results, truncated: results.length >= 500 };
 }
 
 /** Recursively find directories up to a given depth, cross-platform. */
@@ -372,11 +396,10 @@ const AGENT_CONFIGS = {
 
 export async function toolAuditCodebase(args) {
   const cwd = (args.cwd || process.cwd()).toString();
-  const depth = Number(args.depth || 3);
   const reports = [];
 
   const pkg = await tryRead(cwd + "/package.json");
-  const pkgData = pkg ? JSON.parse(pkg) : null;
+  const pkgData = safeParseJSON(pkg, null);
   reports.push({
     area: "package.json",
     severity: pkgData ? "info" : "warn",
@@ -401,7 +424,7 @@ export async function toolAuditCodebase(args) {
 
   const eslintFiles = await listFiles(cwd);
   const hasEslint = eslintFiles.some(
-    (f) => f.startsWith(".eslintrc") || f === "eslint.config.js" || f === "eslint.config.mjs" || f === "eslint.config.ts",
+    (f) => f.startsWith(".eslintrc") || f === "eslint.config.js" || f === "eslint.config.mjs" || f === "eslint.config.cjs" || f === "eslint.config.ts",
   );
   reports.push({
     area: "linting",
@@ -410,7 +433,8 @@ export async function toolAuditCodebase(args) {
   });
 
   const tsconfig = await tryRead(cwd + "/tsconfig.json");
-  const tsStrict = tsconfig ? JSON.parse(tsconfig).compilerOptions?.strict : false;
+  const tsconfigData = safeParseJSON(tsconfig);
+  const tsStrict = tsconfigData?.compilerOptions?.strict ?? false;
   reports.push({
     area: "typescript",
     severity: tsStrict ? "info" : "warn",
@@ -422,8 +446,14 @@ export async function toolAuditCodebase(args) {
   const hasTestConfig =
     (await tryRead(cwd + "/jest.config.js")) !== null ||
     (await tryRead(cwd + "/jest.config.ts")) !== null ||
-    (await tryRead(cwd + "/vitest.config.ts")) !== null;
-  const hasTests = eslintFiles.some((f) => f.endsWith(".test.ts") || f.endsWith(".test.tsx") || f.endsWith(".spec.ts"));
+    (await tryRead(cwd + "/jest.config.mjs")) !== null ||
+    (await tryRead(cwd + "/vitest.config.ts")) !== null ||
+    (await tryRead(cwd + "/vitest.config.mjs")) !== null;
+  const pkgJson = await tryRead(cwd + "/package.json");
+  const hasPackageJest = pkgJson ? (() => { try { return !!JSON.parse(pkgJson).jest; } catch { return false; } })() : false;
+  const hasNodeTest = pkgJson ? (() => { try { const p = JSON.parse(pkgJson); return !!(p.scripts && p.scripts.test && p.scripts.test.includes("node --test")); } catch { return false; } })() : false;
+  const { results: allFilesForAudit, truncated: auditTruncated } = await findFilesRecursive(cwd, () => true);
+  const hasTests = allFilesForAudit.some((f) => f.endsWith(".test.ts") || f.endsWith(".test.tsx") || f.endsWith(".spec.ts") || f.endsWith(".test.mjs") || f.endsWith(".test.cjs") || f.endsWith(".spec.mjs") || f.endsWith(".spec.cjs"));
   reports.push({
     area: "testing",
     severity: hasTestConfig || hasTests ? "info" : "warn",
@@ -444,7 +474,10 @@ export async function toolAuditCodebase(args) {
   const lockfile =
     (await tryRead(cwd + "/package-lock.json")) !== null ||
     (await tryRead(cwd + "/yarn.lock")) !== null ||
-    (await tryRead(cwd + "/bun.lockb")) !== null;
+    (await tryRead(cwd + "/bun.lockb")) !== null ||
+    (await tryRead(cwd + "/pnpm-lock.yaml")) !== null ||
+    (await tryRead(cwd + "/bun.lock")) !== null ||
+    (await tryRead(cwd + "/npm-shrinkwrap.json")) !== null;
   reports.push({
     area: "dependencies",
     severity: lockfile ? "info" : "warn",
@@ -453,19 +486,23 @@ export async function toolAuditCodebase(args) {
 
   let lintResult = null;
   if (hasEslint) {
-    const lint = await run("npx", ["eslint", "--max-warnings=0", "."], cwd);
+    console.error("[code-guardian] audit_codebase: running ESLint...");
+    const lint = await run("npx", ["--no-install", "eslint", "--max-warnings=0", "."], cwd);
+    console.error("[code-guardian] audit_codebase: ESLint complete.");
     lintResult = lint.code === 0 ? { ok: true, message: "ESLint passed with no errors." } : { ok: false, message: lint.stdout || lint.stderr };
   }
 
   let typeResult = null;
   if (tsconfig) {
-    const tsc = await run("npx", ["tsc", "--noEmit"], cwd);
+    console.error("[code-guardian] audit_codebase: running TypeScript type-check...");
+    const tsc = await run("npx", ["--no-install", "tsc", "--noEmit"], cwd);
+    console.error("[code-guardian] audit_codebase: TypeScript type-check complete.");
     typeResult = tsc.code === 0 ? { ok: true, message: "TypeScript type-check passed." } : { ok: false, message: tsc.stdout || tsc.stderr };
   }
 
   return {
     tool: "audit_codebase",
-    version: "2.0.0",
+    version: VERSION,
     reports,
     lint: lintResult,
     typescript: typeResult,
@@ -491,17 +528,32 @@ export async function toolAuditCodebase(args) {
 export async function toolCheckBranch(args) {
   const cwd = (args.cwd || process.cwd()).toString();
   try {
-    const { stdout } = await run("git", ["branch", "--list", "--format=%(refname:short)"], cwd);
-    const branches = stdout.trim().split("\n").filter(Boolean);
-    const current = branches.find((b) => b.startsWith("*"));
-    const currentBranch = current ? current.replace("* ", "").trim() : null;
+    // Get current branch; handles detached HEAD via "detached" sentinel
+    let currentBranch;
+    try {
+      const { stdout: branchOut } = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], cwd);
+      currentBranch = branchOut.trim() || null;
+      // git returns "detached" when in detached HEAD state
+      if (currentBranch === "detached") currentBranch = null;
+    } catch {
+      currentBranch = null;
+    }
+
+    // List all branches (without format to preserve * marker)
+    const { stdout } = await run("git", ["branch", "--list"], cwd);
+    const branches = stdout
+      .trim()
+      .split("\n")
+      .filter(Boolean)
+      .map((b) => b.replace(/^\*?\s*/, "").trim())
+      .filter(Boolean);
 
     const patterns = [
       { name: "feature", regex: /^feature\//, description: "New feature development" },
       { name: "bugfix", regex: /^bugfix\//, description: "Bug fixes" },
       { name: "hotfix", regex: /^hotfix\//, description: "Urgent production fixes" },
       { name: "release", regex: /^release\//, description: "Release preparation" },
-      { name: "main", regex: /^(main|master)$/, description: "Production branch" },
+      { name: "main", regex: /^(main|master|dev)$/, description: "Production/development branch" },
       { name: "develop", regex: /^develop$/, description: "Integration branch" },
     ];
 
@@ -519,7 +571,7 @@ export async function toolCheckBranch(args) {
 
     return {
       tool: "check_branch",
-      version: "2.0.0",
+      version: VERSION,
       currentBranch,
       allBranches: branches,
       patterns,
@@ -528,7 +580,7 @@ export async function toolCheckBranch(args) {
       guidance: violations.map((v) => ({ ...v, industryReference: "Git Flow / Trunk-Based Development — Atlassian Git Tutorial" })),
     };
   } catch (err) {
-    return { tool: "check_branch", version: "2.0.0", error: err.message };
+    return { tool: "check_branch", version: VERSION, error: err.message };
   }
 }
 
@@ -539,32 +591,38 @@ export async function toolCheckTests(args) {
   const reports = [];
 
   try {
-    const testExtensions = [".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx"];
-    const testFiles = await findFilesRecursive(cwd, (name) => testExtensions.some((ext) => name.endsWith(ext)));
-    reports.push({ area: "test-files", count: testFiles.length, files: testFiles.slice(0, 20), message: "Found " + testFiles.length + " test/spec file(s)." });
+    const testExtensions = [".test.ts", ".test.tsx", ".test.js", ".test.jsx", ".test.mjs", ".test.cjs", ".spec.ts", ".spec.tsx", ".spec.js", ".spec.jsx", ".spec.mjs", ".spec.cjs"];
+    const { results: testFiles, truncated: testTruncated } = await findFilesRecursive(cwd, (name) => testExtensions.some((ext) => name.endsWith(ext)));
+    reports.push({ area: "test-files", count: testFiles.length, files: testFiles.slice(0, 20), truncated: testTruncated, message: "Found " + testFiles.length + " test/spec file(s)." });
 
-    const hasJest = (await tryRead(cwd + "/jest.config.js")) !== null || (await tryRead(cwd + "/jest.config.ts")) !== null;
-    const hasVitest = (await tryRead(cwd + "/vitest.config.ts")) !== null || (await tryRead(cwd + "/vitest.config.tsx")) !== null;
+    const hasJest = (await tryRead(cwd + "/jest.config.js")) !== null || (await tryRead(cwd + "/jest.config.ts")) !== null || (await tryRead(cwd + "/jest.config.mjs")) !== null;
+    const hasVitest = (await tryRead(cwd + "/vitest.config.ts")) !== null || (await tryRead(cwd + "/vitest.config.tsx")) !== null || (await tryRead(cwd + "/vitest.config.mjs")) !== null;
+    const pkgForTests = await tryRead(cwd + "/package.json");
+    let hasPkgJest = false;
+    if (pkgForTests) { try { if (JSON.parse(pkgForTests).jest) hasPkgJest = true; } catch { /* ignore */ } }
+    let hasNodeTest = false;
+    if (pkgForTests) { try { const p = JSON.parse(pkgForTests); if (p.scripts && p.scripts.test && p.scripts.test.includes("node --test")) hasNodeTest = true; } catch { /* ignore */ } }
+    const testFramework = hasJest || hasPkgJest ? "jest" : hasVitest ? "vitest" : hasNodeTest ? "node --test" : null;
     reports.push({
       area: "test-config",
-      message: hasJest ? "Jest config found." : hasVitest ? "Vitest config found." : "No test framework config detected.",
+      message: testFramework ? (testFramework === "node --test" ? "Node built-in test runner detected in scripts." : (testFramework === "jest" ? "Jest config found." : "Vitest config found.")) : "No test framework config detected.",
       guidance: "Add coverage thresholds: collectCoverageFrom: ['src/**/*.{ts,tsx}'], coverageThreshold: { global: { branches: 80, functions: 80, lines: 80, statements: 80 } }",
     });
 
     let testRun = null;
     if (hasJest) {
-      const r = await run("npx", ["jest", "--listTests", "--passWithNoTests"], cwd);
+      const r = await run("npx", ["--no-install", "jest", "--listTests", "--passWithNoTests"], cwd);
       testRun = { ok: r.code === 0, output: (r.stdout || r.stderr).slice(0, 500) };
     } else if (hasVitest) {
-      const r = await run("npx", ["vitest", "run", "--reporter=verbose"], cwd);
+      const r = await run("npx", ["--no-install", "vitest", "run", "--reporter=verbose"], cwd);
       testRun = { ok: r.code === 0, output: (r.stdout || r.stderr).slice(0, 500) };
     }
 
     if (testRun) reports.push({ area: "test-execution", passed: testRun.ok, output: testRun.output });
 
-    return { tool: "check_tests", version: "2.0.0", reports, passed: !reports.some((r) => r.area === "test-execution" && !r.passed) };
+    return { tool: "check_tests", version: VERSION, reports, passed: !reports.some((r) => r.area === "test-execution" && !r.passed) };
   } catch (err) {
-    return { tool: "check_tests", version: "2.0.0", error: err.message, reports };
+    return { tool: "check_tests", version: VERSION, error: err.message, reports };
   }
 }
 
@@ -587,16 +645,26 @@ export async function toolCheckCICD(args) {
   ];
 
   for (const { path: p, name } of checks) {
-    const exists = (await tryRead(cwd + "/" + p)) !== null;
+    const exists = (await tryRead(join(cwd, p))) !== null;
     reports.push({
       name,
       present: exists,
       severity: exists ? "info" : "warn",
-      guidance: exists ? null : "Add " + name + ": See industry-standard template at references/ci/" + p.replace("/", "_") + ".md",
+      guidance: exists ? null : "Add " + name + ": See industry-standard CI/CD template documentation.",
     });
   }
 
-  const pkg = JSON.parse((await tryRead(cwd + "/package.json")) || "{}");
+  const anyCiPresent = reports.some((r) => r.present && r.name !== "package-scripts");
+  reports.push({
+    name: "ci-overall",
+    present: anyCiPresent,
+    severity: anyCiPresent ? "info" : "warn",
+    guidance: anyCiPresent
+      ? null
+      : "No CI/CD pipeline detected. Add at least one: GitHub Actions (.github/workflows/ci.yml), GitLab CI (.gitlab-ci.yml), or Jenkins (Jenkinsfile).",
+  });
+
+  const pkg = safeParseJSON(await tryRead(cwd + "/package.json"), {});
   const hasBuild = !!pkg.scripts?.build;
   const hasTest = !!pkg.scripts?.test;
   const hasLint = !!pkg.scripts?.lint;
@@ -611,7 +679,7 @@ export async function toolCheckCICD(args) {
       : 'Add build, test, and lint scripts to package.json. Example: "build": "tsc --noEmit", "test": "jest --coverage", "lint": "eslint . --max-warnings=0"',
   });
 
-  return { tool: "check_cicd", version: "2.0.0", reports };
+  return { tool: "check_cicd", version: VERSION, reports };
 }
 
 // ─── Tool: check_linting ────────────────────────────────────────────────────
@@ -620,15 +688,17 @@ export async function toolCheckLinting(args) {
   const cwd = (args.cwd || process.cwd()).toString();
 
   const lintCmds = [
-    { name: "eslint", cmd: ["npx", "eslint", "--version"] },
-    { name: "prettier", cmd: ["npx", "prettier", "--version"] },
-    { name: "biome", cmd: ["npx", "@biomejs/biome", "--version"] },
-    { name: "oxlint", cmd: ["npx", "oxlint", "--version"] },
-    { name: "stylelint", cmd: ["npx", "stylelint", "--version"] },
+    { name: "eslint", cmd: ["npx", "--no-install", "eslint", "--version"] },
+    { name: "prettier", cmd: ["npx", "--no-install", "prettier", "--version"] },
+    { name: "biome", cmd: ["npx", "--no-install", "@biomejs/biome", "--version"] },
+    { name: "oxlint", cmd: ["npx", "--no-install", "oxlint", "--version"] },
+    { name: "stylelint", cmd: ["npx", "--no-install", "stylelint", "--version"] },
   ];
 
+  console.error("[code-guardian] check_linting: scanning for linters...");
   const results = [];
   for (const { name, cmd } of lintCmds) {
+    console.error("[code-guardian] check_linting: checking " + name + "...");
     const r = await run(cmd[0], cmd.slice(1), cwd);
     if (r.code === 0) {
       results.push({ tool: name, installed: true, version: r.stdout.trim() });
@@ -640,14 +710,38 @@ export async function toolCheckLinting(args) {
   let eslintResults = null;
   const eslintInstalled = results.find((r) => r.tool === "eslint" && r.installed);
   if (eslintInstalled) {
-    const r = await run("npx", ["eslint", ".", "--format", "compact"], cwd);
+    console.error("[code-guardian] check_linting: running ESLint check...");
+    const r = await run("npx", ["--no-install", "eslint", ".", "--format", "compact"], cwd);
+    console.error("[code-guardian] check_linting: ESLint check complete.");
     eslintResults = { passed: r.code === 0, output: (r.stdout || r.stderr).slice(0, 2000) };
   }
 
-  return { tool: "check_linting", version: "2.0.0", linterVersions: results, eslint: eslintResults };
+  return { tool: "check_linting", version: VERSION, linterVersions: results, eslint: eslintResults };
 }
 
 // ─── Tool: check_security ───────────────────────────────────────────────────
+
+/** Parse npm audit --json output, handling both modern (metadata.vulnerabilities) and legacy formats. */
+export function parseNpmAuditOutput(stdout) {
+  let text = stdout.trim();
+  const jsonStart = text.search(/^\{/m);
+  if (jsonStart > 0) text = text.slice(jsonStart);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed) return null;
+  const metaVulns = parsed.metadata?.vulnerabilities || {};
+  const info = metaVulns.info || parsed.info || 0;
+  const low = metaVulns.low || parsed.low || 0;
+  const moderate = metaVulns.moderate || parsed.moderate || 0;
+  const high = metaVulns.high || parsed.high || 0;
+  const critical = metaVulns.critical || parsed.critical || 0;
+  const total = info + low + moderate + high + critical;
+  return { info, low, moderate, high, critical, total };
+}
 
 export async function toolCheckSecurity(args) {
   const cwd = (args.cwd || process.cwd()).toString();
@@ -671,33 +765,26 @@ export async function toolCheckSecurity(args) {
 
   const pkg = await tryRead(cwd + "/package.json");
   if (pkg) {
-    const audit = await run("npm", ["audit", "--production"], cwd);
-    const parsed = (() => {
-      try {
-        return JSON.parse(audit.stdout);
-      } catch {
-        return null;
-      }
-    })();
+    const audit = await run("npm", ["audit", "--omit=dev", "--json"], cwd);
+    const parsed = parseNpmAuditOutput(audit.stdout);
     if (parsed) {
-      const totalVulns = (parsed.fine || 0) + (parsed.low || 0) + (parsed.moderate || 0) + (parsed.high || 0) + (parsed.critical || 0);
       reports.push({
         area: "dependency-security",
-        vulnerabilities: totalVulns,
-        fine: parsed.fine || 0,
-        low: parsed.low || 0,
-        moderate: parsed.moderate || 0,
-        high: parsed.high || 0,
-        critical: parsed.critical || 0,
-        severity: totalVulns === 0 ? "info" : totalVulns <= 5 ? "warn" : "error",
-        guidance: totalVulns > 0 ? "Fix " + totalVulns + " vulnerabilities: npm audit fix (low), manual review required for high/critical." : null,
+        vulnerabilities: parsed.total,
+        info: parsed.info,
+        low: parsed.low,
+        moderate: parsed.moderate,
+        high: parsed.high,
+        critical: parsed.critical,
+        severity: parsed.total === 0 ? "info" : parsed.total <= 5 ? "warn" : "error",
+        guidance: parsed.total > 0 ? "Fix " + parsed.total + " vulnerabilities: npm audit fix (low), manual review required for high/critical." : null,
       });
     } else {
       reports.push({ area: "dependency-security", rawOutput: audit.stdout.slice(0, 500) });
     }
   }
 
-  return { tool: "check_security", version: "2.0.0", reports };
+  return { tool: "check_security", version: VERSION, reports };
 }
 
 // ─── Tool: check_architecture ───────────────────────────────────────────────
@@ -711,10 +798,10 @@ export async function toolCheckArchitecture(args) {
     const dirs = await findDirsRecursive(cwd, depth);
     reports.push({ area: "directory-structure", directories: dirs.slice(0, 30) });
 
-    const hasSrc = dirs.some((d) => d.includes("/src") || d === "./src");
-    const hasTests = dirs.some((d) => d.includes("test") || d.includes("spec") || d.includes("__tests__"));
-    const hasDist = dirs.some((d) => d.includes("dist") || d.includes("build"));
-    const hasDocs = dirs.some((d) => d.includes("docs") || d === "./docs");
+    const hasSrc = dirs.some((d) => d.replace(/\\/g, "/").includes("/src") || d.replace(/\\/g, "/") === "./src");
+    const hasTests = dirs.some((d) => d.replace(/\\/g, "/").includes("/test") || d.replace(/\\/g, "/").includes("/spec") || d.replace(/\\/g, "/").includes("/__tests__"));
+    const hasDist = dirs.some((d) => d.replace(/\\/g, "/").includes("/dist") || d.replace(/\\/g, "/").includes("/build"));
+    const hasDocs = dirs.some((d) => d.replace(/\\/g, "/").includes("/docs") || d.replace(/\\/g, "/") === "./docs");
 
     const structureReport = {
       area: "structure-convention",
@@ -733,7 +820,7 @@ export async function toolCheckArchitecture(args) {
   }
 
   const workspacePkg = await tryRead(cwd + "/package.json");
-  const hasWorkspaces = workspacePkg ? JSON.parse(workspacePkg).workspaces !== undefined : false;
+  const hasWorkspaces = (safeParseJSON(workspacePkg, {})?.workspaces) !== undefined;
   const hasNx = (await tryRead(cwd + "/nx.json")) !== null;
   const hasLerna = (await tryRead(cwd + "/lerna.json")) !== null;
   reports.push({
@@ -744,7 +831,7 @@ export async function toolCheckArchitecture(args) {
     guidance: hasWorkspaces ? null : "For multi-package projects, consider Turborepo or Nx for build caching and task orchestration.",
   });
 
-  return { tool: "check_architecture", version: "2.0.0", reports };
+  return { tool: "check_architecture", version: VERSION, reports };
 }
 
 // ─── Tool: production_readiness ─────────────────────────────────────────────
@@ -758,14 +845,17 @@ export async function toolProductionReadiness(args) {
   add(
     "package.json exists",
     !!pkg,
-    pkg ? "name: " + JSON.parse(pkg).name : "missing",
+    pkg ? "name: " + (safeParseJSON(pkg)?.name ?? "unknown") : "missing",
     "Add package.json with name, version, scripts (build, test, lint, start), and engines (node >= 18).",
   );
 
   const hasLock =
     (await tryRead(cwd + "/package-lock.json")) !== null ||
     (await tryRead(cwd + "/yarn.lock")) !== null ||
-    (await tryRead(cwd + "/bun.lockb")) !== null;
+    (await tryRead(cwd + "/bun.lockb")) !== null ||
+    (await tryRead(cwd + "/pnpm-lock.yaml")) !== null ||
+    (await tryRead(cwd + "/bun.lock")) !== null ||
+    (await tryRead(cwd + "/npm-shrinkwrap.json")) !== null;
   add("Lock file present", hasLock, hasLock ? "dependency versions pinned" : "dependencies not pinned", "Run npm install to generate package-lock.json for reproducible builds.");
 
   const readme = await tryRead(cwd + "/README.md");
@@ -779,7 +869,7 @@ export async function toolProductionReadiness(args) {
   add("ESLint configured", hasEslint, hasEslint ? "code quality enforced" : "no linter", "Add eslint.config.js with strict mode, no-unused-vars, prefer-const, no-console in prod.");
 
   const tsconfig = await tryRead(cwd + "/tsconfig.json");
-  const strict = tsconfig ? JSON.parse(tsconfig).compilerOptions?.strict : false;
+  const strict = (safeParseJSON(tsconfig)?.compilerOptions?.strict) ?? false;
   add(
     "TypeScript strict mode",
     !!strict,
@@ -787,7 +877,8 @@ export async function toolProductionReadiness(args) {
     "Enable strict: true, noUncheckedIndexedAccess: true, exactOptionalPropertyTypes: true in tsconfig.json.",
   );
 
-  const hasTests = eslintFiles.some((f) => f.endsWith(".test.ts") || f.endsWith(".spec.ts"));
+  const { results: testFilesProd } = await findFilesRecursive(cwd, (name) => name.endsWith(".test.ts") || name.endsWith(".spec.ts") || name.endsWith(".test.mjs") || name.endsWith(".test.cjs") || name.endsWith(".spec.mjs") || name.endsWith(".spec.cjs"));
+  const hasTests = testFilesProd.length > 0;
   add("Test files present", hasTests, hasTests ? "tests exist" : "no tests found", "Add tests with 80%+ coverage. Use Arrange-Act-Assert pattern. Mock external dependencies.");
 
   const hasCI = (await tryRead(cwd + "/.github/workflows/ci.yml")) !== null;
@@ -796,7 +887,7 @@ export async function toolProductionReadiness(args) {
   const hasEnv = eslintFiles.some((f) => f === ".env" || f.startsWith(".env."));
   add("No .env at root", !hasEnv, hasEnv ? "WARNING: .env files should not be committed" : "clean", hasEnv ? "Add .env to .gitignore immediately. Use dotenv-safe for env validation." : null);
 
-  const pkgData = pkg ? JSON.parse(pkg) : {};
+  const pkgData = safeParseJSON(pkg, {});
   add("Build script defined", !!pkgData.scripts?.build, pkgData.scripts?.build ? pkgData.scripts.build : "missing", 'Add "build": "tsc --noEmit" or framework-specific build command to package.json scripts.');
 
   const total = items.length;
@@ -806,7 +897,7 @@ export async function toolProductionReadiness(args) {
 
   return {
     tool: "production_readiness",
-    version: "2.0.0",
+    version: VERSION,
     score: { total, passed, percentage: pct, grade },
     items,
     gradeExplanation: {
@@ -828,7 +919,7 @@ export async function toolGenerateProductionCode(args = {}) {
   if (!pattern) {
     return {
       tool: "generate_production_code",
-      version: "2.0.0",
+      version: VERSION,
       error: "Unknown feature: " + feature + ". Available: " + Object.keys(INDUSTRY_PATTERNS).join(", "),
     };
   }
@@ -840,7 +931,7 @@ export async function toolGenerateProductionCode(args = {}) {
 
   return {
     tool: "generate_production_code",
-    version: "2.0.0",
+    version: VERSION,
     feature,
     pattern: pattern.name,
     industryStandard: pattern.description,
@@ -856,11 +947,11 @@ export async function toolGetIndustryPatterns(args = {}) {
   const { category } = args;
   if (category && INDUSTRY_PATTERNS[category]) {
     const p = INDUSTRY_PATTERNS[category];
-    return { tool: "get_industry_patterns", version: "2.0.0", category, pattern: p };
+    return { tool: "get_industry_patterns", version: VERSION, category, pattern: p };
   }
   return {
     tool: "get_industry_patterns",
-    version: "2.0.0",
+    version: VERSION,
     patterns: Object.entries(INDUSTRY_PATTERNS).map(([key, p]) => ({ key, name: p.name, description: p.description })),
   };
 }
@@ -875,7 +966,7 @@ export async function toolGenerateSecurityChecklist(args = {}) {
 
   return {
     tool: "generate_security_checklist",
-    version: "2.0.0",
+    version: VERSION,
     stack,
     checklist: security.checklist,
     currentFindings: report.reports,
@@ -887,7 +978,7 @@ export async function toolGenerateSecurityChecklist(args = {}) {
 
 export async function toolGenerateGitHubWorkflow(args = {}) {
   const { stack, deployTarget = "docker", name = "ci" } = args;
-  return { tool: "generate_github_workflow", version: "2.0.0", workflow: generateGitHubWorkflow(stack, deployTarget, name), filename: ".github/workflows/" + name + ".yml" };
+  return { tool: "generate_github_workflow", version: VERSION, workflow: generateGitHubWorkflow(stack, deployTarget, name), filename: ".github/workflows/" + name + ".yml" };
 }
 
 // ─── Tool: detect_agent ─────────────────────────────────────────────────────
@@ -905,7 +996,7 @@ export async function toolDetectAgent(args = {}) {
   const claudeMd = await tryRead(cwd + "/CLAUDE.md") || (await tryRead(cwd + "/AGENTS.md"));
   if (claudeMd) agents.push({ name: "claude-code", detected: true, configPresent: true });
 
-  return { tool: "detect_agent", version: "2.0.0", detectedAgents: agents, allSupportedAgents: Object.keys(AGENT_CONFIGS).map((k) => ({ name: k, ...AGENT_CONFIGS[k] })) };
+  return { tool: "detect_agent", version: VERSION, detectedAgents: agents, allSupportedAgents: Object.keys(AGENT_CONFIGS).map((k) => ({ name: k, ...AGENT_CONFIGS[k] })) };
 }
 
 // ─── Tool: get_agent_guidance ───────────────────────────────────────────────
@@ -914,9 +1005,9 @@ export async function toolGetAgentGuidance(args = {}) {
   const { agent } = args;
   const config = AGENT_CONFIGS[agent];
   if (!config) {
-    return { tool: "get_agent_guidance", version: "2.0.0", error: "Unknown agent: " + agent + ". Supported: " + Object.keys(AGENT_CONFIGS).join(", ") };
+    return { tool: "get_agent_guidance", version: VERSION, error: "Unknown agent: " + agent + ". Supported: " + Object.keys(AGENT_CONFIGS).join(", ") };
   }
-  return { tool: "get_agent_guidance", version: "2.0.0", agent, config };
+  return { tool: "get_agent_guidance", version: VERSION, agent, config };
 }
 
 // ─── Tool: generate_starter_repo ────────────────────────────────────────────
@@ -925,7 +1016,7 @@ export async function toolGenerateStarterRepo(args = {}) {
   const { framework = "nestjs", language = "typescript" } = args;
   return {
     tool: "generate_starter_repo",
-    version: "2.0.0",
+    version: VERSION,
     framework,
     language,
     recommendedStructure: getRecommendedStructure(framework, language),
@@ -938,7 +1029,7 @@ export async function toolGenerateStarterRepo(args = {}) {
 
 async function detectStack(cwd) {
   const hasNest = (await tryRead(cwd + "/nest-cli.json")) !== null;
-  const pkgData = JSON.parse((await tryRead(cwd + "/package.json")) || "{}");
+  const pkgData = safeParseJSON(await tryRead(cwd + "/package.json"), {});
   const hasExpress = !!pkgData.dependencies?.express;
   const hasFastify = !!pkgData.dependencies?.fastify;
   if (hasNest) return "nestjs";
@@ -1282,6 +1373,12 @@ function getEssentialPackages(framework, language) {
   if (framework === "nestjs") {
     base.prod = ["@nestjs/core", "@nestjs/common", "@nestjs/platform-express", "@nestjs/jwt", "@nestjs/passport", "passport", "class-validator", "class-transformer", "zod", "prisma", "@prisma/client", "winston", "helmet", "cors", "express-rate-limit"];
     base.dev = [...base.dev, "@nestjs/cli", "@nestjs/schematics", "@nestjs/testing", "@types/jest", "supertest", "jest-environment-node"];
+  } else if (framework === "express") {
+    base.prod = ["express", "cors", "helmet", "express-rate-limit"];
+    base.dev = [...base.dev];
+  } else if (framework === "fastify") {
+    base.prod = ["fastify", "@fastify/cors", "@fastify/helmet", "@fastify/rate-limit"];
+    base.dev = [...base.dev];
   }
   return base;
 }
@@ -1300,23 +1397,23 @@ function generateGitHubWorkflow(stack = "nodejs", deployTarget = "docker", name 
   const deploySteps =
     deployTarget === "docker"
       ? `      - name: Build Docker image
-      - run: docker build -t app:${"$"}{{ github.sha }} .
+        run: docker build -t app:${"$"}{{ github.sha }} .
       - name: Push to registry
         run: echo "docker push <your-registry>/app:${"$"}{{ github.sha }}"`
       : deployTarget === "vercel"
         ? `      - name: Deploy to Vercel
-      - run: npx vercel --prod --confirm`
+          run: npx vercel --prod --confirm`
         : deployTarget === "aws"
           ? `      - name: Deploy to AWS
-      - run: |
-          npm install -g @aws-cdk/cli
-          cdk deploy --require-approval never`
-        : deployTarget === "k8s"
-          ? `      - name: Deploy to Kubernetes
-      - run: |
-          kubectl config set-context --current=${"{"}${"{"} }}
-          kubectl apply -f k8s/`
-        : `      - run: npm run build`;
+            run: |
+              npm install -g @aws-cdk/cli
+              cdk deploy --require-approval never`
+          : deployTarget === "k8s"
+            ? `      - name: Deploy to Kubernetes
+              run: |
+                kubectl config set-context --current ${"$"}{{ }}
+                kubectl apply -f k8s/`
+            : `      - run: npm run build`;
 
   const buildScript = stack === "nestjs" || stack === "express" || stack === "fastify" ? "npm run build" : "npm run build";
 
