@@ -12,7 +12,7 @@ import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import {
   EXECUTION_COMMAND_PRECEDENCE,
@@ -23,10 +23,16 @@ import {
 
 import {
   CommandExecutionError,
+  EXECUTION_CONTROL_ENVIRONMENT_VARIABLES,
   EXECUTION_ERROR_KINDS,
   EXECUTION_STATUS,
   commandIdentity,
+  evaluateCommandPolicy,
+  isExecutionControlVariable,
+  isWithinExecutableRoots,
+  resolveCommandExecutable,
   runExecution,
+  trustedExecutableRoots,
 } from "../src/execution/index.js";
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -67,6 +73,15 @@ function makeRoot(files = {}, dirs = []) {
 /** A policy that authorizes Node itself inside `root`. */
 function policy(root, overrides = {}) {
   return { allowedRoots: [root], allowCommands: [NODE_ID], ...overrides };
+}
+
+/**
+ * A file that resolves to a real path but is not a spawnable executable, used
+ * to prove a command passed *policy* and only failed at the process boundary.
+ */
+function makeImpostor(root, name = "node") {
+  writeFileSync(join(root, name), "not-a-real-executable\n");
+  return join(root, name);
 }
 
 /** A Core ExecutionRequest-shaped helper for `node -e`. */
@@ -228,8 +243,10 @@ describe("shell safety", () => {
       command: shellLine,
       policy: policy(root, { allowCommands: [commandIdentity(shellLine)] }),
     });
-    // A shell would have executed it; spawn must treat it as one executable.
-    assert.equal(result.status, EXECUTION_STATUS.SPAWN_FAILED);
+    // A shell would have executed it. The runner never spawns it at all: the
+    // "line" is one unresolvable executable name.
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(result.pid, null, "must not spawn");
   });
 });
 
@@ -329,11 +346,129 @@ describe("command policy", () => {
     assert.ok(!JSON.stringify(result.error.toJSON()).includes(secret));
   });
 
-  it("matches executable identity, not location, and follows Phase 7 precedence", () => {
+  it("keeps Phase 7 precedence and normalizes executable identity", () => {
     assert.equal(EXECUTION_COMMAND_PRECEDENCE, "deny-overrides-allow");
     assert.equal(commandIdentity("/usr/bin/node"), "node");
     assert.equal(commandIdentity("node"), "node");
     assert.notEqual(commandIdentity("node-malicious"), "node");
+  });
+
+  it("evaluates name, path and location rules deterministically", () => {
+    const trustedRoots = trustedExecutableRoots();
+    const trustedNode = resolveCommandExecutable(NODE, trustedRoots).resolvedPath;
+    assert.ok(trustedNode, "the running Node executable must resolve");
+
+    // Bare allow entry, trusted location.
+    assert.equal(
+      evaluateCommandPolicy(NODE, { allowCommands: [NODE_ID] }, {
+        resolvedPath: trustedNode,
+        trustedRoots,
+      }).allowed,
+      true,
+    );
+
+    // Bare allow entry, untrusted location.
+    assert.equal(
+      evaluateCommandPolicy(NODE, { allowCommands: [NODE_ID] }, {
+        resolvedPath: join(TMP_ROOT, "attacker", "node"),
+        trustedRoots,
+      }).kind,
+      EXECUTION_ERROR_KINDS.COMMAND_UNTRUSTED_LOCATION,
+    );
+
+    // Bare deny entry beats a path allow entry.
+    assert.equal(
+      evaluateCommandPolicy(NODE, {
+        allowCommands: [NODE],
+        denyCommands: [NODE_ID],
+      }, { resolvedPath: trustedNode, trustedRoots }).kind,
+      EXECUTION_ERROR_KINDS.COMMAND_DENIED,
+    );
+
+    // An unresolvable command is a rejection, not a spawn attempt.
+    assert.equal(
+      evaluateCommandPolicy("cg-missing", { allowCommands: ["cg-missing"] }, {
+        resolvedPath: null,
+        trustedRoots,
+      }).kind,
+      EXECUTION_ERROR_KINDS.COMMAND_NOT_RESOLVED,
+    );
+  });
+});
+
+// ─── Executable authorization ────────────────────────────────────────────────
+
+describe("executable authorization", () => {
+  it("rejects a basename collision outside the trusted locations", async () => {
+    const root = register(makeRoot());
+    const impostorDir = register(makeRoot());
+    const impostor = makeImpostor(impostorDir, "node");
+
+    const result = await runExecution({
+      command: impostor,
+      policy: policy(root, { allowCommands: [NODE_ID] }),
+    });
+
+    // Same basename as the allowed command is not enough.
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(
+      result.error.kind,
+      EXECUTION_ERROR_KINDS.COMMAND_UNTRUSTED_LOCATION,
+    );
+    assert.equal(result.pid, null, "must not spawn the impostor");
+  });
+
+  it("still executes the legitimate executable by absolute path", async () => {
+    const root = register(makeRoot());
+    const result = await runExecution(
+      nodeRequest(root, "process.exit(0)", {
+        policy: policy(root, { allowCommands: [NODE_ID] }),
+      }),
+    );
+    assert.equal(result.status, EXECUTION_STATUS.COMPLETED);
+    assert.equal(result.policy.allowed, true);
+  });
+
+  it("honours an explicitly allowlisted executable path", async () => {
+    const root = register(makeRoot());
+    const impostor = makeImpostor(root);
+    const result = await runExecution({
+      command: impostor,
+      policy: policy(root, { allowCommands: [impostor] }),
+    });
+    // Deliberate location authorization: the policy permits it, and only the
+    // process boundary refuses it (the file is not a spawnable executable).
+    assert.equal(result.policy.allowed, true);
+    assert.notEqual(result.status, EXECUTION_STATUS.REJECTED);
+  });
+
+  it("honours an explicitly allowed executable root", async () => {
+    const root = register(makeRoot());
+    const toolsDir = register(makeRoot());
+    const impostor = makeImpostor(toolsDir, "node");
+    const result = await runExecution({
+      command: impostor,
+      policy: policy(root, {
+        allowCommands: [NODE_ID],
+        allowedExecutableRoots: [toolsDir],
+      }),
+    });
+    assert.equal(result.policy.allowed, true);
+    assert.notEqual(result.status, EXECUTION_STATUS.REJECTED);
+  });
+
+  it("does not let a caller PATH grant a bare name a new meaning", async () => {
+    const root = register(makeRoot());
+    const attackerDir = register(makeRoot({ node: "not-a-real-executable" }));
+    await assert.rejects(
+      () =>
+        runExecution({
+          command: "node",
+          policy: policy(root, { allowCommands: [NODE_ID] }),
+          environment: { PATH: attackerDir },
+        }),
+      ValidationError,
+    );
   });
 });
 
@@ -473,15 +608,33 @@ describe("execution results", () => {
   });
 
   it("reports a spawn failure", async () => {
+    // Resolves (so policy can decide) but cannot be launched: policy allows,
+    // spawn fails. This keeps `spawn-failed` distinct from `rejected`.
+    const root = register(makeRoot());
+    const impostor = makeImpostor(root);
+    const result = await runExecution({
+      command: impostor,
+      policy: policy(root, { allowCommands: [impostor] }),
+    });
+    assert.equal(result.policy.allowed, true, "must pass policy first");
+    assert.equal(result.status, EXECUTION_STATUS.SPAWN_FAILED);
+    assert.equal(result.error.kind, EXECUTION_ERROR_KINDS.SPAWN_FAILED);
+    assert.equal(result.pid, null);
+    assert.equal(result.exitCode, null);
+  });
+
+  it("rejects an executable that cannot be resolved instead of spawning it", async () => {
     const missing = "cg-definitely-missing-executable-8b";
     const result = await runExecution({
       command: missing,
       policy: policy(root, { allowCommands: [missing] }),
     });
-    assert.equal(result.status, EXECUTION_STATUS.SPAWN_FAILED);
-    assert.equal(result.error.kind, EXECUTION_ERROR_KINDS.SPAWN_FAILED);
-    assert.equal(result.pid, null);
-    assert.equal(result.exitCode, null);
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(
+      result.error.kind,
+      EXECUTION_ERROR_KINDS.COMMAND_NOT_RESOLVED,
+    );
+    assert.equal(result.pid, null, "must not spawn an unresolved command");
   });
 
   it(
@@ -846,6 +999,58 @@ describe("environment policy", () => {
       ValidationError,
     );
   });
+
+  it("reserves the documented execution-control variable names", () => {
+    assert.ok(EXECUTION_CONTROL_ENVIRONMENT_VARIABLES.includes("PATH"));
+    assert.ok(EXECUTION_CONTROL_ENVIRONMENT_VARIABLES.includes("NODE_OPTIONS"));
+    assert.equal(isExecutionControlVariable("PATH"), true);
+    assert.equal(isExecutionControlVariable("CG_TEST_FLAG"), false);
+  });
+
+  it("refuses code-injecting runtime variables", async () => {
+    for (const name of ["NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD"]) {
+      await assert.rejects(
+        () =>
+          runExecution(
+            nodeRequest(root, "process.exit(0)", {
+              environment: { [name]: "attacker-controlled" },
+            }),
+          ),
+        ValidationError,
+        `${name} must not be overridable`,
+      );
+    }
+  });
+
+  it("still allows benign overrides", async () => {
+    const result = await runExecution(
+      nodeRequest(
+        root,
+        "process.stdout.write(process.env.CG_TEST_FLAG ?? '')",
+        { environment: { CG_TEST_FLAG: "hello" } },
+      ),
+    );
+    assert.equal(result.status, EXECUTION_STATUS.COMPLETED);
+    assert.equal(result.stdout, "hello");
+  });
+
+  it("resolves bare commands from the trusted environment, not caller data", () => {
+    const attackerDir = register(makeRoot({ node: "not-a-real-executable" }));
+    const resolution = resolveCommandExecutable(
+      "node",
+      trustedExecutableRoots(),
+    );
+    assert.ok(resolution.resolvedPath, "the real node must resolve");
+    assert.equal(
+      isWithinExecutableRoots(resolution.resolvedPath, [attackerDir]),
+      false,
+      "a same-basename file outside the trusted roots must never be chosen",
+    );
+    assert.ok(
+      trustedExecutableRoots().includes(dirname(resolution.resolvedPath)),
+      "resolution must come from a trusted root",
+    );
+  });
 });
 
 // ─── Cancellation ────────────────────────────────────────────────────────────
@@ -894,5 +1099,66 @@ describe("cancellation", () => {
     assert.ok(result.pid);
     await delay(400);
     assert.equal(isProcessAlive(result.pid), false, "child must be gone");
+  });
+
+  it("does not miss an abort that lands during listener registration", async () => {
+    const root = register(makeRoot());
+    // Models the registration race precisely: by the time the runner subscribes,
+    // the signal is already aborted, and AbortSignal never replays an abort to a
+    // late listener. Only an immediate re-check after subscribing observes it.
+    const lateAbort = {
+      aborted: false,
+      addEventListener(type) {
+        if (type === "abort") this.aborted = true;
+      },
+      removeEventListener() {},
+    };
+
+    const result = await runExecution(
+      nodeRequest(root, "setTimeout(() => {}, 10000)", {
+        policy: policy(root, { maxDurationMs: 10000 }),
+      }),
+      { signal: lateAbort, terminationGraceMs: 150 },
+    );
+
+    assert.equal(result.status, EXECUTION_STATUS.CANCELED);
+    assert.equal(result.canceled, true);
+    if (result.pid) {
+      await delay(400);
+      assert.equal(isProcessAlive(result.pid), false, "child must be gone");
+    }
+  });
+
+  it("settles exactly once when abort races process lifecycle events", async () => {
+    const root = register(makeRoot());
+    // Abort is dispatched synchronously during registration — twice — so the
+    // abort lands as tightly as possible against spawn/close/error and the
+    // result must still settle once and never mutate afterwards.
+    const eager = {
+      aborted: false,
+      addEventListener(type, listener) {
+        if (type !== "abort") return;
+        this.aborted = true;
+        listener();
+        listener();
+      },
+      removeEventListener() {},
+    };
+
+    const result = await runExecution(
+      nodeRequest(root, "setTimeout(() => {}, 10000)", {
+        policy: policy(root, { maxDurationMs: 10000 }),
+      }),
+      { signal: eager, terminationGraceMs: 150 },
+    );
+
+    assert.equal(result.status, EXECUTION_STATUS.CANCELED);
+    const snapshot = { status: result.status, duration: result.duration };
+    // A late abort on a real controller must not touch a settled result.
+    const late = new AbortController();
+    late.abort();
+    await delay(200);
+    assert.equal(result.status, snapshot.status);
+    assert.equal(result.duration, snapshot.duration);
   });
 });

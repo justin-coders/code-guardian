@@ -27,6 +27,8 @@ import { sanitizeFilesystemPath } from "../repository/filesystem/index.js";
 export const EXECUTION_ERROR_KINDS = Object.freeze({
   COMMAND_DENIED: "command-denied",
   COMMAND_NOT_ALLOWED: "command-not-allowed",
+  COMMAND_NOT_RESOLVED: "command-not-resolved",
+  COMMAND_UNTRUSTED_LOCATION: "command-untrusted-location",
   NO_ALLOWED_ROOTS: "no-allowed-roots",
   CWD_OUTSIDE_ROOT: "cwd-outside-root",
   CWD_INVALID: "cwd-invalid",
@@ -40,6 +42,8 @@ export const EXECUTION_ERROR_KINDS = Object.freeze({
 export const EXECUTION_ERROR_CODES = Object.freeze({
   COMMAND_DENIED: "CG_EXEC_COMMAND_DENIED",
   COMMAND_NOT_ALLOWED: "CG_EXEC_COMMAND_NOT_ALLOWED",
+  COMMAND_NOT_RESOLVED: "CG_EXEC_COMMAND_NOT_RESOLVED",
+  COMMAND_UNTRUSTED_LOCATION: "CG_EXEC_COMMAND_UNTRUSTED_LOCATION",
   NO_ALLOWED_ROOTS: "CG_EXEC_NO_ALLOWED_ROOTS",
   CWD_OUTSIDE_ROOT: "CG_EXEC_CWD_OUTSIDE_ROOT",
   CWD_INVALID: "CG_EXEC_CWD_INVALID",
@@ -54,6 +58,10 @@ const KIND_MESSAGES = Object.freeze({
   [EXECUTION_ERROR_KINDS.COMMAND_DENIED]: "command is denied by policy",
   [EXECUTION_ERROR_KINDS.COMMAND_NOT_ALLOWED]:
     "command is not in the allowlist",
+  [EXECUTION_ERROR_KINDS.COMMAND_NOT_RESOLVED]:
+    "command executable could not be resolved",
+  [EXECUTION_ERROR_KINDS.COMMAND_UNTRUSTED_LOCATION]:
+    "command executable location is not trusted",
   [EXECUTION_ERROR_KINDS.NO_ALLOWED_ROOTS]:
     "no allowed execution root is configured",
   [EXECUTION_ERROR_KINDS.CWD_OUTSIDE_ROOT]:

@@ -9,6 +9,12 @@
  * Design rules:
  *   - `shell: false` always. `command` + `args[]` are passed verbatim to
  *     `spawn`, so shell metacharacters and `$(...)`/`;` are literal arguments.
+ *   - The command is *resolved first*, then authorized, then spawned **by the
+ *     resolved absolute path**. Resolution uses the trusted (inherited)
+ *     environment, so a caller-supplied `PATH` cannot change which executable
+ *     runs, and `allowCommands: ["node"]` cannot be satisfied by a file that
+ *     merely shares the basename `node`. An unresolvable command is a
+ *     rejection, never a spawn.
  *   - Policy is evaluated *before* spawning. A rejected command never runs and
  *     is reported as `rejected`, not as a failed process.
  *   - The working directory is resolved through the Phase 8A path layer and must
@@ -16,7 +22,9 @@
  *   - Output is capped per stream; exceeding a cap bounds memory and is
  *     reported via `stdoutTruncated`/`stderrTruncated` without killing the
  *     process (truncation and termination are separate concerns).
- *   - The promise settles exactly once, and every timer/listener is cleaned up.
+ *   - Cancellation registration re-checks `signal.aborted` immediately after
+ *     subscribing, because an abort is never replayed to a late listener; the
+ *     promise settles exactly once and every timer/listener is cleaned up.
  *
  * The public entry point is `runExecution(request, options)`. Invalid input
  * throws a Core `ValidationError`; runtime outcomes are returned as results so
@@ -28,7 +36,14 @@ import { spawn } from "node:child_process";
 import { EXECUTION_STATES, ValidationError } from "../core/index.js";
 
 import { resolveExecutionCwd } from "./cwd.js";
-import { buildEnvironment } from "./environment.js";
+import {
+  buildEnvironment,
+  isExecutionControlVariable,
+} from "./environment.js";
+import {
+  resolveCommandExecutable,
+  trustedExecutableRoots,
+} from "./executable.js";
 import { CommandExecutionError, EXECUTION_ERROR_KINDS } from "./errors.js";
 import { resolveExecutionLimits } from "./limits.js";
 import { evaluateCommandPolicy } from "./policy.js";
@@ -94,6 +109,14 @@ function validateEnvironment(environment, issues) {
     if (!ENVIRONMENT_NAME.test(key)) {
       issues.push(`environment.${key}: invalid environment variable name`);
     }
+    if (isExecutionControlVariable(key)) {
+      // Reserved so a caller cannot re-point executable resolution or inject
+      // flags/loader hooks into an otherwise authorized command. The name is
+      // echoed; the value never is.
+      issues.push(
+        `environment.${key}: overriding an execution-control variable is not allowed`,
+      );
+    }
     if (typeof value !== "string") {
       issues.push(
         `environment.${key}: must be a string (undefined/null removal is not supported)`,
@@ -121,7 +144,12 @@ function validatePolicy(policy, issues) {
     issues.push("policy: must be a plain object");
     return;
   }
-  for (const field of ["allowCommands", "denyCommands", "allowedRoots"]) {
+  for (const field of [
+    "allowCommands",
+    "denyCommands",
+    "allowedRoots",
+    "allowedExecutableRoots",
+  ]) {
     if (policy[field] === undefined) continue;
     const list = policy[field];
     if (
@@ -387,6 +415,9 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
       });
     };
 
+    // Idempotent: timeout and cancellation can both request termination, and
+    // a second call must not stage a second grace timer (which would orphan the
+    // first) or re-signal an already-dead process.
     const requestTermination = () => {
       killed = true;
       try {
@@ -394,6 +425,7 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
       } catch {
         // the process may already be gone
       }
+      if (graceTimer) return;
       graceTimer = setTimeout(() => {
         try {
           child.kill("SIGKILL");
@@ -404,8 +436,10 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
       graceTimer.unref?.();
     };
 
+    // Guarded so a synchronous re-check after registration cannot terminate
+    // twice when the listener already fired.
     function onAbort() {
-      if (settled) return;
+      if (settled || canceled) return;
       canceled = true;
       requestTermination();
     }
@@ -416,7 +450,13 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
     child.stdout?.on("error", () => {});
     child.stderr?.on("error", () => {});
 
-    if (signal) signal.addEventListener?.("abort", onAbort, { once: true });
+    if (signal) {
+      signal.addEventListener?.("abort", onAbort, { once: true });
+      // Close the registration race: an abort that lands between the pre-spawn
+      // check and this subscription is never replayed to a late listener, so
+      // re-check immediately instead of relying on timing.
+      if (signal.aborted) onAbort();
+    }
 
     timeoutTimer = setTimeout(() => {
       if (settled) return;
@@ -457,7 +497,8 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
  * @param {object} [request.environment] String environment overrides.
  * @param {number} [request.timeout] Request duration cap, in ms.
  * @param {object} [request.limits] `{ maxOutputBytes, maxProcesses }`.
- * @param {object} [request.policy] Core `ExecutionPolicy`-shaped authorization.
+ * @param {object} [request.policy] Core `ExecutionPolicy`-shaped authorization,
+ *   plus the additive `allowedExecutableRoots` extension.
  * @param {object} [options] Runner options.
  * @param {number} [options.terminationGraceMs] Delay before SIGKILL.
  * @param {number} [options.maxStdoutBytes] Per-stream stdout cap.
@@ -478,7 +519,17 @@ export async function runExecution(request, options = {}) {
   const overrides = request.environment ?? {};
   const signal = options.signal;
 
-  const commandPolicy = evaluateCommandPolicy(command, policy);
+  // Resolution and authorization both use the *trusted* environment (the
+  // runner's own inherited environment) — never the caller's overrides — and
+  // the executable that was authorized is the exact path that gets spawned.
+  const trustedRoots = trustedExecutableRoots();
+  const resolution = resolveCommandExecutable(command, trustedRoots);
+  const commandPolicy = evaluateCommandPolicy(command, policy, {
+    resolvedPath: resolution.resolvedPath,
+    trustedRoots,
+  });
+  const { resolvedPath, ...policyDecision } = commandPolicy;
+
   const effectiveLimits = resolveExecutionLimits({
     policy,
     limits,
@@ -489,14 +540,19 @@ export async function runExecution(request, options = {}) {
   const base = baseResult({
     command,
     args,
-    identity: commandPolicy.identity,
+    identity: policyDecision.identity,
     limits: effectiveLimits,
-    policy: commandPolicy,
+    policy: policyDecision,
   });
 
   if (signal?.aborted) return canceledResult(base, null, startTime);
-  if (!commandPolicy.allowed) {
-    return rejectedResult(base, commandPolicy.kind, null, startTime);
+  if (!commandPolicy.allowed || resolvedPath === null) {
+    return rejectedResult(
+      base,
+      commandPolicy.kind ?? EXECUTION_ERROR_KINDS.COMMAND_NOT_RESOLVED,
+      null,
+      startTime,
+    );
   }
 
   const cwdResolution = await resolveExecutionCwd(
@@ -523,7 +579,7 @@ export async function runExecution(request, options = {}) {
 
   let child;
   try {
-    child = spawn(command, args, {
+    child = spawn(resolvedPath, args, {
       cwd: cwdResolution.absolute,
       env: environment,
       shell: false,

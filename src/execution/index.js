@@ -22,11 +22,23 @@ export {
 export { commandIdentity, evaluateCommandPolicy } from "./policy.js";
 
 export {
+  canonicalizeExecutablePath,
+  isPathLikeExecutable,
+  isWithinExecutableRoots,
+  resolveCommandExecutable,
+  trustedExecutableRoots,
+} from "./executable.js";
+
+export {
   DEFAULT_TERMINATION_GRACE_MS,
   resolveExecutionLimits,
 } from "./limits.js";
 
-export { buildEnvironment } from "./environment.js";
+export {
+  EXECUTION_CONTROL_ENVIRONMENT_VARIABLES,
+  buildEnvironment,
+  isExecutionControlVariable,
+} from "./environment.js";
 
 export { resolveExecutionCwd } from "./cwd.js";
 
