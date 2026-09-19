@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   CORE_CONTRACT_VERSION,
+  CONTRACT_FACTORY_SEMANTICS,
   REPOSITORY_MODEL_VERSION,
   REPOSITORY_MODEL_AREAS,
   REPOSITORY_MODEL_JUDGMENT_AREAS,
@@ -24,9 +25,11 @@ import {
   createEvidence,
   FINDING_SEVERITIES,
   FINDING_STATUSES,
+  FINDING_STAGES,
   CONFIDENCE_MIN,
   CONFIDENCE_MAX,
   isValidConfidence,
+  hasFingerprint,
   createFinding,
   RULE_REQUIRED_FIELDS,
   createRule,
@@ -41,6 +44,8 @@ import {
   EXECUTION_RESULT_FIELDS,
   DEFAULT_EXECUTION_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
+  EXECUTION_LIMIT_PRECEDENCE,
+  EXECUTION_COMMAND_PRECEDENCE,
   createExecutionRequest,
   createExecutionResult,
   createExecutionPolicy,
@@ -57,6 +62,7 @@ import {
   validateRepositoryModel,
   validateEvidence,
   validateFinding,
+  validateRawFinding,
   validateRule,
   validateAnalyzer,
   validateAnalyzerApplicability,
@@ -180,6 +186,26 @@ function validFinding(overrides = {}) {
   });
 }
 
+/**
+ * A raw (pre-canonical) Finding: no fingerprint is generated at this stage.
+ * Built through the factory so the factory's semantics are exercised.
+ */
+function rawFinding(overrides = {}) {
+  return createFinding({
+    id: "finding-1",
+    ruleId: "security.hardcoded-secret",
+    category: "security",
+    severity: "high",
+    confidence: 0.7,
+    title: "Potential hardcoded credential",
+    description: "A credential-like value was observed in source.",
+    evidence: ["evidence-1"],
+    status: "open",
+    metadata: {},
+    ...overrides,
+  });
+}
+
 function validRule(overrides = {}) {
   return createRule({
     id: "security.example",
@@ -269,6 +295,7 @@ describe("core index boundary", () => {
       createExecutionResult,
       createExecutionPolicy,
       getExecutionState,
+      hasFingerprint,
       CoreError,
       ValidationError,
       ConfigurationError,
@@ -279,6 +306,7 @@ describe("core index boundary", () => {
       validateRepositoryModel,
       validateEvidence,
       validateFinding,
+      validateRawFinding,
       validateRule,
       validateAnalyzer,
       validateAnalyzerApplicability,
@@ -313,7 +341,9 @@ describe("core index boundary", () => {
     assert.ok(Array.isArray(ANALYSIS_CONTEXT_FIELDS));
     assert.ok(Array.isArray(EXECUTION_REQUEST_FIELDS));
     assert.ok(Array.isArray(EXECUTION_RESULT_FIELDS));
+    assert.deepEqual(FINDING_STAGES, { RAW: "raw", CANONICAL: "canonical" });
     assert.ok(KNOWN_CONTRACTS.length > 0);
+    assert.ok(KNOWN_CONTRACTS.includes("rawFinding"));
   });
 });
 
@@ -626,6 +656,52 @@ describe("Evidence contract", () => {
     );
   });
 
+  it("never fabricates deterministic provenance", () => {
+    // The producer must state whether the observation is deterministic; the
+    // factory must not assert it on the producer's behalf.
+    const draft = createEvidence({
+      id: "evidence-1",
+      type: "file",
+      location: { path: "src/auth/login.js" },
+      source: { analyzer: "security", method: "filesystem" },
+      data: {},
+    });
+    assert.deepEqual(draft.provenance, {});
+    assert.ok(!("deterministic" in draft.provenance));
+    assertInvalid(() => validateEvidence(draft));
+  });
+
+  it("accepts explicit deterministic provenance", () => {
+    const deterministic = validEvidence({
+      provenance: { deterministic: true },
+    });
+    assert.equal(deterministic.provenance.deterministic, true);
+    assert.ok(validateEvidence(deterministic));
+  });
+
+  it("accepts explicit non-deterministic provenance", () => {
+    const nonDeterministic = validEvidence({
+      provenance: { deterministic: false, collector: "llm-assist" },
+    });
+    assert.equal(nonDeterministic.provenance.deterministic, false);
+    assert.ok(validateEvidence(nonDeterministic));
+  });
+
+  it("rejects missing or invalid deterministic provenance", () => {
+    // Missing the `deterministic` key entirely.
+    assertInvalid(() => validateEvidence(rawEvidence({ provenance: {} })));
+    // Present but not a boolean.
+    assertInvalid(() =>
+      validateEvidence(rawEvidence({ provenance: { deterministic: "yes" } })),
+    );
+    assertInvalid(() =>
+      validateEvidence(rawEvidence({ provenance: { deterministic: 1 } })),
+    );
+    assertInvalid(() =>
+      validateEvidence(rawEvidence({ provenance: { deterministic: null } })),
+    );
+  });
+
   it("requires source and data", () => {
     const missingSource = rawEvidence();
     delete missingSource.source;
@@ -719,12 +795,59 @@ describe("Finding contract", () => {
     );
   });
 
-  it("requires a fingerprint", () => {
+  it("requires a fingerprint on the canonical finding", () => {
     assertInvalid(() =>
       validateFinding(validFinding({ fingerprint: undefined })),
     );
     assertInvalid(() => validateFinding(validFinding({ fingerprint: "" })));
     assert.ok(validateFinding(validFinding({ fingerprint: "sha256:abc" })));
+  });
+
+  it("produces raw findings without inventing a fingerprint", () => {
+    // Fingerprint generation is deferred to the future Finding Engine, so a
+    // raw finding may legitimately exist before a fingerprint is assigned.
+    const raw = rawFinding();
+    assert.ok(
+      !("fingerprint" in raw),
+      "the factory must not fabricate a fingerprint",
+    );
+    assert.equal(hasFingerprint(raw), false);
+    assert.equal(validateRawFinding(raw), raw);
+    // The canonical validator still demands a fingerprint.
+    assertInvalid(() => validateFinding(raw));
+  });
+
+  it("promotes a raw finding once a fingerprint exists", () => {
+    const canonical = validFinding();
+    assert.equal(canonical.fingerprint, "fp-1");
+    assert.equal(hasFingerprint(canonical), true);
+    assert.ok(validateFinding(canonical));
+    // A canonical finding also satisfies the raw contract.
+    assert.ok(validateRawFinding(canonical));
+  });
+
+  it("rejects a malformed fingerprint even on a raw finding", () => {
+    // Absent is fine pre-canonically; malformed never is.
+    assertInvalid(() => validateRawFinding(rawFinding({ fingerprint: "" })));
+    assertInvalid(() => validateRawFinding(rawFinding({ fingerprint: 42 })));
+    assertInvalid(() => validateRawFinding(rawFinding({ fingerprint: "  " })));
+  });
+
+  it("enforces the raw finding contract as strictly as the canonical one otherwise", () => {
+    assertInvalid(() => validateRawFinding(rawFinding({ severity: "severe" })));
+    assertInvalid(() => validateRawFinding(rawFinding({ confidence: 2 })));
+    assertInvalid(() => validateRawFinding(rawFinding({ ruleId: "" })));
+    assertInvalid(() => validateRawFinding(rawFinding({ evidence: [1] })));
+    const draft = rawFinding();
+    assert.equal(validateRawFinding(draft), draft);
+  });
+
+  it("reports the fingerprint discriminator from the contract", () => {
+    assert.equal(hasFingerprint(null), false);
+    assert.equal(hasFingerprint("finding"), false);
+    assert.equal(hasFingerprint({}), false);
+    assert.equal(hasFingerprint({ fingerprint: "  " }), false);
+    assert.equal(hasFingerprint({ fingerprint: "fp-1" }), true);
   });
 
   it("requires a valid status and metadata", () => {
@@ -887,6 +1010,22 @@ describe("Analyzer contract", () => {
     assertInvalid(() => validateAnalyzerResult(withBadFinding));
   });
 
+  it("accepts raw analyzer findings before the Finding Engine runs", () => {
+    // Analyzers run before fingerprint generation, so a result may carry raw
+    // findings that have no fingerprint yet.
+    const result = createAnalysisResult({ findings: [rawFinding()] });
+    assert.equal(validateAnalyzerResult(result), result);
+    assert.ok(!("fingerprint" in result.findings[0]));
+  });
+
+  it("still rejects malformed raw findings nested in a result", () => {
+    assertInvalid(() =>
+      validateAnalyzerResult(
+        createAnalysisResult({ findings: [rawFinding({ confidence: 3 })] }),
+      ),
+    );
+  });
+
   it("rejects analyzers missing identity or methods", () => {
     assertInvalid(() => validateAnalyzer(validAnalyzer({ id: "" })));
     assertInvalid(() =>
@@ -939,6 +1078,70 @@ describe("AnalysisContext contract", () => {
     assertInvalid(() =>
       validateAnalysisContext(validAnalysisContext({ configuration: [] })),
     );
+  });
+
+  it("accepts well-formed nested rules and evidence", () => {
+    const context = validAnalysisContext({
+      rules: [validRule()],
+      evidence: [validEvidence()],
+    });
+    assert.equal(validateAnalysisContext(context), context);
+  });
+
+  it("rejects a malformed nested RepositoryModel", () => {
+    // A plain object that is not a RepositoryModel must be rejected, not merely
+    // accepted because it happens to be an object.
+    const context = createAnalysisContext({
+      repository: { version: REPOSITORY_MODEL_VERSION },
+    });
+    const error = assertInvalid(() => validateAnalysisContext(context));
+    assert.ok(
+      error.details.issues.some((i) => i.includes("repository.identity")),
+      "should report the missing nested RepositoryModel area",
+    );
+  });
+
+  it("rejects a nested RepositoryModel with an invalid area", () => {
+    const context = validAnalysisContext({
+      repository: validRepository({ languages: "javascript" }),
+    });
+    const error = assertInvalid(() => validateAnalysisContext(context));
+    assert.ok(
+      error.details.issues.some((i) => i.includes("repository.languages")),
+    );
+  });
+
+  it("rejects malformed nested rules", () => {
+    // An object that is shape-adjacent to a Rule but missing required behavior.
+    const notARule = validRule({ detect: undefined });
+    const context = validAnalysisContext({ rules: [notARule] });
+    const error = assertInvalid(() => validateAnalysisContext(context));
+    assert.ok(
+      error.details.issues.some((i) => i.includes("rules[0].detect")),
+      "should validate each nested rule",
+    );
+  });
+
+  it("rejects malformed nested evidence", () => {
+    const notEvidence = validEvidence({ type: "banana" });
+    const context = validAnalysisContext({ evidence: [notEvidence] });
+    const error = assertInvalid(() => validateAnalysisContext(context));
+    assert.ok(
+      error.details.issues.some((i) => i.includes("evidence[0].type")),
+      "should validate each nested evidence object",
+    );
+  });
+
+  it("rejects nested evidence missing deterministic provenance", () => {
+    const draft = createEvidence({
+      id: "evidence-1",
+      type: "file",
+      location: { path: "src/auth/login.js" },
+      source: { analyzer: "security", method: "filesystem" },
+      data: {},
+    });
+    const context = validAnalysisContext({ evidence: [draft] });
+    assertInvalid(() => validateAnalysisContext(context));
   });
 });
 
@@ -1007,6 +1210,23 @@ describe("Execution contracts", () => {
         createExecutionPolicy({ allowCommands: ["npm", "git"] }),
       ),
     );
+  });
+
+  it("separates authorization policy from per-invocation limits", () => {
+    // The contract documents the distinction so a future Command Runner never
+    // has to guess: policy is the trust boundary, limits are resource caps.
+    assert.equal(EXECUTION_LIMIT_PRECEDENCE, "most-restrictive");
+    assert.equal(EXECUTION_COMMAND_PRECEDENCE, "deny-overrides-allow");
+
+    const request = validExecutionRequest();
+    assert.ok(request.limits, "request carries per-invocation limits");
+    assert.ok(request.policy, "request carries an authorization policy");
+
+    // Empty lists are meaningful and must not be read as wildcards.
+    const policy = createExecutionPolicy();
+    assert.deepEqual(policy.allowCommands, []);
+    assert.deepEqual(policy.denyCommands, []);
+    assert.equal(policy.network, "disabled");
   });
 
   it("accepts a valid result", () => {
@@ -1103,9 +1323,12 @@ describe("Execution contracts", () => {
 describe("contract validation", () => {
   it("validates by contract name", () => {
     assert.ok(validateContract("finding", validFinding()));
+    assert.ok(validateContract("rawFinding", rawFinding()));
     assert.ok(validateContract("evidence", validEvidence()));
     assert.ok(validateContract("rule", validRule()));
     assertInvalid(() => validateContract("finding", { id: "x" }));
+    // The raw contract is strict about everything except the fingerprint.
+    assertInvalid(() => validateContract("rawFinding", { id: "x" }));
   });
 
   it("rejects unknown contract names", () => {
@@ -1123,6 +1346,28 @@ describe("contract validation", () => {
     const snapshot = JSON.stringify(finding);
     validateFinding(finding);
     assert.equal(JSON.stringify(finding), snapshot);
+  });
+});
+
+// ─── Factory semantics ───────────────────────────────────────────────────────
+
+describe("factory semantics", () => {
+  it("declares one uniform draft semantics for every Core factory", () => {
+    assert.equal(CONTRACT_FACTORY_SEMANTICS, "draft");
+  });
+
+  it("is a draft factory, not a guaranteed-valid constructor", () => {
+    // Insufficient input yields a shape-correct draft that fails validation.
+    assertInvalid(() => validateRule(createRule()));
+    assertInvalid(() => validateFinding(createFinding()));
+    assertInvalid(() => validateEvidence(createEvidence()));
+  });
+
+  it("validates a draft as-is once the required facts are supplied", () => {
+    assert.ok(validateRule(validRule()));
+    assert.ok(validateRawFinding(rawFinding()));
+    assert.ok(validateEvidence(validEvidence()));
+    assert.ok(validateRepositoryModel(createRepositoryModel()));
   });
 });
 

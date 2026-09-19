@@ -8,7 +8,15 @@
  * Evidence must always carry provenance so a conclusion can be traced back to
  * its collector (deterministic analysis, and later LLM-assisted reasoning).
  *
- * This module defines the shape/constants/factory only.
+ * Provenance is never fabricated. In particular, the factory does not assert
+ * `provenance.deterministic` on the producer's behalf: whether an observation is
+ * deterministic is a claim only the producer can make, so it must be supplied
+ * explicitly. Validated Evidence therefore always contains a boolean
+ * `provenance.deterministic` (enforced by `validateEvidence`).
+ *
+ * This module defines the shape/constants/factory only. `createEvidence` is a
+ * shape/draft factory: it returns an Evidence-shaped draft and does not
+ * guarantee validity; callers must run `validateEvidence`.
  */
 
 /** Controlled vocabulary of evidence types (Phase 7 Blueprint §8). */
@@ -48,8 +56,9 @@ export const EVIDENCE_LOCATION_FIELDS = Object.freeze([
  * @param {object} [input.location] `{ path, line, column }` subset.
  * @param {object} [input.source] `{ analyzer, method }` producer details.
  * @param {object} [input.data] Small structured observation payload.
- * @param {object} [input.provenance] `{ deterministic, collector, ... }`.
- * @returns {object} An Evidence-shaped object.
+ * @param {object} [input.provenance] `{ deterministic, collector, ... }`. The
+ *   producer must supply `deterministic` explicitly; it is never defaulted.
+ * @returns {object} An Evidence-shaped draft; run `validateEvidence` first.
  */
 export function createEvidence(input = {}) {
   return {
@@ -58,6 +67,6 @@ export function createEvidence(input = {}) {
     location: { ...(input.location ?? {}) },
     source: { ...(input.source ?? {}) },
     data: { ...(input.data ?? {}) },
-    provenance: { deterministic: true, ...(input.provenance ?? {}) },
+    provenance: { ...(input.provenance ?? {}) },
   };
 }

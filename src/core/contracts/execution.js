@@ -58,9 +58,43 @@ export const DEFAULT_EXECUTION_LIMITS = Object.freeze({
 });
 
 /**
- * Build an execution limits descriptor.
+ * Precedence used to combine request-level `limits` with policy-level ceilings.
+ *
+ * `limits` (on an ExecutionRequest) express *per-invocation resource limits*:
+ * how much this single command may consume. `policy` expresses *security /
+ * authorization constraints*: what the Core is willing to permit at all. Where
+ * both name the same dimension (duration, output size, process count), the
+ * **most restrictive** value wins — a request can never widen what the policy
+ * authorizes, only narrow it. Resolving the effective values is the Command
+ * Runner's job; this contract records the rule so behavior is never guessed.
+ */
+export const EXECUTION_LIMIT_PRECEDENCE = "most-restrictive";
+
+/**
+ * Precedence used to combine `allowCommands` and `denyCommands`.
+ *
+ * An explicit deny always overrides an allow. Empty lists are meaningful and
+ * are *not* wildcards:
+ *
+ * - `denyCommands: []` denies nothing by name.
+ * - `allowCommands: []` grants no command name and by itself authorizes
+ *   nothing. It is an empty allowlist, never "allow everything". A mode that
+ *   intends to permit arbitrary commands must express that separately rather
+ *   than by leaving the allowlist empty.
+ *
+ * Enforcement is the Command Runner's job; this contract records the rule.
+ */
+export const EXECUTION_COMMAND_PRECEDENCE = "deny-overrides-allow";
+
+/**
+ * Build an execution limits descriptor (per-invocation resource limits).
+ *
+ * Limits describe *how much* one invocation may consume. They are distinct
+ * from `createExecutionPolicy`, which describes what is authorized at all. See
+ * `EXECUTION_LIMIT_PRECEDENCE` for how the two combine.
+ *
  * @param {object} [input]
- * @returns {object}
+ * @returns {object} An ExecutionLimits-shaped draft; validate before use.
  */
 export function createExecutionLimits(input = {}) {
   return {
@@ -71,8 +105,15 @@ export function createExecutionLimits(input = {}) {
 
 /**
  * Build an execution policy (the trust boundary for command execution).
+ *
+ * A policy is about *security / authorization*: which commands may run, from
+ * which roots, with what network posture, and the maximum resources the policy
+ * is willing to authorize. It is not a substitute for per-invocation
+ * `limits`; the duration/output/process values here are authorization ceilings.
+ * See `EXECUTION_COMMAND_PRECEDENCE` and `EXECUTION_LIMIT_PRECEDENCE`.
+ *
  * @param {object} [input]
- * @returns {object}
+ * @returns {object} An ExecutionPolicy-shaped draft; validate before use.
  */
 export function createExecutionPolicy(input = {}) {
   return {

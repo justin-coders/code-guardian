@@ -12,6 +12,21 @@
 /** Version of the Core contract surface. */
 export const CORE_CONTRACT_VERSION = "1";
 
+/**
+ * Semantics shared by every `createX()` factory in the Core.
+ *
+ * The Core factories are **shape/draft factories**, not guaranteed-valid
+ * constructors: each returns a fully contract-shaped object and fills only
+ * semantically-neutral defaults, but does not guarantee validity. In
+ * particular they never fabricate security-, authorization-, detection-,
+ * fingerprint-, or provenance-relevant facts. Callers must run the matching
+ * `validateX()` before treating a draft as a valid contract instance.
+ *
+ * This is intentionally uniform: no factory is a validator, and validation is
+ * always the authority on validity.
+ */
+export const CONTRACT_FACTORY_SEMANTICS = "draft";
+
 // ─── Contracts ───────────────────────────────────────────────────────────────
 
 export {
@@ -32,10 +47,12 @@ export {
 export {
   FINDING_SEVERITIES,
   FINDING_STATUSES,
+  FINDING_STAGES,
   DEFAULT_FINDING_STATUS,
   CONFIDENCE_MIN,
   CONFIDENCE_MAX,
   isValidConfidence,
+  hasFingerprint,
   createFinding,
 } from "./contracts/finding.js";
 
@@ -67,6 +84,8 @@ export {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_NETWORK_POLICY,
   DEFAULT_EXECUTION_LIMITS,
+  EXECUTION_LIMIT_PRECEDENCE,
+  EXECUTION_COMMAND_PRECEDENCE,
   createExecutionLimits,
   createExecutionPolicy,
   createExecutionRequest,
@@ -94,6 +113,7 @@ export {
   validateRepositoryModel,
   validateEvidence,
   validateFinding,
+  validateRawFinding,
   validateRule,
   validateAnalyzer,
   validateAnalyzerApplicability,

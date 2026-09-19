@@ -283,11 +283,29 @@ function collectEvidenceIssues(value, ctx, path = "evidence") {
 
 // ─── Finding ─────────────────────────────────────────────────────────────────
 
-function collectFindingIssues(value, ctx, path = "finding") {
+/**
+ * Collect issues for a Finding.
+ *
+ * `requireFingerprint` distinguishes the two Finding stages: canonical findings
+ * (`validateFinding`) must carry a fingerprint produced by the Finding Engine;
+ * raw findings (`validateRawFinding`) are pre-canonical and merely must not
+ * carry a malformed fingerprint. The factory never fabricates one.
+ */
+function collectFindingIssues(value, ctx, path = "finding", options = {}) {
+  const { requireFingerprint = true } = options;
   if (!requireObject(value, ctx, path)) return;
 
-  for (const field of ["id", "ruleId", "category", "title", "fingerprint"]) {
+  for (const field of ["id", "ruleId", "category", "title"]) {
     checkRequiredString(value, field, ctx, path);
+  }
+
+  if (requireFingerprint) {
+    checkRequiredString(value, "fingerprint", ctx, path);
+  } else if ("fingerprint" in value && !isNonEmptyString(value.fingerprint)) {
+    ctx.fail(
+      `${path}.fingerprint`,
+      "must be a non-empty string when present (a canonical fingerprint is assigned later)",
+    );
   }
 
   if (!requireField(value, "description", ctx, path)) {
@@ -349,6 +367,11 @@ function collectFindingIssues(value, ctx, path = "finding") {
 
   checkOptionalObject(value, "impact", ctx, path);
   checkOptionalObject(value, "remediation", ctx, path);
+}
+
+/** Collect issues for a pre-canonical (raw) Finding. */
+function collectRawFindingIssues(value, ctx, path = "rawFinding") {
+  collectFindingIssues(value, ctx, path, { requireFingerprint: false });
 }
 
 // ─── Rule ────────────────────────────────────────────────────────────────────
@@ -457,8 +480,10 @@ function collectAnalyzerResultIssues(value, ctx, path = "analyzerResult") {
     if (!Array.isArray(value.findings)) {
       ctx.fail(`${path}.findings`, "must be an array");
     } else {
+      // Analyzers run before the Finding Engine, so their findings are still
+      // raw: fingerprints are generated later. Raw findings are validated here.
       value.findings.forEach((finding, index) => {
-        collectFindingIssues(finding, ctx, `${path}.findings[${index}]`);
+        collectRawFindingIssues(finding, ctx, `${path}.findings[${index}]`);
       });
     }
   }
@@ -490,18 +515,38 @@ function collectAnalysisContextIssues(value, ctx, path = "analysisContext") {
     requireField(value, field, ctx, path);
   }
 
-  if ("repository" in value && !isPlainObject(value.repository)) {
-    ctx.fail(`${path}.repository`, "must be a plain object (RepositoryModel)");
+  // Composite contract: validate the nested RepositoryModel, Rules and
+  // Evidence rather than merely checking their container types. The nested
+  // collectors live in this module, so no contract module import is needed
+  // (and no circular dependency is introduced).
+  if ("repository" in value) {
+    collectRepositoryModelIssues(
+      value.repository,
+      ctx,
+      `${path}.repository`,
+    );
   }
   checkOptionalObject(value, "configuration", ctx, path);
   checkOptionalObject(value, "execution", ctx, path);
   checkOptionalObject(value, "options", ctx, path);
 
-  if ("rules" in value && !Array.isArray(value.rules)) {
-    ctx.fail(`${path}.rules`, "must be an array");
+  if ("rules" in value) {
+    if (!Array.isArray(value.rules)) {
+      ctx.fail(`${path}.rules`, "must be an array of Rule objects");
+    } else {
+      value.rules.forEach((rule, index) => {
+        collectRuleIssues(rule, ctx, `${path}.rules[${index}]`);
+      });
+    }
   }
-  if ("evidence" in value && !Array.isArray(value.evidence)) {
-    ctx.fail(`${path}.evidence`, "must be an array");
+  if ("evidence" in value) {
+    if (!Array.isArray(value.evidence)) {
+      ctx.fail(`${path}.evidence`, "must be an array of Evidence objects");
+    } else {
+      value.evidence.forEach((evidence, index) => {
+        collectEvidenceIssues(evidence, ctx, `${path}.evidence[${index}]`);
+      });
+    }
   }
 }
 
@@ -609,11 +654,30 @@ export function validateEvidence(value) {
   return value;
 }
 
-/** @returns {object} The validated Finding. */
+/**
+ * Validate a canonical Finding: a finding already carrying a fingerprint.
+ * @returns {object} The validated Finding.
+ */
 export function validateFinding(value) {
   const ctx = createIssueCollector();
   collectFindingIssues(value, ctx);
   ctx.throwIfInvalid("Finding");
+  return value;
+}
+
+/**
+ * Validate a raw (pre-canonical) Finding.
+ *
+ * Raw findings are produced by rules/analyzers before the Finding Engine runs,
+ * so no fingerprint is required yet. Everything else in the Finding contract is
+ * enforced identically to `validateFinding`.
+ *
+ * @returns {object} The validated raw Finding.
+ */
+export function validateRawFinding(value) {
+  const ctx = createIssueCollector();
+  collectRawFindingIssues(value, ctx);
+  ctx.throwIfInvalid("RawFinding");
   return value;
 }
 
@@ -693,6 +757,7 @@ const VALIDATORS = Object.freeze({
   repositoryModel: validateRepositoryModel,
   evidence: validateEvidence,
   finding: validateFinding,
+  rawFinding: validateRawFinding,
   rule: validateRule,
   analyzer: validateAnalyzer,
   analyzerApplicability: validateAnalyzerApplicability,
