@@ -564,7 +564,12 @@ function collectExecutionLimitsIssues(value, ctx, path) {
 
 function collectExecutionPolicyIssues(value, ctx, path) {
   if (!requireObject(value, ctx, path)) return;
-  for (const field of ["allowCommands", "denyCommands", "allowedRoots"]) {
+  for (const field of [
+    "allowCommands",
+    "denyCommands",
+    "allowedRoots",
+    "allowedExecutableRoots",
+  ]) {
     checkOptionalStringArray(value, field, ctx, path);
   }
   if ("network" in value && !isNonEmptyString(value.network)) {

@@ -21,6 +21,10 @@
  * itself. The caller can never supply the environment used here, so a caller
  * cannot steer resolution by handing the runner a different `PATH`.
  *
+ * Relative commands (`./tools/check`) are resolved against the *execution cwd*
+ * the caller requested, which is supplied by the runner — never against the
+ * Code Guardian process cwd.
+ *
  * Containment uses the accepted Phase 8A path layer (`isContained`); this module
  * never re-implements path containment with string prefixes.
  */
@@ -85,17 +89,28 @@ export function executablePathKey(value) {
  * entries), a non-existent path falls back to a plain absolute normalization so
  * the entry is still comparable and can never accidentally match a bare name.
  *
+ * A relative value is resolved against `baseDir`. Callers that have an
+ * execution context always pass the requested execution cwd, so a relative
+ * executable is never silently resolved against the Code Guardian process cwd;
+ * `process.cwd()` is only the fallback for cwd-less use (e.g. evaluating a
+ * policy in isolation).
+ *
  * @param {string} value
  * @param {object} [options]
  * @param {boolean} [options.requireExisting]
+ * @param {string|null} [options.baseDir] Directory a relative value is relative to.
  * @returns {string|null} Canonical absolute path, or `null` when unresolved.
  */
 export function canonicalizeExecutablePath(
   value,
-  { requireExisting = false } = {},
+  { requireExisting = false, baseDir = null } = {},
 ) {
   if (typeof value !== "string" || value.trim() === "") return null;
-  const absolute = nodePath.resolve(value);
+  const base =
+    typeof baseDir === "string" && baseDir.trim() !== ""
+      ? baseDir
+      : process.cwd();
+  const absolute = nodePath.resolve(base, value);
   let canonical;
   try {
     canonical = realpathSync(absolute);
@@ -108,6 +123,11 @@ export function canonicalizeExecutablePath(
   } catch {
     return null;
   }
+}
+
+/** Whether a directory was supplied to resolve relative values against. */
+function hasBaseDir(baseDir) {
+  return typeof baseDir === "string" && baseDir.trim() !== "";
 }
 
 /**
@@ -200,19 +220,36 @@ function executableCandidateNames(command, identity) {
  * - bare name     → first match on the *trusted* search path (must be an
  *                   executable regular file)
  *
+ * A **relative** path (`./tools/check`, `tools/check`, `../tools/check`) is
+ * relative to `baseDir` — the requested execution cwd — never to the Code
+ * Guardian process cwd. Without a `baseDir` a relative command is simply
+ * *unresolved*, so a caller can never obtain an absolute path by omission.
+ *
  * @param {string} command
  * @param {string[]} [trustedRoots] Result of `trustedExecutableRoots`.
+ * @param {object} [options]
+ * @param {string|null} [options.baseDir] Execution cwd relative paths use.
  * @returns {{ identity: string, resolvedPath: string|null, source: "path"|"explicit" }}
  */
-export function resolveCommandExecutable(command, trustedRoots = []) {
+export function resolveCommandExecutable(
+  command,
+  trustedRoots = [],
+  { baseDir = null } = {},
+) {
   const identity = commandIdentity(command);
 
   if (isPathLikeExecutable(command)) {
+    // Absolute paths carry their own location; only relative ones need a base.
+    const needsBaseDir =
+      !nodePath.isAbsolute(command) && !hasBaseDir(baseDir);
     return {
       identity,
-      resolvedPath: canonicalizeExecutablePath(command, {
-        requireExisting: true,
-      }),
+      resolvedPath: needsBaseDir
+        ? null
+        : canonicalizeExecutablePath(command, {
+            requireExisting: true,
+            baseDir,
+          }),
       source: "explicit",
     };
   }

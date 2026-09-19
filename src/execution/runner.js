@@ -15,6 +15,11 @@
  *     runs, and `allowCommands: ["node"]` cannot be satisfied by a file that
  *     merely shares the basename `node`. An unresolvable command is a
  *     rejection, never a spawn.
+ *   - A **relative** command (`./tools/check`) and a relative `allowCommands`/
+ *     `denyCommands` entry are resolved against the requested execution cwd —
+ *     never against the Code Guardian process cwd — so both sides of the
+ *     authorization check share one base. Without a valid execution cwd a
+ *     relative command is unresolved rather than silently resolved elsewhere.
  *   - Policy is evaluated *before* spawning. A rejected command never runs and
  *     is reported as `rejected`, not as a failed process.
  *   - The working directory is resolved through the Phase 8A path layer and must
@@ -498,7 +503,7 @@ function runChild({ child, base, cwdRelative, limits, signal, startTime }) {
  * @param {number} [request.timeout] Request duration cap, in ms.
  * @param {object} [request.limits] `{ maxOutputBytes, maxProcesses }`.
  * @param {object} [request.policy] Core `ExecutionPolicy`-shaped authorization,
- *   plus the additive `allowedExecutableRoots` extension.
+ *   including `allowedExecutableRoots` for authorized executable directories.
  * @param {object} [options] Runner options.
  * @param {number} [options.terminationGraceMs] Delay before SIGKILL.
  * @param {number} [options.maxStdoutBytes] Per-stream stdout cap.
@@ -523,10 +528,25 @@ export async function runExecution(request, options = {}) {
   // runner's own inherited environment) — never the caller's overrides — and
   // the executable that was authorized is the exact path that gets spawned.
   const trustedRoots = trustedExecutableRoots();
-  const resolution = resolveCommandExecutable(command, trustedRoots);
+
+  // The working directory is resolved first: a relative executable is only
+  // meaningful relative to the directory the command will actually run in, so
+  // authorization must see the same base the process will be given. A cwd that
+  // cannot be authorized yields no base, which leaves relative commands
+  // unresolved instead of falling back to the runner's own process cwd.
+  const cwdResolution = await resolveExecutionCwd(
+    request.cwd,
+    policy.allowedRoots ?? [],
+  );
+  const executionCwd = cwdResolution.ok ? cwdResolution.absolute : null;
+
+  const resolution = resolveCommandExecutable(command, trustedRoots, {
+    baseDir: executionCwd,
+  });
   const commandPolicy = evaluateCommandPolicy(command, policy, {
     resolvedPath: resolution.resolvedPath,
     trustedRoots,
+    cwd: executionCwd,
   });
   const { resolvedPath, ...policyDecision } = commandPolicy;
 
@@ -546,6 +566,8 @@ export async function runExecution(request, options = {}) {
   });
 
   if (signal?.aborted) return canceledResult(base, null, startTime);
+  // Policy is evaluated before the cwd rejection so an explicit deny is always
+  // visible; both are rejections and neither spawns anything.
   if (!commandPolicy.allowed || resolvedPath === null) {
     return rejectedResult(
       base,
@@ -555,10 +577,6 @@ export async function runExecution(request, options = {}) {
     );
   }
 
-  const cwdResolution = await resolveExecutionCwd(
-    request.cwd,
-    policy.allowedRoots ?? [],
-  );
   if (!cwdResolution.ok) {
     return rejectedResult(
       base,

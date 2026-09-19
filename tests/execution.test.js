@@ -10,7 +10,15 @@
 
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  linkSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -46,6 +54,8 @@ const TMP_ROOT = join(
 const NODE = process.execPath;
 const NODE_ID = commandIdentity(NODE);
 const WINDOWS = process.platform === "win32";
+// `spawn` (shell: false) only launches `.exe`/`.com` on Windows.
+const REL_EXE_NAME = WINDOWS ? "check.exe" : "check";
 
 let counter = 0;
 const created = [];
@@ -82,6 +92,32 @@ function policy(root, overrides = {}) {
 function makeImpostor(root, name = "node") {
   writeFileSync(join(root, name), "not-a-real-executable\n");
   return join(root, name);
+}
+
+/**
+ * Place a *real* spawnable executable at `<root>/tools/<name>` without relying
+ * on a toolchain, a network, or elevated privileges: hard link, then symlink,
+ * then a copy of the running runtime. Returns the repository-relative command
+ * form (`./tools/check`) or `null` if none of the strategies worked.
+ *
+ * A link strategy can make the fixture canonicalize to the running runtime,
+ * which is fine here: these fixtures only need to be launchable from a relative
+ * path, and the runner compares canonical locations.
+ */
+function makeRelativeExecutable(root) {
+  const dest = join(root, "tools", REL_EXE_NAME);
+  mkdirSync(dirname(dest), { recursive: true });
+  for (const place of [
+    () => linkSync(NODE, dest),
+    () => symlinkSync(NODE, dest),
+    () => copyFileSync(NODE, dest),
+  ]) {
+    try {
+      place();
+      return `./tools/${REL_EXE_NAME}`;
+    } catch {}
+  }
+  return null;
 }
 
 /** A Core ExecutionRequest-shaped helper for `node -e`. */
@@ -469,6 +505,176 @@ describe("executable authorization", () => {
         }),
       ValidationError,
     );
+  });
+});
+
+// ─── Relative executable resolution ──────────────────────────────────────────
+
+describe("relative executable resolution", () => {
+  it("resolves a relative command only against the supplied execution cwd", () => {
+    const root = register(makeRoot({ "tools/check": "#!/bin/sh\nexit 0\n" }));
+    const other = register(makeRoot());
+    const expected = realpathSync(join(root, "tools", "check"));
+
+    // `./tools/check`, `tools/check` and `../tools/check` all mean "relative to
+    // the directory the command will run in".
+    assert.equal(
+      resolveCommandExecutable("./tools/check", [], { baseDir: root }).resolvedPath,
+      expected,
+    );
+    assert.equal(
+      resolveCommandExecutable("tools/check", [], { baseDir: root }).resolvedPath,
+      expected,
+    );
+    assert.equal(
+      resolveCommandExecutable("../tools/check", [], {
+        baseDir: join(root, "sub"),
+      }).resolvedPath,
+      expected,
+    );
+
+    // A different execution cwd must not borrow the fixture, and no execution
+    // cwd at all must never fall back to the Code Guardian process cwd.
+    assert.equal(
+      resolveCommandExecutable("./tools/check", [], { baseDir: other })
+        .resolvedPath,
+      null,
+    );
+    assert.equal(
+      resolveCommandExecutable("./tools/check", []).resolvedPath,
+      null,
+      "a relative command without an execution cwd is unresolved",
+    );
+    // Absolute paths carry their own location and still resolve.
+    assert.equal(resolveCommandExecutable(NODE, []).resolvedPath, realpathSync(NODE));
+  });
+
+  it("spawns a relative command inside the requested execution cwd", async (t) => {
+    const root = register(makeRoot());
+    const rel = makeRelativeExecutable(root);
+    if (rel === null) return t.skip("could not place a spawnable relative fixture");
+
+    const result = await runExecution({
+      command: rel,
+      args: ["-e", "process.stdout.write(process.cwd())"],
+      cwd: root,
+      policy: { allowedRoots: [root], allowCommands: [rel] },
+    });
+
+    assert.equal(result.status, EXECUTION_STATUS.COMPLETED);
+    assert.equal(normalizeForCompare(result.stdout), normalizeForCompare(root));
+    assert.equal(result.identity, commandIdentity(rel));
+  });
+
+  it("resolves a parent-relative command against the execution cwd", async (t) => {
+    const root = register(makeRoot({}, ["sub"]));
+    const placed = makeRelativeExecutable(root);
+    if (placed === null) return t.skip("could not place a spawnable relative fixture");
+    const fromSub = `../tools/${REL_EXE_NAME}`;
+
+    const result = await runExecution({
+      command: fromSub,
+      args: ["-e", "process.stdout.write('parent-relative')"],
+      cwd: "sub",
+      policy: { allowedRoots: [root], allowCommands: [fromSub] },
+    });
+
+    assert.equal(result.status, EXECUTION_STATUS.COMPLETED);
+    assert.equal(result.stdout, "parent-relative");
+  });
+
+  it("does not fall back to the Code Guardian process cwd", async (t) => {
+    const root = register(makeRoot());
+    const rel = makeRelativeExecutable(root);
+    if (rel === null) return t.skip("could not place a spawnable relative fixture");
+    // Same relative path, but an execution cwd that does not contain it. A
+    // process-cwd fallback would wrongly find the fixture anyway.
+    const empty = register(makeRoot());
+
+    const result = await runExecution({
+      command: rel,
+      args: ["-e", "process.exit(0)"],
+      cwd: empty,
+      policy: { allowedRoots: [empty], allowCommands: [commandIdentity(rel)] },
+    });
+
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(
+      result.error.kind,
+      EXECUTION_ERROR_KINDS.COMMAND_NOT_RESOLVED,
+    );
+    assert.equal(result.pid, null, "must not spawn");
+  });
+
+  it("authorizes a relative allow entry against the same execution cwd", () => {
+    const root = register(makeRoot({ "tools/check": "#!/bin/sh\nexit 0\n" }));
+    const other = register(makeRoot({ "tools/check": "#!/bin/sh\nexit 0\n" }));
+    const trustedRoots = trustedExecutableRoots();
+    const policy = { allowCommands: ["./tools/check"] };
+
+    assert.equal(
+      evaluateCommandPolicy("./tools/check", policy, {
+        resolvedPath: realpathSync(join(root, "tools", "check")),
+        trustedRoots,
+        cwd: root,
+      }).allowed,
+      true,
+    );
+
+    // The same relative entry must not authorize a *different* cwd's file.
+    assert.equal(
+      evaluateCommandPolicy("./tools/check", policy, {
+        resolvedPath: realpathSync(join(other, "tools", "check")),
+        trustedRoots,
+        cwd: root,
+      }).allowed,
+      false,
+    );
+  });
+
+  it("does not authorize another cwd's executable through a relative allow entry", async (t) => {
+    const rootA = register(makeRoot());
+    const rootB = register(makeRoot());
+    const relA = makeRelativeExecutable(rootA);
+    if (relA === null) return t.skip("could not place a spawnable relative fixture");
+    // A genuinely different file. (A second copy of the runtime could resolve
+    // to the *same* canonical target, which is legitimately the same
+    // executable, so it would not exercise the location check.)
+    const foreign = join(rootB, "tools", REL_EXE_NAME);
+    mkdirSync(dirname(foreign), { recursive: true });
+    writeFileSync(foreign, "not-a-real-executable\n");
+
+    const result = await runExecution({
+      command: foreign,
+      args: ["-e", "process.exit(0)"],
+      cwd: rootA,
+      policy: { allowedRoots: [rootA], allowCommands: [relA] },
+    });
+
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(result.error.kind, EXECUTION_ERROR_KINDS.COMMAND_NOT_ALLOWED);
+    assert.equal(result.pid, null, "must not spawn another cwd's executable");
+  });
+
+  it("applies execution-cwd semantics to relative deny entries", async (t) => {
+    const root = register(makeRoot());
+    const rel = makeRelativeExecutable(root);
+    if (rel === null) return t.skip("could not place a spawnable relative fixture");
+
+    const result = await runExecution({
+      command: rel,
+      args: ["-e", "process.exit(0)"],
+      cwd: root,
+      policy: {
+        allowedRoots: [root],
+        allowCommands: [rel],
+        denyCommands: [rel],
+      },
+    });
+
+    assert.equal(result.status, EXECUTION_STATUS.REJECTED);
+    assert.equal(result.error.kind, EXECUTION_ERROR_KINDS.COMMAND_DENIED);
+    assert.equal(result.pid, null, "must not spawn a denied command");
   });
 });
 

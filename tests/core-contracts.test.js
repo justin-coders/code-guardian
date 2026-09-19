@@ -1229,6 +1229,36 @@ describe("Execution contracts", () => {
     assert.equal(policy.network, "disabled");
   });
 
+  it("preserves allowedExecutableRoots through the policy factory", () => {
+    // Executable *locations* are part of the authorization contract, so a
+    // policy must not silently drop the executable roots a caller declared.
+    const roots = ["/opt/toolchain/bin"];
+    assert.deepEqual(createExecutionPolicy().allowedExecutableRoots, []);
+    assert.deepEqual(
+      createExecutionPolicy({ allowedExecutableRoots: roots })
+        .allowedExecutableRoots,
+      roots,
+    );
+    assert.ok(
+      validateExecutionPolicy(
+        createExecutionPolicy({ allowedExecutableRoots: roots }),
+      ),
+    );
+    assert.deepEqual(
+      createExecutionRequest({
+        command: "node",
+        cwd: "/repo",
+        policy: { allowedExecutableRoots: roots },
+      }).policy.allowedExecutableRoots,
+      roots,
+    );
+    assertInvalid(() =>
+      validateExecutionPolicy(
+        createExecutionPolicy({ allowedExecutableRoots: "/opt/toolchain/bin" }),
+      ),
+    );
+  });
+
   it("accepts a valid result", () => {
     const result = validExecutionResult();
     assert.equal(validateExecutionResult(result), result);

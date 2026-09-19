@@ -112,6 +112,15 @@ export function createExecutionLimits(input = {}) {
  * `limits`; the duration/output/process values here are authorization ceilings.
  * See `EXECUTION_COMMAND_PRECEDENCE` and `EXECUTION_LIMIT_PRECEDENCE`.
  *
+ * `allowedRoots` authorizes *working directories*. `allowedExecutableRoots`
+ * authorizes *executable directories*: a name in `allowCommands` (`"node"`)
+ * authorizes the executable the trusted environment resolves, and this list
+ * additionally authorizes executables that live in a declared directory (for
+ * example a repository-local toolchain). A bare allow name is never satisfied
+ * by a file that merely shares the basename, and a relative command or entry
+ * is resolved against the requested execution cwd, never against the Code
+ * Guardian process cwd.
+ *
  * @param {object} [input]
  * @returns {object} An ExecutionPolicy-shaped draft; validate before use.
  */
@@ -120,6 +129,7 @@ export function createExecutionPolicy(input = {}) {
     allowCommands: input.allowCommands ?? [],
     denyCommands: input.denyCommands ?? [],
     allowedRoots: input.allowedRoots ?? [],
+    allowedExecutableRoots: input.allowedExecutableRoots ?? [],
     network: input.network ?? DEFAULT_NETWORK_POLICY,
     maxDurationMs: input.maxDurationMs ?? DEFAULT_EXECUTION_TIMEOUT_MS,
     maxOutputBytes: input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,

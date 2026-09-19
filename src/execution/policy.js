@@ -25,12 +25,18 @@
  *   - path entry (`/usr/bin/node`)   → explicit location rule; authorizes that
  *                                      exact canonical file and nothing else
  *
- * `policy.allowedExecutableRoots` is an additive Phase 8B policy field (Core's
- * policy validation accepts it unchanged) for deliberately authorizing an
- * executable *directory* — e.g. a repository-local toolchain.
+ * `policy.allowedExecutableRoots` is an additional policy field (preserved and
+ * validated by the Core `ExecutionPolicy` contract/factory) for deliberately
+ * authorizing an executable *directory* — e.g. a repository-local toolchain.
  *
  * A deny entry is deliberately location-agnostic when bare: `denyCommands:
  * ["node"]` denies every file named `node`, wherever it lives.
+ *
+ * A **relative** path entry (`./tools/check`, `../tools/check`) is resolved
+ * against the requested execution cwd (`context.cwd`), exactly like a relative
+ * *command*, so a relative entry can never authorize an unrelated directory's
+ * executable. Without a `context.cwd` it falls back to comparing cwd-relative
+ * shapes (see `canonicalizeExecutablePath`).
  *
  * Pure matching lives in `evaluateCommandPolicy`; the only filesystem access is
  * canonicalizing explicit paths (`realpath`), delegated to `executable.js`.
@@ -48,12 +54,12 @@ import {
 
 export { commandIdentity };
 
-function compileRules(entries) {
+function compileRules(entries, baseDir = null) {
   const names = new Set();
   const paths = new Set();
   for (const entry of entries ?? []) {
     if (isPathLikeExecutable(entry)) {
-      const canonical = canonicalizeExecutablePath(entry);
+      const canonical = canonicalizeExecutablePath(entry, { baseDir });
       if (canonical !== null) paths.add(executablePathKey(canonical));
     } else {
       names.add(commandIdentity(entry));
@@ -77,6 +83,7 @@ function decision(allowed, identity, resolvedPath, reason, kind) {
  * @param {object} [context]
  * @param {string|null} [context.resolvedPath] Canonical executable location.
  * @param {string[]} [context.trustedRoots] Trusted executable directories.
+ * @param {string|null} [context.cwd] Execution cwd relative entries resolve against.
  * @returns {{
  *   allowed: boolean,
  *   identity: string,
@@ -90,9 +97,10 @@ export function evaluateCommandPolicy(command, policy = {}, context = {}) {
   const resolvedPath = context.resolvedPath ?? null;
   const pathKey = resolvedPath === null ? null : executablePathKey(resolvedPath);
   const trustedRoots = context.trustedRoots ?? [];
+  const cwd = context.cwd ?? null;
 
-  const allow = compileRules(policy.allowCommands);
-  const deny = compileRules(policy.denyCommands);
+  const allow = compileRules(policy.allowCommands, cwd);
+  const deny = compileRules(policy.denyCommands, cwd);
 
   // Deny overrides allow. A bare deny entry matches by name only, so it denies
   // the command wherever it resolves; an explicit path entry denies that file.
