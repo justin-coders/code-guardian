@@ -1,0 +1,445 @@
+/**
+ * Code Guardian — Scanner Result Contract (Phase 8C)
+ *
+ * The scanner produces a *structured repository inventory*: what exists, where it
+ * was observed, and whether the observation was complete. It never produces
+ * judgments — no scores, severities, verdicts or recommendations. Those belong to
+ * the analyzer layers (Phase 8D and later).
+ *
+ * The contract follows the Core conventions deliberately:
+ *
+ *   - `createScanResult()` is a **shape/draft factory** (see Core
+ *     `CONTRACT_FACTORY_SEMANTICS`), not a guaranteed-valid constructor. It fills
+ *     the contracted shape, defaults `scan.complete` to `false`, and never
+ *     fabricates an observation.
+ *   - `validateScanResult()` is the authority on validity and throws a Core
+ *     `ValidationError` listing every issue it found.
+ *
+ * Two invariants matter enough to be enforced by the validator rather than
+ * merely documented:
+ *
+ *   1. **A truncated scan is never complete.** `scan.truncated === true` together
+ *      with `scan.complete === true` is invalid, mirroring the Core
+ *      `RepositoryModel.scan` rule, so "not inspected" can never silently read as
+ *      "not found".
+ *   2. **Collections are deterministically ordered.** Files, directories,
+ *      symlinks, manifests and language entries must be sorted by their identity,
+ *      and evidence must be sorted by `(path, signal)`. A scan of an unchanged
+ *      repository therefore serializes identically.
+ *
+ * `root` and `scannedAt` are scan metadata only. Neither takes part in
+ * classification or ordering, so two scans of the same repository state produce
+ * structurally equal results apart from `scannedAt`.
+ */
+
+import { ValidationError } from "../../core/index.js";
+
+/** Version of the scan result contract. */
+export const SCAN_RESULT_VERSION = "1";
+
+/** Limit on evidence paths retained per detected signal. */
+export const MAX_EVIDENCE_PER_SIGNAL = 10;
+
+/** Stable signal ids used across detectors. */
+export const SCAN_SIGNALS = Object.freeze({
+  SOURCE_EXTENSION: "source-extension",
+  MANIFEST: "manifest",
+  LOCKFILE: "lockfile",
+  TEST_DIRECTORY: "test-directory",
+  TEST_FILE: "test-file",
+  TEST_CONFIGURATION: "test-configuration",
+  CI_CONFIGURATION: "ci-configuration",
+  README: "readme",
+  DOCUMENTATION_DIRECTORY: "documentation-directory",
+  CHANGELOG: "changelog",
+  CONTRIBUTING: "contributing",
+  CODE_OF_CONDUCT: "code-of-conduct",
+  DOCKERFILE: "dockerfile",
+  CONTAINER_IGNORE: "container-ignore",
+  COMPOSE_FILE: "compose-file",
+  ENVIRONMENT_EXAMPLE: "environment-example",
+  LINT_CONFIGURATION: "lint-configuration",
+  FORMAT_CONFIGURATION: "format-configuration",
+  BUILD_CONFIGURATION: "build-configuration",
+  VERSION_PINNING: "version-pinning",
+  LICENSE: "license",
+  VCS_CONFIGURATION: "vcs-configuration",
+  GIT_DIRECTORY: "git-directory",
+  GIT_FILE: "git-file",
+  GIT_HEAD: "git-head",
+});
+
+const ARRAY_SECTIONS = Object.freeze([
+  "files",
+  "directories",
+  "symlinks",
+  "ignored",
+  "languages",
+  "manifests",
+]);
+
+const DETECTION_SECTIONS = Object.freeze([
+  "tests",
+  "cicd",
+  "documentation",
+  "configuration",
+]);
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+function isNonNegativeInteger(value) {
+  return Number.isInteger(value) && value >= 0;
+}
+
+function sortByPath(entries) {
+  return [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+}
+
+function emptyDetection() {
+  return { detected: false, evidence: [] };
+}
+
+/**
+ * Cap an evidence list at the contract limit, reporting the truncation.
+ *
+ * Evidence is never silently dropped: the caller records `evidenceTruncated` so
+ * a bounded list cannot be mistaken for the complete set of observations.
+ *
+ * @param {object[]} entries Evidence drafts, deterministic order assumed.
+ * @param {number} [limit]
+ * @returns {{ evidence: object[], evidenceTruncated: boolean }}
+ */
+export function capEvidence(entries, limit = MAX_EVIDENCE_PER_SIGNAL) {
+  if (entries.length <= limit) return { evidence: entries, evidenceTruncated: false };
+  return { evidence: entries.slice(0, limit), evidenceTruncated: true };
+}
+
+/** Deterministic comparator for evidence entries: path, then signal. */
+export function compareEvidence(a, b) {
+  if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+  if (a.signal === b.signal) return 0;
+  return a.signal < b.signal ? -1 : 1;
+}
+
+/**
+ * Build a scan-result draft.
+ *
+ * @param {object} [overrides] Partial result. Unknown keys are ignored so the
+ *   factory always returns the contracted shape.
+ * @returns {object} A ScanResult-shaped draft; run `validateScanResult` first.
+ */
+export function createScanResult(overrides = {}) {
+  const scan = overrides.scan ?? {};
+  const statistics = overrides.statistics ?? {};
+  const ignore = overrides.ignore ?? {};
+  const tests = overrides.tests ?? {};
+  const cicd = overrides.cicd ?? {};
+  const documentation = overrides.documentation ?? {};
+  const configuration = overrides.configuration ?? {};
+  const git = overrides.git ?? {};
+
+  return {
+    version: overrides.version ?? SCAN_RESULT_VERSION,
+    root: overrides.root ?? null,
+    scannedAt: overrides.scannedAt ?? null,
+    files: overrides.files ?? [],
+    directories: overrides.directories ?? [],
+    symlinks: overrides.symlinks ?? [],
+    ignored: overrides.ignored ?? [],
+    languages: overrides.languages ?? [],
+    manifests: overrides.manifests ?? [],
+    tests: {
+      ...emptyDetection(),
+      ...tests,
+      evidence: tests.evidence ?? [],
+      frameworks: tests.frameworks ?? [],
+    },
+    cicd: {
+      ...emptyDetection(),
+      ...cicd,
+      evidence: cicd.evidence ?? [],
+      providers: cicd.providers ?? [],
+    },
+    documentation: {
+      ...emptyDetection(),
+      ...documentation,
+      evidence: documentation.evidence ?? [],
+    },
+    configuration: {
+      ...emptyDetection(),
+      ...configuration,
+      evidence: configuration.evidence ?? [],
+    },
+    git: {
+      detected: git.detected ?? false,
+      head: git.head ?? null,
+      evidence: git.evidence ?? [],
+    },
+    statistics: {
+      filesScanned: statistics.filesScanned ?? 0,
+      directoriesScanned: statistics.directoriesScanned ?? 0,
+      symlinksScanned: statistics.symlinksScanned ?? 0,
+      ignored: statistics.ignored ?? 0,
+      unreadable: statistics.unreadable ?? 0,
+      truncatedBy: statistics.truncatedBy ?? [],
+    },
+    ignore: {
+      sources: ignore.sources ?? [],
+      defaultIgnoredDirectories: ignore.defaultIgnoredDirectories ?? [],
+      unsupported: ignore.unsupported ?? [],
+    },
+    scan: {
+      complete: scan.complete ?? false,
+      truncated: scan.truncated ?? false,
+      limits: scan.limits ?? {},
+      errors: scan.errors ?? [],
+    },
+  };
+}
+
+function assertSortedByPath(entries, ctx, label) {
+  for (let index = 1; index < entries.length; index += 1) {
+    if (entries[index - 1].path > entries[index].path) {
+      ctx.fail(`${label}[${index}].path`, "must be sorted ascending by path");
+      return;
+    }
+  }
+}
+
+function collectEvidenceIssues(evidence, ctx, path) {
+  if (!Array.isArray(evidence)) {
+    ctx.fail(path, "must be an array");
+    return;
+  }
+  evidence.forEach((entry, index) => {
+    if (!isPlainObject(entry)) {
+      ctx.fail(`${path}[${index}]`, "must be a plain object");
+      return;
+    }
+    if (!isNonEmptyString(entry.path)) {
+      ctx.fail(`${path}[${index}].path`, "must be a non-empty string");
+    }
+    if (!isNonEmptyString(entry.signal)) {
+      ctx.fail(`${path}[${index}].signal`, "must be a non-empty string");
+    }
+  });
+  for (let index = 1; index < evidence.length; index += 1) {
+    const previous = `${evidence[index - 1].path}\u0000${evidence[index - 1].signal}`;
+    const current = `${evidence[index].path}\u0000${evidence[index].signal}`;
+    if (previous > current) {
+      ctx.fail(`${path}[${index}]`, "evidence must be sorted by path then signal");
+      return;
+    }
+  }
+}
+
+function collectDetectionIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  if (typeof section.detected !== "boolean") {
+    ctx.fail(`${path}.detected`, "must be a boolean");
+  }
+  if (
+    section.evidenceTruncated !== undefined &&
+    typeof section.evidenceTruncated !== "boolean"
+  ) {
+    ctx.fail(`${path}.evidenceTruncated`, "must be a boolean");
+  }
+  collectEvidenceIssues(section.evidence, ctx, `${path}.evidence`);
+  if ("frameworks" in section && !Array.isArray(section.frameworks)) {
+    ctx.fail(`${path}.frameworks`, "must be an array");
+  }
+  if ("providers" in section && !Array.isArray(section.providers)) {
+    ctx.fail(`${path}.providers`, "must be an array");
+  }
+}
+
+/**
+ * Validate a scan result.
+ *
+ * @param {unknown} value
+ * @returns {object} The same value when valid.
+ * @throws {ValidationError} When any contract invariant is violated.
+ */
+export function validateScanResult(value) {
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+  const ctx = { fail };
+
+  if (!isPlainObject(value)) {
+    throw new ValidationError("Invalid scan result", {
+      details: {
+        contract: "ScanResult",
+        issues: ["scanResult: must be a plain object"],
+      },
+    });
+  }
+
+  if (!isNonEmptyString(value.version)) fail("scanResult.version", "must be a non-empty string");
+  if (!isNonEmptyString(value.root)) fail("scanResult.root", "must be a non-empty string");
+  if (!isNonEmptyString(value.scannedAt)) {
+    fail("scanResult.scannedAt", "must be a non-empty string");
+  }
+
+  for (const section of ARRAY_SECTIONS) {
+    if (!Array.isArray(value[section])) fail(`scanResult.${section}`, "must be an array");
+  }
+
+  if (Array.isArray(value.files)) {
+    value.files.forEach((entry, index) => {
+      if (!isPlainObject(entry)) {
+        fail(`scanResult.files[${index}]`, "must be a plain object");
+        return;
+      }
+      if (!isNonEmptyString(entry.path)) {
+        fail(`scanResult.files[${index}].path`, "must be a non-empty string");
+      }
+      if (!isNonEmptyString(entry.name)) {
+        fail(`scanResult.files[${index}].name`, "must be a non-empty string");
+      }
+      if (!isNonNegativeInteger(entry.depth)) {
+        fail(`scanResult.files[${index}].depth`, "must be a non-negative integer");
+      }
+    });
+    assertSortedByPath(value.files, ctx, "scanResult.files");
+  }
+
+  if (Array.isArray(value.directories)) {
+    value.directories.forEach((entry, index) => {
+      if (!isPlainObject(entry) || !isNonEmptyString(entry.path)) {
+        fail(`scanResult.directories[${index}].path`, "must be a non-empty string");
+      }
+    });
+    assertSortedByPath(value.directories, ctx, "scanResult.directories");
+  }
+
+  if (Array.isArray(value.symlinks)) assertSortedByPath(value.symlinks, ctx, "scanResult.symlinks");
+  if (Array.isArray(value.ignored)) {
+    assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
+    value.ignored.forEach((entry, index) => {
+      if (!isNonEmptyString(entry.policy)) {
+        fail(`scanResult.ignored[${index}].policy`, "must record the ignore policy");
+      }
+    });
+  }
+
+  if (Array.isArray(value.languages)) {
+    value.languages.forEach((entry, index) => {
+      if (!isPlainObject(entry) || !isNonEmptyString(entry.id)) {
+        fail(`scanResult.languages[${index}].id`, "must be a non-empty string");
+        return;
+      }
+      if (!isNonNegativeInteger(entry.fileCount)) {
+        fail(`scanResult.languages[${index}].fileCount`, "must be a non-negative integer");
+      }
+      if (Array.isArray(entry.evidence) && entry.evidence.length === 0) {
+        fail(
+          `scanResult.languages[${index}].evidence`,
+          "a language must not be reported without evidence",
+        );
+      }
+      collectEvidenceIssues(entry.evidence, ctx, `scanResult.languages[${index}].evidence`);
+    });
+    for (let index = 1; index < value.languages.length; index += 1) {
+      if (value.languages[index - 1].id >= value.languages[index].id) {
+        fail(`scanResult.languages[${index}].id`, "languages must be sorted by id and unique");
+        break;
+      }
+    }
+  }
+
+  if (Array.isArray(value.manifests)) {
+    assertSortedByPath(value.manifests, ctx, "scanResult.manifests");
+    value.manifests.forEach((entry, index) => {
+      if (!isNonEmptyString(entry.ecosystem)) {
+        fail(`scanResult.manifests[${index}].ecosystem`, "must be a non-empty string");
+      }
+      if (!isPlainObject(entry.parse) || !isNonEmptyString(entry.parse.status)) {
+        fail(`scanResult.manifests[${index}].parse.status`, "must record a parse status");
+      }
+    });
+  }
+
+  for (const section of DETECTION_SECTIONS) {
+    collectDetectionIssues(value[section], ctx, `scanResult.${section}`);
+  }
+
+  if (!isPlainObject(value.git)) {
+    fail("scanResult.git", "must be a plain object");
+  } else {
+    if (typeof value.git.detected !== "boolean") {
+      fail("scanResult.git.detected", "must be a boolean");
+    }
+    collectEvidenceIssues(value.git.evidence, ctx, "scanResult.git.evidence");
+  }
+
+  if (!isPlainObject(value.statistics)) {
+    fail("scanResult.statistics", "must be a plain object");
+  } else {
+    for (const field of [
+      "filesScanned",
+      "directoriesScanned",
+      "symlinksScanned",
+      "ignored",
+      "unreadable",
+    ]) {
+      if (!isNonNegativeInteger(value.statistics[field])) {
+        fail(`scanResult.statistics.${field}`, "must be a non-negative integer");
+      }
+    }
+    if (!Array.isArray(value.statistics.truncatedBy)) {
+      fail("scanResult.statistics.truncatedBy", "must be an array");
+    }
+  }
+
+  if (!isPlainObject(value.ignore)) {
+    fail("scanResult.ignore", "must be a plain object");
+  } else {
+    for (const field of ["sources", "defaultIgnoredDirectories", "unsupported"]) {
+      if (!Array.isArray(value.ignore[field])) {
+        fail(`scanResult.ignore.${field}`, "must be an array");
+      }
+    }
+  }
+
+  if (!isPlainObject(value.scan)) {
+    fail("scanResult.scan", "must be a plain object");
+  } else {
+    if (typeof value.scan.complete !== "boolean") {
+      fail("scanResult.scan.complete", "must be a boolean");
+    }
+    if (typeof value.scan.truncated !== "boolean") {
+      fail("scanResult.scan.truncated", "must be a boolean");
+    }
+    if (!isPlainObject(value.scan.limits)) {
+      fail("scanResult.scan.limits", "must be a plain object");
+    }
+    if (!Array.isArray(value.scan.errors)) {
+      fail("scanResult.scan.errors", "must be an array");
+    }
+    if (value.scan.truncated === true && value.scan.complete === true) {
+      fail(
+        "scanResult.scan",
+        "cannot be complete and truncated at once; a truncated scan must report complete: false",
+      );
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new ValidationError("Invalid scan result", {
+      details: { contract: "ScanResult", issues },
+    });
+  }
+
+  return value;
+}
+
+export { sortByPath };
