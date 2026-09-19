@@ -18,6 +18,17 @@
  * independent output limits. `terminationGraceMs` is a runner knob with no
  * policy counterpart and is not subject to the most-restrictive rule.
  *
+ * Timer delays must stay *truthful*. `setTimeout` cannot represent a delay
+ * above `MAX_TIMER_DELAY_MS`: Node clamps anything larger to **1 ms** and emits
+ * a `TimeoutOverflowWarning`, so a declared long budget would silently become an
+ * immediate kill while `limits.timeoutMs` still reported the declared value —
+ * an unenforced limit recorded as if it were enforced. Resolving such a value
+ * is therefore a structured `ValidationError` rather than a silent clamp.
+ *
+ * Only the *effective* delays are range-checked, never the declaring layers: a
+ * policy ceiling that is large but always narrowed by the request (or the
+ * default) still resolves to a usable value and keeps working.
+ *
  * Nothing is enforced that Node cannot enforce cross-platform: `maxProcesses`
  * is recorded for compatibility, but 8B runs exactly one process per call.
  */
@@ -25,15 +36,46 @@
 import {
   DEFAULT_EXECUTION_TIMEOUT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
+  ValidationError,
 } from "../core/index.js";
 
 /** Default delay between requesting and forcing process termination. */
 export const DEFAULT_TERMINATION_GRACE_MS = 5000;
 
+/**
+ * Largest delay `setTimeout` can represent (a signed 32-bit millisecond count).
+ * Larger values are clamped to 1 ms by Node, so the runner refuses them instead
+ * of recording a limit it cannot enforce.
+ */
+export const MAX_TIMER_DELAY_MS = 2147483647;
+
 function mostRestrictive(...values) {
   return values.reduce((smallest, value) =>
     value < smallest ? value : smallest,
   );
+}
+
+/**
+ * Reject an effective timer delay the platform cannot represent.
+ *
+ * @param {string} name Field name reported in the validation issue.
+ * @param {number} value Resolved delay, in milliseconds.
+ * @returns {number} The same value when it is representable.
+ * @throws {ValidationError} When the delay would be clamped by `setTimeout`.
+ */
+function requireRepresentableDelay(name, value) {
+  if (value > MAX_TIMER_DELAY_MS) {
+    throw new ValidationError("Invalid execution limits", {
+      details: {
+        contract: "ExecutionLimits",
+        issues: [
+          `${name}: must not exceed ${MAX_TIMER_DELAY_MS} ms ` +
+            "(maximum timer delay)",
+        ],
+      },
+    });
+  }
+  return value;
 }
 
 /**
@@ -77,8 +119,11 @@ export function resolveExecutionLimits({
     options.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
 
   return {
-    timeoutMs,
-    terminationGraceMs,
+    timeoutMs: requireRepresentableDelay("timeoutMs", timeoutMs),
+    terminationGraceMs: requireRepresentableDelay(
+      "terminationGraceMs",
+      terminationGraceMs,
+    ),
     maxStdoutBytes,
     maxStderrBytes,
     maxProcesses,

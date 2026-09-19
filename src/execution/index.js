@@ -31,6 +31,7 @@ export {
 
 export {
   DEFAULT_TERMINATION_GRACE_MS,
+  MAX_TIMER_DELAY_MS,
   resolveExecutionLimits,
 } from "./limits.js";
 
