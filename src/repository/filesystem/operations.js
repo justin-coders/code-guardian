@@ -13,20 +13,37 @@
  *
  * Path arguments are always resolved against the repository root and must stay
  * inside it; an escape is reported as `INVALID_PATH`.
+ *
+ * Symlink policy (Phase 8A correction 1): the no-follow policy is enforced
+ * here, not only by `walk`. Before reading or listing, every component of the
+ * resolved repository-relative path is `lstat`ed; if any component is a symlink
+ * the operation is refused with `SYMLINK_NOT_ALLOWED`. A lexical containment
+ * check alone is not enough: `repo/link -> /outside` is lexically inside the
+ * repository but would resolve outside it. Rejecting symlinks (file or
+ * directory, inside or outside the root) keeps reads, listings and traversal
+ * consistent with `SYMLINK_POLICY`.
  */
 
 import {
+  lstat as fsLstat,
   readFile as fsReadFile,
   readdir as fsReaddir,
 } from "node:fs/promises";
 import { join as joinPath } from "node:path";
 
-import { toFilesystemError } from "./errors.js";
+import {
+  FILESYSTEM_ERROR_KINDS,
+  FilesystemError,
+  toFilesystemError,
+} from "./errors.js";
 import {
   normalizeRoot,
   resolveWithin,
   toRepositoryRelative,
 } from "./paths.js";
+
+/** Explicit, documented symlink policy. Enforced by every operation here. */
+export const SYMLINK_POLICY = "not-followed";
 
 /** Entry types a directory listing can report. */
 export const DIRECTORY_ENTRY_TYPES = Object.freeze({
@@ -50,13 +67,79 @@ function compareByName(a, b) {
   return 0;
 }
 
+/**
+ * Whether any component of a repository-relative path is a symlink.
+ *
+ * Uses `lstat`, which inspects the link itself rather than its target, so a
+ * broken symlink is still detected. If a component cannot be `lstat`ed the
+ * check reports "no symlink" and lets the real operation surface that error, so
+ * genuine `NOT_FOUND`/`PERMISSION_DENIED` results are never masked.
+ *
+ * @param {string} resolvedRoot Absolute repository root.
+ * @param {string} relative POSIX repository-relative path ("." for the root).
+ * @returns {Promise<boolean>}
+ */
+async function traversesSymlink(resolvedRoot, relative) {
+  if (relative === ".") return false;
+  const segments = relative.split("/");
+  let current = resolvedRoot;
+  for (const segment of segments) {
+    current = joinPath(current, segment);
+    let stats;
+    try {
+      stats = await fsLstat(current);
+    } catch {
+      return false;
+    }
+    if (stats.isSymbolicLink()) return true;
+  }
+  return false;
+}
+
 function failure(operation, error, target, extra = {}) {
   return {
     ok: false,
     path: extra.path ?? null,
     relative: extra.relative ?? null,
-    error: toFilesystemError(error, { operation, path: extra.reportPath ?? target }),
+    error: toFilesystemError(error, {
+      operation,
+      path: extra.reportPath ?? target,
+    }),
   };
+}
+
+function symlinkRefused(operation, absolute, relative) {
+  return {
+    ok: false,
+    path: absolute ?? null,
+    relative: relative ?? null,
+    error: new FilesystemError({
+      kind: FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED,
+      operation,
+      path: relative ?? null,
+    }),
+  };
+}
+
+/** Resolve a target for an operation, returning a failure object on error. */
+function resolveForOperation(operation, root, target) {
+  let resolvedRoot;
+  try {
+    resolvedRoot = normalizeRoot(root);
+  } catch (error) {
+    return { failure: failure(operation, error, target) };
+  }
+
+  let absolute;
+  let relative;
+  try {
+    absolute = resolveWithin(resolvedRoot, target);
+    relative = toRepositoryRelative(resolvedRoot, absolute);
+  } catch (error) {
+    return { failure: failure(operation, error, target) };
+  }
+
+  return { resolvedRoot, absolute, relative };
 }
 
 /**
@@ -71,20 +154,13 @@ function failure(operation, error, target, extra = {}) {
 export async function readFile(root, target, options = {}) {
   const encoding = options.encoding === undefined ? "utf8" : options.encoding;
 
-  let resolvedRoot;
-  try {
-    resolvedRoot = normalizeRoot(root);
-  } catch (error) {
-    return failure("readFile", error, target);
-  }
+  const resolved = resolveForOperation("readFile", root, target);
+  if (resolved.failure) return resolved.failure;
 
-  let absolute;
-  let relative;
-  try {
-    absolute = resolveWithin(resolvedRoot, target);
-    relative = toRepositoryRelative(resolvedRoot, absolute);
-  } catch (error) {
-    return failure("readFile", error, target);
+  const { resolvedRoot, absolute, relative } = resolved;
+
+  if (await traversesSymlink(resolvedRoot, relative)) {
+    return symlinkRefused("readFile", absolute, relative);
   }
 
   try {
@@ -110,20 +186,13 @@ export async function readFile(root, target, options = {}) {
  * @returns {Promise<{ok: true, path: string, relative: string, entries: Array<{name: string, type: string, path: string, relative: string}>}|{ok: false, path: string|null, relative: string|null, error: import("./errors.js").FilesystemError}>}
  */
 export async function listDirectory(root, target = ".") {
-  let resolvedRoot;
-  try {
-    resolvedRoot = normalizeRoot(root);
-  } catch (error) {
-    return failure("listDirectory", error, target);
-  }
+  const resolved = resolveForOperation("listDirectory", root, target);
+  if (resolved.failure) return resolved.failure;
 
-  let absolute;
-  let relative;
-  try {
-    absolute = resolveWithin(resolvedRoot, target);
-    relative = toRepositoryRelative(resolvedRoot, absolute);
-  } catch (error) {
-    return failure("listDirectory", error, target);
+  const { resolvedRoot, absolute, relative } = resolved;
+
+  if (await traversesSymlink(resolvedRoot, relative)) {
+    return symlinkRefused("listDirectory", absolute, relative);
   }
 
   try {

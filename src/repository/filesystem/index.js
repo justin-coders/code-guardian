@@ -17,6 +17,8 @@ export {
   FILESYSTEM_ERROR_CODES,
   FilesystemError,
   classifyFilesystemError,
+  filesystemErrorMessage,
+  sanitizeFilesystemPath,
   toFilesystemError,
 } from "./errors.js";
 
@@ -32,12 +34,12 @@ export {
 
 export {
   DIRECTORY_ENTRY_TYPES,
+  SYMLINK_POLICY,
   readFile,
   listDirectory,
 } from "./operations.js";
 
 export {
-  SYMLINK_POLICY,
   DEFAULT_WALK_OPTIONS,
   walk,
 } from "./walk.js";

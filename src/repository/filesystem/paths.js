@@ -28,17 +28,22 @@
 import nodePath from "node:path";
 
 import {
-  FILESYSTEM_ERROR_CODES,
   FILESYSTEM_ERROR_KINDS,
   FilesystemError,
 } from "./errors.js";
 
-function invalidPathError(message, operation, path) {
-  return new FilesystemError(message, {
+/**
+ * Build an `INVALID_PATH` failure.
+ *
+ * No offending path is recorded: a rejected path is either outside the
+ * repository (so there is no repository-relative form) or is not a usable
+ * path at all. Either way the message stays derived from kind + operation.
+ */
+function invalidPathError(operation) {
+  return new FilesystemError({
     kind: FILESYSTEM_ERROR_KINDS.INVALID_PATH,
-    code: FILESYSTEM_ERROR_CODES.INVALID_PATH,
     operation,
-    path: typeof path === "string" ? path : null,
+    path: null,
   });
 }
 
@@ -63,11 +68,7 @@ export function createPathTools(path) {
    */
   function normalizeRoot(root) {
     if (typeof root !== "string" || root.trim() === "") {
-      throw invalidPathError(
-        "repository root must be a non-empty string",
-        "normalizeRoot",
-        root,
-      );
+      throw invalidPathError("normalizeRoot");
     }
     return path.resolve(root);
   }
@@ -82,11 +83,7 @@ export function createPathTools(path) {
   function resolvePath(root, target) {
     const resolvedRoot = normalizeRoot(root);
     if (typeof target !== "string" || target.trim() === "") {
-      throw invalidPathError(
-        "path must be a non-empty string",
-        "resolvePath",
-        target,
-      );
+      throw invalidPathError("resolvePath");
     }
     return path.isAbsolute(target)
       ? path.resolve(target)
@@ -114,11 +111,7 @@ export function createPathTools(path) {
     const resolvedRoot = normalizeRoot(root);
     const absolute = resolvePath(resolvedRoot, target);
     if (escapesBase(resolvedRoot, absolute)) {
-      throw invalidPathError(
-        `path escapes repository root: ${target}`,
-        "resolveWithin",
-        target,
-      );
+      throw invalidPathError("resolveWithin");
     }
     return absolute;
   }
@@ -135,20 +128,12 @@ export function createPathTools(path) {
     if (segments.length === 0) return resolvedRoot;
     for (const segment of segments) {
       if (typeof segment !== "string" || segment.trim() === "") {
-        throw invalidPathError(
-          "path segments must be non-empty strings",
-          "joinWithin",
-          segment,
-        );
+        throw invalidPathError("joinWithin");
       }
     }
     const joined = path.resolve(resolvedRoot, ...segments);
     if (escapesBase(resolvedRoot, joined)) {
-      throw invalidPathError(
-        `path escapes repository root: ${segments.join("/")}`,
-        "joinWithin",
-        segments.join("/"),
-      );
+      throw invalidPathError("joinWithin");
     }
     return joined;
   }
@@ -163,11 +148,7 @@ export function createPathTools(path) {
     const resolvedRoot = normalizeRoot(root);
     const absolute = resolvePath(resolvedRoot, target);
     if (escapesBase(resolvedRoot, absolute)) {
-      throw invalidPathError(
-        `path escapes repository root: ${target}`,
-        "toRepositoryRelative",
-        target,
-      );
+      throw invalidPathError("toRepositoryRelative");
     }
     const relative = path.relative(resolvedRoot, absolute);
     if (relative === "") return ".";

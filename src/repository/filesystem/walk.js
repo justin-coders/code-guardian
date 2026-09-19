@@ -11,11 +11,12 @@
  *      `DEFAULT_SCAN_LIMITS` baseline (maxFiles 10000, maxDepth 20); callers may
  *      override them, and invalid limits are rejected rather than ignored.
  *
- * Symlink policy (Phase 8A §14): directory symlinks are **never followed**.
- * Every symlink is recorded in `symlinks` but never descended into and never
- * treated as a regular file. That keeps the walk free of cycles and prevents
- * traversal escaping the repository through a link. The policy is reported on
- * the result as `symlinkPolicy`.
+ * Symlink policy (Phase 8A §14): symlinks are **never followed**. Every
+ * symlink is recorded in `symlinks` but never descended into and never treated
+ * as a regular file. That keeps the walk free of cycles and prevents traversal
+ * escaping the repository through a link. The policy is enforced by
+ * `listDirectory`/`readFile` too (Phase 8A correction 1), not only here, and is
+ * reported on the result as `symlinkPolicy`.
  *
  * Invalid options throw a Core `ValidationError`; filesystem conditions are
  * reported as structured data inside the result.
@@ -23,11 +24,16 @@
 
 import { DEFAULT_SCAN_LIMITS, ValidationError } from "../../core/index.js";
 
-import { DIRECTORY_ENTRY_TYPES, listDirectory } from "./operations.js";
+import {
+  DIRECTORY_ENTRY_TYPES,
+  SYMLINK_POLICY,
+  listDirectory,
+} from "./operations.js";
 import { normalizeRoot } from "./paths.js";
 
-/** Explicit, documented symlink policy for this phase. */
-export const SYMLINK_POLICY = "not-followed";
+// Re-exported so the policy constant keeps a single definition (in the module
+// that enforces it) while remaining part of the walk surface.
+export { SYMLINK_POLICY };
 
 /** Default walk options, aligned with the Phase 7 scan-limit baseline. */
 export const DEFAULT_WALK_OPTIONS = Object.freeze({

@@ -34,6 +34,7 @@ import {
   SYMLINK_POLICY,
   classifyFilesystemError,
   createPathTools,
+  filesystemErrorMessage,
   isContained,
   joinWithin,
   listDirectory,
@@ -41,6 +42,7 @@ import {
   readFile,
   resolvePath,
   resolveWithin,
+  sanitizeFilesystemPath,
   toFilesystemError,
   toRepositoryRelative,
   walk,
@@ -76,12 +78,18 @@ function makeFixture(files = {}, dirs = []) {
   return dir;
 }
 
-/** Probe whether the platform allows creating directory symlinks. */
+/** Probe whether the platform allows creating directory and file symlinks. */
 function symlinksSupported() {
   const probe = join(TMP_ROOT, `symlink-probe-${process.pid}-${Date.now()}`);
   try {
     mkdirSync(join(probe, "target"), { recursive: true });
-    symlinkSync(join(probe, "target"), join(probe, "link"), "dir");
+    writeFileSync(join(probe, "target", "file.txt"), "x");
+    symlinkSync(join(probe, "target"), join(probe, "link-dir"), "dir");
+    symlinkSync(
+      join(probe, "target", "file.txt"),
+      join(probe, "link-file.txt"),
+      "file",
+    );
     return true;
   } catch {
     return false;
@@ -220,7 +228,7 @@ describe("path utilities", () => {
 
 describe("filesystem error semantics", () => {
   it("extends the Core RepositoryError with structured details", () => {
-    const error = new FilesystemError("boom", {
+    const error = new FilesystemError({
       kind: FILESYSTEM_ERROR_KINDS.NOT_FOUND,
       operation: "readFile",
       path: "a/b.js",
@@ -239,13 +247,13 @@ describe("filesystem error semantics", () => {
   });
 
   it("defaults an unknown kind to the generic filesystem error", () => {
-    const error = new FilesystemError("boom", { kind: "NOT_A_KIND" });
+    const error = new FilesystemError({ kind: "NOT_A_KIND" });
     assert.equal(error.kind, FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR);
     assert.equal(error.code, FILESYSTEM_ERROR_CODES.FILESYSTEM_ERROR);
   });
 
   it("does not leak stack or cause when serialized", () => {
-    const error = new FilesystemError("boom", {
+    const error = new FilesystemError({
       kind: FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR,
       cause: new Error("internal detail"),
     });
@@ -296,10 +304,113 @@ describe("filesystem error semantics", () => {
   });
 
   it("passes an existing FilesystemError through unchanged", () => {
-    const original = new FilesystemError("x", {
+    const original = new FilesystemError({
       kind: FILESYSTEM_ERROR_KINDS.INVALID_PATH,
     });
     assert.equal(toFilesystemError(original), original);
+  });
+});
+
+// ─── Error sanitization (Phase 8A correction 2) ──────────────────────────────
+
+describe("filesystem error sanitization", () => {
+  it("never copies a raw Node message that embeds an absolute path", () => {
+    const nodeError = Object.assign(
+      new Error(
+        "ENOENT: no such file or directory, open 'C:\\Users\\secret\\repo\\file.txt'",
+      ),
+      { code: "ENOENT" },
+    );
+    const error = toFilesystemError(nodeError, {
+      operation: "readFile",
+      path: "file.txt",
+    });
+    const json = error.toJSON();
+
+    assert.equal(error.kind, FILESYSTEM_ERROR_KINDS.NOT_FOUND);
+    assert.equal(json.message, "readFile: filesystem path not found");
+    assert.equal(json.details.path, "file.txt");
+    assert.ok(!json.message.includes("C:\\Users\\secret"));
+    assert.ok(!JSON.stringify(json).includes("C:\\Users\\secret"));
+  });
+
+  it("serializes neither stack nor cause nor the raw cause message", () => {
+    const error = toFilesystemError(new Error("/abs/path/leak"), {
+      operation: "listDirectory",
+      path: "src",
+    });
+    const json = error.toJSON();
+    assert.ok(!("stack" in json));
+    assert.ok(!("cause" in json));
+    assert.ok(!JSON.stringify(json).includes("/abs/path/leak"));
+  });
+
+  it("drops absolute inputs from details.path", () => {
+    assert.equal(sanitizeFilesystemPath("/etc/passwd"), null);
+    assert.equal(sanitizeFilesystemPath("C:\\Users\\secret"), null);
+    assert.equal(sanitizeFilesystemPath("\\\\server\\share"), null);
+    assert.equal(sanitizeFilesystemPath(""), null);
+    assert.equal(sanitizeFilesystemPath("src/index.js"), "src/index.js");
+
+    const error = new FilesystemError({
+      kind: FILESYSTEM_ERROR_KINDS.INVALID_PATH,
+      operation: "resolveWithin",
+      path: "/etc/passwd",
+    });
+    assert.equal(error.details.path, null);
+    assert.ok(!JSON.stringify(error.toJSON()).includes("/etc/passwd"));
+  });
+
+  it("keeps a repository-relative details.path intact", () => {
+    const error = new FilesystemError({
+      kind: FILESYSTEM_ERROR_KINDS.NOT_FOUND,
+      operation: "readFile",
+      path: "src/index.js",
+    });
+    assert.equal(error.details.path, "src/index.js");
+  });
+
+  it("derives a deterministic message from kind and operation", () => {
+    assert.equal(
+      filesystemErrorMessage(FILESYSTEM_ERROR_KINDS.NOT_FOUND, "readFile"),
+      "readFile: filesystem path not found",
+    );
+    assert.equal(
+      filesystemErrorMessage(FILESYSTEM_ERROR_KINDS.PERMISSION_DENIED),
+      "filesystem permission denied",
+    );
+    assert.equal(
+      filesystemErrorMessage(FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED),
+      "symlink traversal is not allowed",
+    );
+  });
+
+  it("keeps error classification unchanged", () => {
+    assert.equal(
+      classifyFilesystemError({ code: "EACCES" }),
+      FILESYSTEM_ERROR_KINDS.PERMISSION_DENIED,
+    );
+    assert.equal(
+      classifyFilesystemError({ code: "ENOENT" }),
+      FILESYSTEM_ERROR_KINDS.NOT_FOUND,
+    );
+    // The new kind has a stable code, and existing kinds are unchanged.
+    assert.equal(
+      FILESYSTEM_ERROR_CODES.SYMLINK_NOT_ALLOWED,
+      "CG_FS_SYMLINK_NOT_ALLOWED",
+    );
+    assert.equal(FILESYSTEM_ERROR_CODES.NOT_FOUND, "CG_FS_NOT_FOUND");
+    assert.equal(FILESYSTEM_ERROR_CODES.INVALID_PATH, "CG_FS_INVALID_PATH");
+  });
+
+  it("never serializes an absolute path from a containment rejection", async () => {
+    const root = register(makeFixture({}));
+    const outside = join(root, "..", "..", `outside-${Date.now()}.txt`);
+    const result = await readFile(root, outside);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.INVALID_PATH);
+    assert.equal(result.error.details.path, null);
+    assert.ok(!JSON.stringify(result.error.toJSON()).includes(root));
   });
 });
 
@@ -428,6 +539,118 @@ describe("listDirectory", () => {
     const result = await listDirectory(root, "..");
     assert.equal(result.ok, false);
     assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.INVALID_PATH);
+  });
+});
+
+// ─── Symlink policy enforcement (Phase 8A correction 1) ──────────────────────
+
+describe("symlink policy enforcement", () => {
+  it(
+    "rejects readFile through a symlink to a file outside the repository",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "secret.txt": "top secret" }));
+      const root = register(makeFixture({ "real.txt": "ok" }));
+      symlinkSync(join(outside, "secret.txt"), join(root, "link.txt"), "file");
+
+      const result = await readFile(root, "link.txt");
+      assert.equal(result.ok, false);
+      assert.equal(
+        result.error.kind,
+        FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED,
+      );
+      assert.equal(
+        result.error.code,
+        FILESYSTEM_ERROR_CODES.SYMLINK_NOT_ALLOWED,
+      );
+      assert.equal(result.error.details.operation, "readFile");
+      assert.equal(result.error.details.path, "link.txt");
+      assert.equal(result.relative, "link.txt");
+    },
+  );
+
+  it(
+    "rejects readFile through a symlinked path component",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "secret.txt": "top secret" }));
+      const root = register(makeFixture({ "a/ok.txt": "ok" }));
+      symlinkSync(outside, join(root, "a", "link-dir"), "dir");
+
+      const result = await readFile(root, "a/link-dir/secret.txt");
+      assert.equal(result.ok, false);
+      assert.equal(
+        result.error.kind,
+        FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED,
+      );
+      assert.equal(result.error.details.path, "a/link-dir/secret.txt");
+    },
+  );
+
+  it(
+    "rejects readFile through a symlink even when it points inside the repository",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const root = register(makeFixture({ "real.txt": "ok" }));
+      symlinkSync(join(root, "real.txt"), join(root, "alias.txt"), "file");
+
+      const result = await readFile(root, "alias.txt");
+      assert.equal(result.ok, false);
+      assert.equal(
+        result.error.kind,
+        FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED,
+      );
+    },
+  );
+
+  it(
+    "rejects listDirectory on a symlink to a directory outside the repository",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "outside.txt": "x" }));
+      const root = register(makeFixture({}));
+      symlinkSync(outside, join(root, "link-dir"), "dir");
+
+      const result = await listDirectory(root, "link-dir");
+      assert.equal(result.ok, false);
+      assert.equal(
+        result.error.kind,
+        FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED,
+      );
+      assert.equal(result.error.details.operation, "listDirectory");
+      assert.equal(result.error.details.path, "link-dir");
+      assert.ok(!("entries" in result), "must not enumerate through a symlink");
+    },
+  );
+
+  it(
+    "keeps walk recording symlinks without following or recurring into them",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "outside.txt": "x" }));
+      const root = register(makeFixture({ "real/file.txt": "" }));
+      symlinkSync(outside, join(root, "real", "link-out"), "dir");
+      symlinkSync(root, join(root, "real", "loop"), "dir");
+
+      const result = await walk(root, { maxDepth: 10 });
+      assert.equal(result.symlinkPolicy, SYMLINK_POLICY);
+      assert.ok(result.symlinks.some((e) => e.relative === "real/link-out"));
+      assert.ok(result.symlinks.some((e) => e.relative === "real/loop"));
+      assert.ok(
+        !result.directories.some((d) => d.relative.includes("link-out")),
+      );
+      assert.ok(!result.directories.some((d) => d.relative.includes("loop")));
+      assert.ok(!result.files.some((f) => f.relative.includes("outside")));
+      assert.equal(result.complete, true);
+    },
+  );
+
+  it("still reads real files and lists real directories under the policy", async () => {
+    const root = register(makeFixture({ "src/index.js": "hello" }));
+    const file = await readFile(root, "src/index.js");
+    assert.equal(file.ok, true);
+    const listing = await listDirectory(root, ".");
+    assert.equal(listing.ok, true);
   });
 });
 

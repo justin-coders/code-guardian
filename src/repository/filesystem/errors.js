@@ -12,10 +12,16 @@
  * distinguishable (category `repository`) while living entirely in the
  * filesystem infrastructure.
  *
- * Error objects intentionally carry only `operation`, `relative`/`path` and the
- * failing code. File contents, absolute paths and `cause` chains are never
- * surfaced by `toJSON()`, which the Core base class already guarantees.
+ * Sanitization guarantee (Phase 8A correction 2): a `FilesystemError` message is
+ * *derived* from the failure kind and operation and never copies a raw Node
+ * message, which can embed absolute paths. `details.path` is only ever a
+ * repository-relative path; absolute inputs (POSIX, drive-letter or UNC) are
+ * dropped to `null`. The original low-level error is retained only as an
+ * internal `cause` and is never serialized (the Core base class omits `cause`
+ * and `stack` from `toJSON()`).
  */
+
+import nodePath from "node:path";
 
 import { RepositoryError } from "../../core/index.js";
 
@@ -24,6 +30,7 @@ export const FILESYSTEM_ERROR_KINDS = Object.freeze({
   NOT_FOUND: "NOT_FOUND",
   PERMISSION_DENIED: "PERMISSION_DENIED",
   INVALID_PATH: "INVALID_PATH",
+  SYMLINK_NOT_ALLOWED: "SYMLINK_NOT_ALLOWED",
   FILESYSTEM_ERROR: "FILESYSTEM_ERROR",
 });
 
@@ -32,7 +39,18 @@ export const FILESYSTEM_ERROR_CODES = Object.freeze({
   NOT_FOUND: "CG_FS_NOT_FOUND",
   PERMISSION_DENIED: "CG_FS_PERMISSION_DENIED",
   INVALID_PATH: "CG_FS_INVALID_PATH",
+  SYMLINK_NOT_ALLOWED: "CG_FS_SYMLINK_NOT_ALLOWED",
   FILESYSTEM_ERROR: "CG_FS_ERROR",
+});
+
+/** Deterministic message fragments, keyed by failure kind. */
+const KIND_MESSAGES = Object.freeze({
+  [FILESYSTEM_ERROR_KINDS.NOT_FOUND]: "filesystem path not found",
+  [FILESYSTEM_ERROR_KINDS.PERMISSION_DENIED]: "filesystem permission denied",
+  [FILESYSTEM_ERROR_KINDS.INVALID_PATH]: "invalid filesystem path",
+  [FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED]:
+    "symlink traversal is not allowed",
+  [FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR]: "filesystem operation failed",
 });
 
 /**
@@ -54,15 +72,56 @@ const ERRNO_KIND_MAP = Object.freeze({
   EISDIR: FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR,
 });
 
+const WINDOWS_DRIVE_PATH = /^[a-zA-Z]:[\\/]/;
+const UNC_PATH = /^\\\\/;
+
+/** Coerce an unknown kind to a known one, defaulting to FILESYSTEM_ERROR. */
+function normaliseKind(kind) {
+  return Object.values(FILESYSTEM_ERROR_KINDS).includes(kind)
+    ? kind
+    : FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR;
+}
+
 /**
- * A structured filesystem failure.
+ * Build the deterministic, path-free message for a failure.
+ * @param {string} kind One of `FILESYSTEM_ERROR_KINDS`.
+ * @param {string} [operation]
+ * @returns {string}
+ */
+export function filesystemErrorMessage(kind, operation) {
+  const base = KIND_MESSAGES[normaliseKind(kind)];
+  return typeof operation === "string" && operation !== ""
+    ? `${operation}: ${base}`
+    : base;
+}
+
+/**
+ * Keep only repository-relative paths.
  *
- * `details` always records `{ kind, operation, path }` so future Evidence can
- * reference the failure without re-deriving it.
+ * Absolute POSIX paths, Windows drive-letter paths and UNC paths are all
+ * dropped, so a serialized error can never reveal a local absolute location.
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function sanitizeFilesystemPath(value) {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  if (value.includes("\0")) return null;
+  if (nodePath.isAbsolute(value)) return null;
+  if (WINDOWS_DRIVE_PATH.test(value)) return null;
+  if (UNC_PATH.test(value)) return null;
+  return value;
+}
+
+/**
+ * A structured, sanitized filesystem failure.
+ *
+ * The message is always derived from `kind` + `operation`; no raw message is
+ * accepted, so an absolute path can never reach the serialized error.
+ * `details` records `{ kind, operation, path }` where `path` is a
+ * repository-relative path or `null`.
  */
 export class FilesystemError extends RepositoryError {
   /**
-   * @param {string} message Human-readable summary.
    * @param {object} [options]
    * @param {string} [options.kind] One of `FILESYSTEM_ERROR_KINDS`.
    * @param {string} [options.code] Override the derived machine code.
@@ -70,27 +129,24 @@ export class FilesystemError extends RepositoryError {
    * @param {string} [options.path] Repository-relative path, when known.
    * @param {Error} [options.cause] Underlying error (never auto-exposed).
    */
-  constructor(message, options = {}) {
+  constructor(options = {}) {
     const kind = normaliseKind(options.kind);
-    super(message, {
+    const operation =
+      typeof options.operation === "string" && options.operation !== ""
+        ? options.operation
+        : null;
+    super(filesystemErrorMessage(kind, operation), {
       code: options.code ?? FILESYSTEM_ERROR_CODES[kind],
       details: {
         kind,
-        operation: options.operation ?? null,
-        path: options.path ?? null,
+        operation,
+        path: sanitizeFilesystemPath(options.path),
       },
       cause: options.cause,
     });
     /** The distinguished failure kind. */
     this.kind = kind;
   }
-}
-
-/** Coerce an unknown kind to a known one, defaulting to FILESYSTEM_ERROR. */
-function normaliseKind(kind) {
-  return Object.values(FILESYSTEM_ERROR_KINDS).includes(kind)
-    ? kind
-    : FILESYSTEM_ERROR_KINDS.FILESYSTEM_ERROR;
 }
 
 /**
@@ -107,8 +163,9 @@ export function classifyFilesystemError(error) {
  * Convert any thrown value into a structured `FilesystemError`.
  *
  * An existing `FilesystemError` is passed through unchanged; everything else is
- * classified from its `errno` code. The original error is attached as `cause`
- * only — it is never serialized.
+ * classified from its `errno` code. The raw error is attached as `cause` only —
+ * its message is never copied, because Node filesystem messages can embed
+ * absolute paths.
  *
  * @param {unknown} error
  * @param {{ operation?: string, path?: string|null }} [context]
@@ -117,11 +174,7 @@ export function classifyFilesystemError(error) {
 export function toFilesystemError(error, context = {}) {
   if (error instanceof FilesystemError) return error;
   const kind = classifyFilesystemError(error);
-  const message =
-    error && typeof error === "object" && typeof error.message === "string"
-      ? error.message
-      : "filesystem operation failed";
-  return new FilesystemError(message, {
+  return new FilesystemError({
     kind,
     operation: context.operation,
     path: context.path ?? null,
