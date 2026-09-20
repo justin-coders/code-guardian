@@ -199,6 +199,7 @@ function collectRepositoryModelIssues(value, ctx, path = "repositoryModel") {
     "dependencies",
     "scripts",
     "configuration",
+    "documentation",
     "git",
     "tests",
     "ci",
@@ -208,6 +209,42 @@ function collectRepositoryModelIssues(value, ctx, path = "repositoryModel") {
     if (field in value && !isPlainObject(value[field])) {
       ctx.fail(`${path}.${field}`, "must be a plain object");
     }
+  }
+
+  // ── Optional graph areas (Phase 8D model builder) ──────────────────────────
+  // Validated only when present, so a graph-free model stays valid.
+
+  if ("relationships" in value) {
+    if (!Array.isArray(value.relationships)) {
+      ctx.fail(`${path}.relationships`, "must be an array");
+    } else {
+      value.relationships.forEach((entry, index) => {
+        const entryPath = `${path}.relationships[${index}]`;
+        if (!isPlainObject(entry)) {
+          ctx.fail(entryPath, "must be a plain object");
+          return;
+        }
+        for (const field of ["from", "type", "to"]) {
+          if (!isNonEmptyString(entry[field])) {
+            ctx.fail(`${entryPath}.${field}`, "must be a non-empty string");
+          }
+        }
+      });
+    }
+  }
+
+  if ("evidence" in value) {
+    if (!Array.isArray(value.evidence)) {
+      ctx.fail(`${path}.evidence`, "must be an array");
+    } else {
+      value.evidence.forEach((entry, index) => {
+        collectEvidenceIssues(entry, ctx, `${path}.evidence[${index}]`);
+      });
+    }
+  }
+
+  if ("indexes" in value && !isPlainObject(value.indexes)) {
+    ctx.fail(`${path}.indexes`, "must be a plain object");
   }
 
   if ("scan" in value) {

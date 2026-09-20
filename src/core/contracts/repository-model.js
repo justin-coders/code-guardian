@@ -71,6 +71,31 @@ export const REPOSITORY_MODEL_JUDGMENT_AREAS = Object.freeze([
 ]);
 
 /**
+ * Optional areas, populated by the Phase 8D model builder.
+ *
+ * They are deliberately **not** part of `REPOSITORY_MODEL_AREAS`: the required
+ * areas describe what any scanner can produce, whereas a model without an entity
+ * graph, or without documentation signals, is still a valid model.
+ * `createRepositoryModel` always emits them (empty by default) so the shape is
+ * stable, and the validator only inspects them when they are present.
+ *
+ *   documentation  the documentation artifacts the scan observed.
+ *   relationships  `{ from, type, to }` deterministic entity connections.
+ *   evidence       Core `Evidence` records referenced by entity ids.
+ *   indexes        deterministically ordered lookup maps over the entities.
+ *
+ * Keeping observations (`evidence`), modelled objects (the typed areas) and
+ * connections (`relationships`) as three separate structures is intentional:
+ * collapsing them would destroy provenance.
+ */
+export const REPOSITORY_MODEL_OPTIONAL_AREAS = Object.freeze([
+  "documentation",
+  "relationships",
+  "evidence",
+  "indexes",
+]);
+
+/**
  * Build a complete RepositoryModel skeleton.
  *
  * Facts are passed in; nothing is inferred or judged. `scan.complete` defaults
@@ -108,5 +133,10 @@ export function createRepositoryModel(overrides = {}) {
       errors: scan.errors ?? [],
     },
     metadata: overrides.metadata ?? {},
+    // Optional areas (see `REPOSITORY_MODEL_OPTIONAL_AREAS`).
+    documentation: overrides.documentation ?? {},
+    relationships: overrides.relationships ?? [],
+    evidence: overrides.evidence ?? [],
+    indexes: overrides.indexes ?? {},
   };
 }

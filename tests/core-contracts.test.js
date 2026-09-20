@@ -18,6 +18,7 @@ import {
   CONTRACT_FACTORY_SEMANTICS,
   REPOSITORY_MODEL_VERSION,
   REPOSITORY_MODEL_AREAS,
+  REPOSITORY_MODEL_OPTIONAL_AREAS,
   REPOSITORY_MODEL_JUDGMENT_AREAS,
   SCAN_REQUIRED_FIELDS,
   createRepositoryModel,
@@ -556,6 +557,44 @@ describe("RepositoryModel contract", () => {
     assertInvalid(() =>
       validateRepositoryModel(validRepository({ dependencies: [] })),
     );
+  });
+
+  it("provides the optional areas as empty, valid defaults", () => {
+    const model = createRepositoryModel();
+    for (const area of REPOSITORY_MODEL_OPTIONAL_AREAS) {
+      assert.ok(area in model, `factory should provide "${area}"`);
+    }
+    assert.deepEqual(model.relationships, []);
+    assert.deepEqual(model.evidence, []);
+    assert.deepEqual(model.indexes, {});
+    assert.deepEqual(model.documentation, {});
+    assert.ok(validateRepositoryModel(model));
+  });
+
+  it("validates the optional areas when a model carries them", () => {
+    const base = validRepository();
+
+    // A model without the optional areas stays valid: they are optional.
+    assert.ok(validateRepositoryModel(base));
+    assert.ok(
+      validateRepositoryModel({
+        ...base,
+        relationships: [{ from: "repository:1", type: "contains", to: "file:a.js" }],
+        evidence: [validEvidence()],
+        indexes: { entitiesById: {} },
+        documentation: { detected: true, entries: [] },
+      }),
+    );
+
+    // Malformed graph structures are rejected, not ignored.
+    assertInvalid(() =>
+      validateRepositoryModel({ ...base, relationships: [{ from: "a", type: "contains" }] }),
+    );
+    assertInvalid(() => validateRepositoryModel({ ...base, relationships: ["contains"] }));
+    assertInvalid(() => validateRepositoryModel({ ...base, evidence: [{ id: "e1" }] }));
+    assertInvalid(() => validateRepositoryModel({ ...base, evidence: "none" }));
+    assertInvalid(() => validateRepositoryModel({ ...base, indexes: [] }));
+    assertInvalid(() => validateRepositoryModel({ ...base, documentation: [] }));
   });
 
   it("requires facts, not judgments", () => {
