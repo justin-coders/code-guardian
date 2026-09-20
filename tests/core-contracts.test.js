@@ -34,7 +34,9 @@ import {
   createFinding,
   RULE_REQUIRED_FIELDS,
   createRule,
+  ANALYZER_DESCRIPTIVE_FIELDS,
   ANALYZER_REQUIRED_FIELDS,
+  createAnalyzer,
   ANALYSIS_RESULT_FIELDS,
   createAnalysisResult,
   createApplicability,
@@ -972,6 +974,46 @@ describe("Analyzer contract", () => {
     assert.equal(validateAnalyzer(analyzer), analyzer);
     assert.equal(typeof analyzer.canAnalyze, "function");
     assert.equal(typeof analyzer.analyze, "function");
+  });
+
+  it("builds an analyzer draft without inventing behavior or identity", () => {
+    const draft = createAnalyzer({
+      id: "test.fixture",
+      name: "Fixture",
+      version: "1.0.0",
+      scope: "test",
+      canAnalyze: () => createApplicability({ applicable: true }),
+      analyze: () => createAnalysisResult(),
+    });
+    assert.equal(validateAnalyzer(draft), draft);
+    assert.equal(draft.name, "Fixture");
+    assert.equal(draft.scope, "test");
+    assert.deepEqual([...ANALYZER_DESCRIPTIVE_FIELDS].sort(), [
+      "description",
+      "metadata",
+      "name",
+      "scope",
+    ]);
+
+    // The factory fills only semantically neutral defaults.
+    const empty = createAnalyzer();
+    assert.equal(empty.id, undefined);
+    assert.equal(empty.name, undefined);
+    assert.equal(empty.canAnalyze, undefined);
+    assert.equal(empty.analyze, undefined);
+    assert.equal(empty.description, "");
+    assert.deepEqual(empty.metadata, {});
+    assertInvalid(() => validateAnalyzer(empty));
+
+    // Descriptive fields are optional to the contract: an executable analyzer
+    // without them is still a valid Analyzer.
+    const minimal = {
+      id: "test.minimal",
+      version: "1.0.0",
+      canAnalyze: () => createApplicability({ applicable: false, reason: "n/a" }),
+      analyze: () => createAnalysisResult(),
+    };
+    assert.equal(validateAnalyzer(minimal), minimal);
   });
 
   it("accepts a valid canAnalyze() result", () => {

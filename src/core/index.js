@@ -67,7 +67,9 @@ export {
 
 export {
   ANALYZER_REQUIRED_FIELDS,
+  ANALYZER_DESCRIPTIVE_FIELDS,
   ANALYSIS_RESULT_FIELDS,
+  createAnalyzer,
   createAnalysisResult,
   createApplicability,
 } from "./contracts/analyzer.js";
