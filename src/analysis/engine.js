@@ -114,15 +114,26 @@ function repositorySummary(model) {
  *
  * An analyzer may legitimately record a *new* observation (a rule that reads two
  * model observations and needs to cite the combination). It may not reuse an
- * existing id — from the model or from another analyzer in this run — because
- * that would let it silently replace provenance another component relies on, and
- * it may not point outside the repository.
+ * existing id — from the model, from another analyzer earlier in this run, or
+ * from itself — because that would let it silently replace provenance another
+ * component relies on, and it may not point outside the repository.
+ *
+ * Two distinct sets are consulted, and the distinction is deliberate:
+ *
+ *   - `ownEvidence` is the producing analyzer's local set. It only exists so a
+ *     single analyzer cannot emit the same id twice, and so the analyzer's
+ *     reference scope can be computed after resolution.
+ *   - `runEvidence` is the **run-global registry**, seeded with the model's
+ *     reserved ids before any analyzer runs and extended as analyzers emit new
+ *     observations. It is the authority for cross-analyzer uniqueness: an id
+ *     accepted from Analyzer A is reserved for the remainder of the run, so
+ *     Analyzer B reusing it fails even though B's local set is empty.
  */
-function resolveAnalyzerEvidence(result, analyzer, taken, reserved) {
+function resolveAnalyzerEvidence(result, analyzer, ownEvidence, runEvidence) {
   const accepted = [];
   for (const record of result.evidence) {
     const id = record?.id;
-    if (taken.has(id) || reserved.has(id)) {
+    if (ownEvidence.has(id) || runEvidence.has(id)) {
       throw new AnalyzerFrameworkError(
         ANALYZER_FAILURE_KINDS.DUPLICATE_EVIDENCE_ID,
         "an analyzer emitted evidence reusing an existing evidence id",
@@ -137,7 +148,10 @@ function resolveAnalyzerEvidence(result, analyzer, taken, reserved) {
         { analyzerId: analyzer.id, evidenceId: String(id) },
       );
     }
-    taken.add(id);
+    // Reserve in both: locally for diagnostics/reference scope, globally so no
+    // later analyzer in this run can reuse the id.
+    ownEvidence.add(id);
+    runEvidence.add(id);
     accepted.push(record);
   }
   return accepted;
@@ -250,7 +264,13 @@ async function runSelected({ selected, context, failFast, clock }) {
   const startedAt = clock();
   const repository = context.repository;
   const rulesById = indexRulesById(context);
-  const sharedEvidenceIds = modelEvidenceIds(context);
+  // Model evidence ids are reserved *before* any analyzer executes.
+  const modelEvidence = modelEvidenceIds(context);
+  // Run-global evidence-id registry. Uniqueness spans the whole analysis run rather
+  // than one analyzer: seeded with the model's reserved ids, then extended by every
+  // observation an analyzer successfully emits. The per-analyzer sets stay for
+  // diagnostics and reference scope, but they are not the uniqueness authority.
+  const runEvidenceIds = new Set(modelEvidence);
 
   const selfEvidenceIds = new Map();
   for (const analyzer of selected) selfEvidenceIds.set(analyzer.id, new Set());
@@ -274,7 +294,8 @@ async function runSelected({ selected, context, failFast, clock }) {
       analyzer,
       context,
       rulesById,
-      modelEvidence: sharedEvidenceIds,
+      modelEvidence,
+      runEvidenceIds,
       // The analyzer's own observations are resolved *before* its findings are
       // canonicalized, so a rule may cite the evidence it just emitted.
       ownEvidence: selfEvidenceIds.get(analyzer.id),
@@ -349,7 +370,7 @@ function skippedResult(analyzer, { kind, message }) {
  * nonsense, produce a bad finding, try to mutate the model — escapes as an
  * exception that would stop the run.
  */
-async function runOne({ analyzer, context, rulesById, modelEvidence, ownEvidence, durationMs }) {
+async function runOne({ analyzer, context, rulesById, modelEvidence, runEvidenceIds, ownEvidence, durationMs }) {
   const summary = analyzerSummary(analyzer);
 
   // Defense in depth: a descriptor can be corrupted between registration and a
@@ -437,7 +458,7 @@ async function runOne({ analyzer, context, rulesById, modelEvidence, ownEvidence
 
   let evidence;
   try {
-    evidence = resolveAnalyzerEvidence(rawResult, analyzer, ownEvidence, modelEvidence);
+    evidence = resolveAnalyzerEvidence(rawResult, analyzer, ownEvidence, runEvidenceIds);
   } catch (error) {
     return failedResult(summary, {
       kind: error?.kind ?? ANALYZER_FAILURE_KINDS.DUPLICATE_EVIDENCE_ID,

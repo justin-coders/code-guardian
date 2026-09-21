@@ -205,6 +205,36 @@ function rawFinding(overrides = {}) {
   };
 }
 
+/**
+ * An analyzer that emits exactly one observation with the given id.
+ *
+ * The id is supplied by the caller so two analyzers can be made to collide on
+ * purpose — the run-global uniqueness rule is a property of the *run*, not of
+ * either analyzer.
+ */
+function evidenceAnalyzer(id, evidenceId, path = "src/app.js") {
+  return createAnalyzer({
+    id,
+    name: `Emits ${id}`,
+    version: "1.0.0",
+    scope: "test",
+    canAnalyze: () => createApplicability({ applicable: true }),
+    analyze: () =>
+      createAnalysisResult({
+        evidence: [
+          createEvidence({
+            id: evidenceId,
+            type: "file",
+            location: { path },
+            source: { analyzer: id, method: "fixture" },
+            data: {},
+            provenance: { deterministic: true, collector: id },
+          }),
+        ],
+      }),
+  });
+}
+
 function analyzerThatThrows(id = "test.failure", scope = "test") {
   return createAnalyzer({
     id,
@@ -950,6 +980,119 @@ describe("analyzer framework: evidence", () => {
     const result = await engineWith([findingAnalyzer()]).runAll(context());
     assert.ok(result.analyzers[0].evidence.some((record) => record.id === PACKAGE_EVIDENCE) === false);
     assert.equal(MODEL.indexes.evidenceById[APP_FILE_EVIDENCE].source.analyzer, "phase-8d-repository-model");
+  });
+
+  // ─── Run-global evidence-id uniqueness ────────────────────────────────────
+  //
+  // Uniqueness spans the whole analysis run, not one analyzer. These tests must
+  // fail if the run-global registry is removed and only the analyzer-local set
+  // remains — that is the regression they exist to catch.
+
+  it("rejects an evidence id already emitted by an earlier analyzer in the run", async () => {
+    const result = await engineWith([
+      evidenceAnalyzer("test.a-emits", "evidence:test:shared", "src/app.js"),
+      evidenceAnalyzer("test.b-emits", "evidence:test:shared", "src/util.js"),
+    ]).runAll(context());
+
+    // Ordering is deterministic: test.a-emits runs before test.b-emits.
+    assert.equal(result.analyzers[0].status, ANALYZER_RUN_STATUSES.COMPLETED);
+    assert.equal(result.analyzers[1].status, ANALYZER_RUN_STATUSES.FAILED);
+    assert.equal(
+      result.analyzers[1].errors[0].kind,
+      ANALYZER_FAILURE_KINDS.DUPLICATE_EVIDENCE_ID,
+    );
+    assert.equal(result.analyzers[1].errors[0].analyzerId, "test.b-emits");
+  });
+
+  it("keeps the first analyzer's accepted evidence and drops the rejected duplicate", async () => {
+    const result = await engineWith([
+      evidenceAnalyzer("test.a-emits", "evidence:test:shared", "src/app.js"),
+      evidenceAnalyzer("test.b-emits", "evidence:test:shared", "src/util.js"),
+    ]).runAll(context());
+
+    // The first producer's observation remains present and valid.
+    assert.deepEqual(
+      result.analyzers[0].evidence.map((record) => record.id),
+      ["evidence:test:shared"],
+    );
+    assert.equal(result.analyzers[0].evidence[0].location.path, "src/app.js");
+
+    // The rejected duplicate never becomes part of the aggregate evidence.
+    assert.deepEqual(result.analyzers[1].evidence, []);
+    const aggregate = result.analyzers.flatMap((run) => run.evidence.map((record) => record.id));
+    assert.equal(aggregate.filter((id) => id === "evidence:test:shared").length, 1);
+  });
+
+  it("isolates a cross-analyzer duplicate and keeps running later analyzers when failFast is false", async () => {
+    const result = await engineWith([
+      evidenceAnalyzer("test.a-emits", "evidence:test:shared"),
+      evidenceAnalyzer("test.b-emits", "evidence:test:shared"),
+      passAnalyzer("test.c-continues"),
+    ]).run(["test.a-emits", "test.b-emits", "test.c-continues"], context(), {
+      failFast: false,
+    });
+
+    assert.equal(result.analyzers[1].status, ANALYZER_RUN_STATUSES.FAILED);
+    assert.equal(
+      result.analyzers[1].errors[0].kind,
+      ANALYZER_FAILURE_KINDS.DUPLICATE_EVIDENCE_ID,
+    );
+    assert.equal(result.analyzers[2].status, ANALYZER_RUN_STATUSES.COMPLETED);
+    assert.equal(result.complete, false);
+  });
+
+  it("preserves fail-fast semantics for a cross-analyzer duplicate", async () => {
+    const result = await engineWith(
+      [
+        evidenceAnalyzer("test.a-emits", "evidence:test:shared"),
+        evidenceAnalyzer("test.b-emits", "evidence:test:shared"),
+        passAnalyzer("test.c-never"),
+      ],
+      { failFast: true },
+    ).runAll(context());
+
+    assert.equal(result.analyzers[1].status, ANALYZER_RUN_STATUSES.FAILED);
+    assert.equal(result.analyzers[2].status, ANALYZER_RUN_STATUSES.SKIPPED);
+    assert.equal(result.analyzers[2].errors[0].kind, ANALYZER_FAILURE_KINDS.FAIL_FAST_ABORT);
+  });
+
+  it("still refuses a duplicate id emitted twice by the same analyzer", async () => {
+    const result = await engineWith([
+      createAnalyzer({
+        id: "test.self-duplicate",
+        name: "self duplicate",
+        version: "1.0.0",
+        scope: "test",
+        canAnalyze: () => createApplicability({ applicable: true }),
+        analyze: () =>
+          createAnalysisResult({
+            evidence: [
+              createEvidence({
+                id: "evidence:test:twice",
+                type: "file",
+                location: { path: "src/app.js" },
+                source: { analyzer: "test.self-duplicate", method: "fixture" },
+                data: {},
+                provenance: { deterministic: true },
+              }),
+              createEvidence({
+                id: "evidence:test:twice",
+                type: "file",
+                location: { path: "src/util.js" },
+                source: { analyzer: "test.self-duplicate", method: "fixture" },
+                data: {},
+                provenance: { deterministic: true },
+              }),
+            ],
+          }),
+      }),
+    ]).runAll(context());
+
+    assert.equal(result.analyzers[0].status, ANALYZER_RUN_STATUSES.FAILED);
+    assert.equal(
+      result.analyzers[0].errors[0].kind,
+      ANALYZER_FAILURE_KINDS.DUPLICATE_EVIDENCE_ID,
+    );
   });
 });
 
