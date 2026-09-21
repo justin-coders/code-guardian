@@ -1,0 +1,77 @@
+/**
+ * Code Guardian — Rule Engine Boundary (Phase 10)
+ *
+ * Stable import boundary for the rule engine. Future domain analyzers and
+ * interface layers should import from here rather than reaching into individual
+ * files.
+ *
+ * Dependency direction, enforced by an architectural test in
+ * `tests/rule-engine.test.js`:
+ *
+ *   core  ←  repository/model (8D)  ←  analysis (9)  ←  rules (10)
+ *
+ * This layer consumes Core contracts, the frozen RepositoryModel and the Phase 9
+ * framework. It must never import `node:fs`, `node:fs/promises`, `child_process`,
+ * `node:net`, `node:http`, `node:https`, `node:dns`, `node:worker_threads`, the
+ * Phase 8A filesystem boundary, the Phase 8B execution boundary, `src/tools.js`,
+ * `tool-registry`, a transport, or an MCP/CLI module.
+ *
+ * Rules are **trusted programmatic contracts** in this phase: there is no
+ * expression language, no configuration-supplied code, no `eval` and no
+ * network-loaded rule. A rule is a JavaScript object with a `detect` function,
+ * registered by the process itself.
+ */
+
+export {
+  APPLICABILITY_COVERAGE,
+  ABNORMAL_RULE_STATUSES,
+  MAX_ERROR_MESSAGE_LENGTH,
+  MAX_IDENTIFIER_LENGTH,
+  RULE_CAPABILITIES,
+  RULE_ENGINE_VERSION,
+  RULE_FAILURE_CODES,
+  RULE_FAILURE_KINDS,
+  RULE_ID_PATTERN,
+  RULE_OUTCOME_STATUSES,
+  RULE_OUTCOME_STATUS_VALUES,
+  RULE_SELECTOR_KEYS,
+} from "./contracts.js";
+
+export {
+  FAILURE_CODE_BY_KIND,
+  RuleConfigurationError,
+  RuleFrameworkError,
+  RuleRegistrationError,
+  ruleFailureEntry,
+  sanitizeMessage,
+  sanitizeRuleFailure,
+} from "./errors.js";
+
+export {
+  applicabilitySelectorIssues,
+  createRuleRegistry,
+  ruleDescriptorIssues,
+} from "./registry.js";
+
+export { evaluateRuleApplicability } from "./applicability.js";
+
+export { createRuleDetection, evaluateRule, ruleSummary } from "./evaluation.js";
+
+export {
+  RULE_EVALUATION_FIELDS,
+  RULE_RUN_FIELDS,
+  createRuleEvaluationResult,
+  createRuleRunResult,
+  stableAnalysisView,
+  validateRuleEvaluationResult,
+  validateRuleRunResult,
+} from "./results.js";
+
+export {
+  DEFAULT_RULE_ENGINE_OPTIONS,
+  createRuleEngine,
+  findingsForRule,
+  isRuleRunComplete,
+} from "./engine.js";
+
+export { createRuleAnalyzer } from "./analyzer.js";
