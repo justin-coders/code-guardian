@@ -157,7 +157,17 @@ export const RULE_CAPABILITIES = Object.freeze({
   SOURCE_CODE: "source-code",
 });
 
-/** How much the model lets the engine conclude about an applicability selector. */
+/**
+ * How much the model lets a conclusion be trusted.
+ *
+ * Two producers use this one vocabulary, deliberately — the engine, when it
+ * decides whether a rule's *applicability* could be settled against the model, and
+ * a rule, when its own detection could not settle a conclusion because the scan
+ * did not cover the repository (a dotenv rule that observed nothing cannot claim
+ * "no dotenv file exists" over a truncated inventory). Both mean the same thing:
+ * the answer is not `complete`, so the outcome is `unknown`, never `pass` and never
+ * `not-applicable`.
+ */
 export const APPLICABILITY_COVERAGE = Object.freeze({
   COMPLETE: "complete",
   UNKNOWN: "unknown",

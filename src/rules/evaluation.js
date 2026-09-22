@@ -28,11 +28,26 @@
  *     Emitted evidence must be a valid Evidence record, must locate a
  *     repository-relative path, and must not reuse an id already reserved in the
  *     run (the same run-global uniqueness Phase 9 enforces).
+ *   - **a rule may declare that it could not conclude.** `coverage: "unknown"` on
+ *     the detection object is the producer's assertion that the conclusion depends
+ *     on repository coverage the scan did not establish — typically an *absence*
+ *     claim over an incomplete inventory. The engine turns that into an `unknown`
+ *     outcome instead of a clean `pass`, which is the producer-side expression of
+ *     this layer's "no false certainty" invariant. Findings always win: a rule that
+ *     observed its condition does not get to abstain.
+ *
+ * The coverage declaration is deliberately narrow: `unknown` is the only value a
+ * rule may declare (a rule cannot assert that it *covered* the repository — that is
+ * the model's fact, not the rule's), and it is validated like every other part of
+ * the detection object, so a malformed declaration is `invalid-rule-result` rather
+ * than a silent abstention.
  *
  * ### Statuses
  *
  *   not-applicable  applicability was false and coverage was complete
- *   unknown         applicability could not be decided because coverage is incomplete
+ *   unknown         the conclusion could not be settled: applicability was
+ *                   unresolved, or the rule declared that its own detection could
+ *                   not establish the answer over an incomplete repository
  *   pass            the rule applied and produced no findings
  *   violation       the rule applied and produced at least one finding
  *   failed          the rule, or its output, violated the contract
@@ -51,6 +66,7 @@ import { deepFreeze, sanitizeDeclarativeValue } from "../analysis/index.js";
 import { evaluateRuleApplicability } from "./applicability.js";
 import {
   APPLICABILITY_COVERAGE,
+  MAX_ERROR_MESSAGE_LENGTH,
   MAX_IDENTIFIER_LENGTH,
   RULE_FAILURE_KINDS,
   RULE_OUTCOME_STATUSES,
@@ -80,12 +96,21 @@ function invalidFinding(rule, message, details = {}) {
   });
 }
 
-/** Build a `{ findings, evidence }` detection object a rule may return. */
+/**
+ * Build a `{ findings, evidence, coverage?, reason? }` detection object a rule may
+ * return.
+ *
+ * `coverage: APPLICABILITY_COVERAGE.UNKNOWN` is the only declaration a rule may
+ * make; `reason` is an optional bounded explanation recorded on the outcome.
+ */
 export function createRuleDetection(input = {}) {
-  return {
+  const detection = {
     findings: input.findings ?? [],
     evidence: input.evidence ?? [],
   };
+  if (input.coverage !== undefined) detection.coverage = input.coverage;
+  if (input.reason !== undefined) detection.reason = input.reason;
+  return detection;
 }
 
 /**
@@ -96,8 +121,12 @@ export function createRuleDetection(input = {}) {
  * rather than a rule that quietly did nothing.
  */
 function interpretDetection(raw, rule) {
-  if (raw === undefined || raw === null) return { findings: [], evidence: [] };
-  if (Array.isArray(raw)) return { findings: raw, evidence: [] };
+  if (raw === undefined || raw === null) {
+    return { findings: [], evidence: [], coverage: null, reason: null };
+  }
+  if (Array.isArray(raw)) {
+    return { findings: raw, evidence: [], coverage: null, reason: null };
+  }
   if (isPlainObject(raw)) {
     const findings = raw.findings ?? [];
     const evidence = raw.evidence ?? [];
@@ -115,7 +144,32 @@ function interpretDetection(raw, rule) {
         { ruleId: rule.id },
       );
     }
-    return { findings, evidence };
+
+    const coverage = raw.coverage ?? null;
+    if (coverage !== null && coverage !== APPLICABILITY_COVERAGE.UNKNOWN) {
+      throw new RuleFrameworkError(
+        RULE_FAILURE_KINDS.INVALID_RULE_RESULT,
+        `detect() may only declare coverage "${APPLICABILITY_COVERAGE.UNKNOWN}"; covering the repository is the model's fact, not a rule's`,
+        { ruleId: rule.id, received: typeof coverage === "string" ? coverage : typeof coverage },
+      );
+    }
+
+    let reason = null;
+    if (raw.reason !== undefined && raw.reason !== null) {
+      if (typeof raw.reason !== "string" || raw.reason.trim() === "") {
+        throw new RuleFrameworkError(
+          RULE_FAILURE_KINDS.INVALID_RULE_RESULT,
+          "detect() coverage reason must be a non-empty string",
+          { ruleId: rule.id },
+        );
+      }
+      reason =
+        raw.reason.length > MAX_ERROR_MESSAGE_LENGTH
+          ? raw.reason.slice(0, MAX_ERROR_MESSAGE_LENGTH)
+          : raw.reason;
+    }
+
+    return { findings, evidence, coverage, reason };
   }
   throw new RuleFrameworkError(
     RULE_FAILURE_KINDS.INVALID_RULE_RESULT,
@@ -346,8 +400,9 @@ export async function evaluateRule(rule, context, options = {}) {
 
   let evidence;
   let findings;
+  let detected;
   try {
-    const detected = interpretDetection(raw, rule);
+    detected = interpretDetection(raw, rule);
     evidence = resolveRuleEvidence(detected.evidence, rule, ownEvidence, runEvidenceIds);
     const allowedEvidenceIds = new Set([...modelEvidenceIds, ...ownEvidence]);
     findings = normalizeRuleFindings(detected.findings, rule, allowedEvidenceIds);
@@ -370,6 +425,31 @@ export async function evaluateRule(rule, context, options = {}) {
     .sort()
     .map((id) => evidenceById.get(id))
     .filter((record) => record !== undefined);
+
+  // A rule may declare that it could not establish its conclusion because the
+  // model's coverage does not support it — an absence claim over an inventory the
+  // scan did not complete. Recording `unknown` here keeps "not observed" from
+  // reading as "clean"; findings still win, because a rule that observed its
+  // condition does not get to abstain.
+  if (findings.length === 0 && detected.coverage === APPLICABILITY_COVERAGE.UNKNOWN) {
+    return buildResult({
+      rule: summary,
+      status: RULE_OUTCOME_STATUSES.UNKNOWN,
+      applicability: {
+        applicable: true,
+        reason:
+          detected.reason ??
+          "the rule could not establish its conclusion: the scan did not cover the repository completely",
+        coverage: APPLICABILITY_COVERAGE.UNKNOWN,
+      },
+      findings: [],
+      evidence: resolvedEvidence,
+      metrics: sanitizeDeclarativeValue(raw?.metrics) ?? {},
+      metadata: sanitizeDeclarativeValue(raw?.metadata) ?? {},
+      errors: [],
+      durationMs: durationMs(),
+    });
+  }
 
   return buildResult({
     rule: summary,

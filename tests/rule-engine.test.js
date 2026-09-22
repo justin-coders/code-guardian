@@ -776,6 +776,100 @@ describe("rule engine: determinism", () => {
   });
 });
 
+// ─── Producer-declared detection coverage ────────────────────────────────────
+//
+// Phase 12 added exactly one thing to the `detect()` contract: a rule may declare
+// `coverage: "unknown"` when its conclusion depends on repository coverage the
+// scan did not establish. These tests pin the extension and the fact that it
+// changes nothing for rules that do not use it.
+
+describe("rule engine: producer-declared detection coverage", () => {
+  it("leaves a rule that declares nothing exactly as it was", async () => {
+    const pass = await evaluate(ruleOf({ detect: () => [] }));
+    assert.equal(pass.rules[0].status, RULE_OUTCOME_STATUSES.PASS);
+    assert.equal(pass.complete, true);
+
+    const detection = await evaluate(ruleOf({ detect: () => ({ findings: [], evidence: [] }) }));
+    assert.equal(detection.rules[0].status, RULE_OUTCOME_STATUSES.PASS);
+    assert.equal(detection.complete, true);
+  });
+
+  it("turns a declared unknown coverage into an unknown outcome, not a pass", async () => {
+    const rule = ruleOf({
+      detect: () =>
+        createRuleDetection({
+          findings: [],
+          coverage: APPLICABILITY_COVERAGE.UNKNOWN,
+          reason: "the inventory is incomplete",
+        }),
+    });
+    const run = await evaluate(rule);
+    assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.equal(run.rules[0].applicability.coverage, APPLICABILITY_COVERAGE.UNKNOWN);
+    assert.equal(run.rules[0].applicability.reason, "the inventory is incomplete");
+    assert.deepEqual(run.rules[0].findings, []);
+    // An abstention makes the run incomplete, exactly like an applicability-driven
+    // unknown: a caller must not read the run as clean.
+    assert.equal(run.complete, false);
+    assert.equal(isRuleRunComplete(run), false);
+    assert.equal(run.metadata.unknown, 1);
+  });
+
+  it("supplies a framework reason when a rule declares none", async () => {
+    const run = await evaluate(
+      ruleOf({ detect: () => ({ findings: [], coverage: APPLICABILITY_COVERAGE.UNKNOWN }) }),
+    );
+    assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.ok(run.rules[0].applicability.reason.length > 0);
+  });
+
+  it("never lets an abstention hide an observation", async () => {
+    const rule = ruleOf({
+      detect: () => ({
+        findings: [{ confidence: 0.5, evidence: [APP_FILE_EVIDENCE] }],
+        coverage: APPLICABILITY_COVERAGE.UNKNOWN,
+      }),
+    });
+    const run = await evaluate(rule);
+    assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.equal(run.rules[0].findings.length, 1);
+  });
+
+  it("refuses a rule that claims the repository was covered", async () => {
+    for (const coverage of ["complete", "partial", 42]) {
+      const run = await evaluate(ruleOf({ detect: () => ({ findings: [], coverage }) }));
+      assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.FAILED);
+      assert.equal(run.rules[0].errors[0].kind, RULE_FAILURE_KINDS.INVALID_RULE_RESULT);
+    }
+  });
+
+  it("refuses a malformed coverage reason", async () => {
+    const run = await evaluate(
+      ruleOf({
+        detect: () => ({ findings: [], coverage: APPLICABILITY_COVERAGE.UNKNOWN, reason: 7 }),
+      }),
+    );
+    assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.FAILED);
+    assert.equal(run.rules[0].errors[0].kind, RULE_FAILURE_KINDS.INVALID_RULE_RESULT);
+  });
+
+  it("produces the same unknown shape as an unresolved applicability selector", async () => {
+    const bySelector = await evaluate(
+      ruleOf({ applicability: { languages: ["rust"] }, detect: () => [] }),
+      TRUNCATED_MODEL,
+    );
+    const byDeclaration = await evaluate(
+      ruleOf({ detect: () => ({ findings: [], coverage: APPLICABILITY_COVERAGE.UNKNOWN }) }),
+      TRUNCATED_MODEL,
+    );
+    for (const run of [bySelector, byDeclaration]) {
+      assert.equal(run.rules[0].status, RULE_OUTCOME_STATUSES.UNKNOWN);
+      assert.equal(run.rules[0].applicability.coverage, APPLICABILITY_COVERAGE.UNKNOWN);
+      assert.deepEqual(run.findings, []);
+    }
+  });
+});
+
 // ─── Architectural boundary ──────────────────────────────────────────────────
 
 describe("rule engine: architectural boundary", () => {

@@ -75,3 +75,33 @@ export {
 } from "./engine.js";
 
 export { createRuleAnalyzer } from "./analyzer.js";
+
+// Phase 12 — the first domain rule pack. Purely additive: the Rule Engine above is
+// unchanged, and the security pack is a *consumer* of it (rules, registry, analyzer
+// adapter), so a single import boundary still covers the whole rules layer.
+export {
+  CONFIGURATION_SIGNALS,
+  FINDING_BASIS,
+  SECURITY_ANALYZER_ID,
+  SECURITY_ANALYZER_NAME,
+  SECURITY_ANALYZER_SCOPE,
+  SECURITY_CATEGORY,
+  SECURITY_CONFIDENCE,
+  SECURITY_RULE_ID_PREFIX,
+  SECURITY_RULE_IDS,
+  SECURITY_RULE_PACK_VERSION,
+  SECURITY_RULE_VERSION,
+  SENSITIVE_FILE_SPECS,
+  FILE_SPEC_CRITERIA,
+  configurationEntities,
+  createSecurityAnalyzer,
+  createSecurityRuleRegistry,
+  defineFileSpec,
+  fileInventory,
+  filesMatching,
+  inventoryAbsence,
+  matchesFileSpec,
+  queryFor,
+  securityRuleSetIssues,
+  securityRules,
+} from "./security/index.js";
