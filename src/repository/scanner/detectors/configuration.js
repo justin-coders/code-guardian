@@ -19,6 +19,7 @@
  */
 
 import { capEvidence, compareEvidence, SCAN_SIGNALS } from "../contracts.js";
+import { COMPOSE_FILENAMES } from "../policies/containers.js";
 import { matchEntries } from "./match.js";
 
 /** Ordered configuration rules (most specific first). */
@@ -27,10 +28,9 @@ export const CONFIGURATION_RULES = Object.freeze([
   { basenamePattern: "Dockerfile*", caseInsensitive: true, signal: SCAN_SIGNALS.DOCKERFILE },
   { basenamePattern: "*.dockerfile", caseInsensitive: true, signal: SCAN_SIGNALS.DOCKERFILE },
   { basename: [".dockerignore"], signal: SCAN_SIGNALS.CONTAINER_IGNORE },
-  {
-    basename: ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"],
-    signal: SCAN_SIGNALS.COMPOSE_FILE,
-  },
+  // Shared with the container detector, so the file it reads for build declarations
+  // is exactly the file this table reports as a Compose file.
+  { basename: [...COMPOSE_FILENAMES], signal: SCAN_SIGNALS.COMPOSE_FILE },
 
   // Environment templates (a committed example, not a live secret file).
   {

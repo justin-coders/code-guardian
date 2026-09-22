@@ -33,6 +33,8 @@ import { dirname, isAbsolute, join } from "node:path";
 import { ValidationError } from "../src/core/index.js";
 
 import {
+  COMPOSE_UNPARSED_REASONS,
+  CONTAINER_DECLARATION_DETAILS,
   CONTENT_INSPECTION_LIMITS,
   CONTENT_PATTERN_IDS,
   MAX_SYMLINK_CHAIN,
@@ -107,6 +109,10 @@ after(() => {
 const NPM_TOKEN = "npm_TOKEN_do_NOT_leak_4f9a2c";
 const TFVARS_PASSWORD = "db_PASSWORD_do_NOT_leak_17bd";
 const PEM_BODY = "MIIEowIBAAKCAQEA_do_NOT_leak_9c1f";
+
+/** A Compose file declaring the repository root as a nested Dockerfile's build context. */
+const COMPOSE_ROOT_CONTEXT =
+  "services:\n  web:\n    build:\n      context: .\n      dockerfile: docker/Dockerfile\n";
 
 const symlinkFor = (scan, path) => scan.symlinks.find((entry) => entry.path === path);
 const candidateFor = (scan, path) =>
@@ -998,72 +1004,237 @@ describe("correction 3: docker build context", () => {
     return resultOf(run, SECURITY_RULE_IDS.CONTAINER_IGNORE);
   };
 
-  it("passes when the ignore file sits at the Dockerfile's own directory", async () => {
-    const entry = await runContainer({
-      "docker/Dockerfile": "FROM node:22\n",
-      "docker/.dockerignore": "node_modules\n",
-    });
-    assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS);
-  });
+  const scanOf = async (files) => scanRepository(makeRepo(files));
 
-  it("declines when only a root ignore file exists for a nested Dockerfile", async () => {
+  it("passes for a root Dockerfile protected by a root .dockerignore", async () => {
     const entry = await runContainer({
-      "docker/Dockerfile": "FROM node:22\n",
-      ".dockerignore": "node_modules\n",
-    });
-    // Which context applies depends on the build command, which the model does not
-    // record: neither "protected" nor "unprotected" is supported.
-    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
-    assert.ok(entry.applicability.reason.includes("build context"));
-    assert.ok(entry.applicability.reason.includes(".dockerignore"));
-  });
-
-  it("passes when both plausible context roots are ignored", async () => {
-    const entry = await runContainer({
-      "docker/Dockerfile": "FROM node:22\n",
-      "docker/.dockerignore": "node_modules\n",
+      Dockerfile: "FROM node:22\n",
       ".dockerignore": "node_modules\n",
     });
     assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS);
   });
 
-  it("reports a nested Dockerfile with no ignore file anywhere", async () => {
-    const entry = await runContainer({ "docker/Dockerfile": "FROM node:22\n" });
-    assert.equal(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
-    assert.deepEqual(entry.findings.map((finding) => finding.metadata.path), [
-      "docker/Dockerfile",
-    ]);
-    assert.deepEqual(entry.findings[0].metadata.contexts, ["docker"]);
-    assert.equal(entry.findings[0].metadata.basis, FINDING_BASES.BUILD_CONTEXT);
-  });
-
-  it("reports a root Dockerfile with no ignore file", async () => {
+  it("reports a root Dockerfile with no .dockerignore at the repository root", async () => {
     const entry = await runContainer({ Dockerfile: "FROM node:22\n" });
     assert.equal(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
-    assert.deepEqual(entry.findings[0].metadata.contextRoot, ".");
+    const [finding] = entry.findings;
+    assert.equal(finding.metadata.path, "Dockerfile");
+    assert.equal(finding.metadata.contextRoot, ".");
+    // The Dockerfile's own location establishes a root build here, and the finding says
+    // so rather than claiming a Compose declaration it does not have.
+    assert.equal(finding.metadata.contextSource, "dockerfile-location");
+    assert.equal(finding.metadata.basis, FINDING_BASES.BUILD_CONTEXT);
   });
 
-  it("does not treat an unrelated ignore file as the applicable one", async () => {
+  it("uses a declared repository-root context and its root .dockerignore", async () => {
+    const files = {
+      "docker/Dockerfile": "FROM node:22\n",
+      ".dockerignore": "node_modules\n",
+      "compose.yml": COMPOSE_ROOT_CONTEXT,
+    };
+    const scan = await scanOf(files);
+    assert.deepEqual(scan.containers.declarations, [
+      { source: "compose.yml", service: "web", context: null, dockerfile: "docker/Dockerfile" },
+    ]);
+
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS);
+  });
+
+  it("reports a declared repository-root context with no .dockerignore", async () => {
+    const entry = await runContainer({
+      "docker/Dockerfile": "FROM node:22\n",
+      "compose.yml": COMPOSE_ROOT_CONTEXT,
+    });
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.equal(entry.findings[0].metadata.path, "docker/Dockerfile");
+    assert.equal(entry.findings[0].metadata.contextRoot, ".");
+    assert.equal(entry.findings[0].metadata.contextSource, "compose");
+  });
+
+  it("uses a declared nested context and only that context's .dockerignore", async () => {
+    const files = {
+      "docker/Dockerfile": "FROM node:22\n",
+      "docker/.dockerignore": "node_modules\n",
+      "compose.yml": "services:\n  web:\n    build: ./docker\n",
+    };
+    const scan = await scanOf(files);
+    assert.equal(scan.containers.declarations[0].context, "docker");
+
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS);
+  });
+
+  it("does not credit a root .dockerignore to a declared nested context", async () => {
+    const entry = await runContainer({
+      "docker/Dockerfile": "FROM node:22\n",
+      ".dockerignore": "node_modules\n",
+      "compose.yml": "services:\n  web:\n    build: ./docker\n",
+    });
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.equal(entry.findings[0].metadata.contextRoot, "docker");
+    assert.equal(entry.findings[0].metadata.contextSource, "compose");
+  });
+
+  it("declines for a nested Dockerfile whose context is not established", async () => {
+    const entry = await runContainer({
+      "docker/Dockerfile": "FROM node:22\n",
+      "docker/.dockerignore": "node_modules\n",
+    });
+    // A sibling ignore file is not evidence of a context: `docker build -f
+    // docker/Dockerfile .` builds the same file from the repository root.
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.ok(entry.applicability.reason.includes("build context"));
+    assert.equal(entry.findings.length, 0);
+  });
+
+  it("does not treat an unrelated root ignore file as protecting a nested Dockerfile", async () => {
+    const entry = await runContainer({
+      "docker/Dockerfile": "FROM node:22\n",
+      ".dockerignore": "node_modules\n",
+    });
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.notEqual(entry.status, RULE_OUTCOME_STATUSES.PASS);
+  });
+
+  it("never reports an unestablished nested context as unprotected", async () => {
     const entry = await runContainer({
       "docker/Dockerfile": "FROM node:22\n",
       "other/.dockerignore": "node_modules\n",
     });
-    assert.equal(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
-    assert.deepEqual(entry.findings[0].metadata.contexts, ["docker"]);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.notEqual(entry.status, RULE_OUTCOME_STATUSES.VIOLATION);
+  });
+
+  it("declines when the build configuration cannot be interpreted", async () => {
+    const files = {
+      "docker/Dockerfile": "FROM node:22\n",
+      "compose.yml": "services:\n  web:\n    build: {context: .}\n",
+    };
+    const scan = await scanOf(files);
+    assert.deepEqual(scan.containers.unparsed, [
+      {
+        source: "compose.yml",
+        reason: COMPOSE_UNPARSED_REASONS.AMBIGUOUS,
+        detail: "non-scalar-value",
+      },
+    ]);
+
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.ok(entry.applicability.reason.includes("compose.yml"));
+  });
+
+  it("declines when a declared context points outside the repository", async () => {
+    const files = {
+      Dockerfile: "FROM node:22\n",
+      "compose.yml":
+        "services:\n  web:\n    build:\n      context: /etc/app\n      dockerfile: Dockerfile\n",
+    };
+    const scan = await scanOf(files);
+    assert.deepEqual(scan.containers.declarations, []);
+    assert.deepEqual(scan.containers.unparsed, [
+      {
+        source: "compose.yml",
+        reason: COMPOSE_UNPARSED_REASONS.AMBIGUOUS,
+        detail: CONTAINER_DECLARATION_DETAILS.CONTEXT_OUTSIDE,
+      },
+    ]);
+
+    // An unresolvable declaration is not an absent declaration, so the root Dockerfile's
+    // own location does not become the answer by default.
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+
+    // The host location is classified away, never carried.
+    assert.deepEqual(absolutePathsIn(scan.containers), []);
+    assert.equal(JSON.stringify(scan.containers).includes("/etc"), false);
+  });
+
+  it("declines when a Dockerfile escapes its own declared context", async () => {
+    const files = {
+      Dockerfile: "FROM node:22\n",
+      "compose.yml":
+        "services:\n  web:\n    build:\n      context: ./sub\n      dockerfile: ../Dockerfile\n",
+    };
+    const scan = await scanOf(files);
+    // Docker refuses to build a Dockerfile from outside its context, so the declaration
+    // cannot establish one.
+    assert.deepEqual(scan.containers.unparsed, [
+      {
+        source: "compose.yml",
+        reason: COMPOSE_UNPARSED_REASONS.AMBIGUOUS,
+        detail: CONTAINER_DECLARATION_DETAILS.DOCKERFILE_OUTSIDE_CONTEXT,
+      },
+    ]);
+
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+  });
+
+  it("handles multiple Dockerfiles with independent contexts", async () => {
+    const files = {
+      Dockerfile: "FROM node:22\n",
+      ".dockerignore": "node_modules\n",
+      "svc/Dockerfile": "FROM node:22\n",
+      "compose.yml":
+        "services:\n  svc:\n    build:\n      context: ./svc\n      dockerfile: Dockerfile\n",
+    };
+
+    const violating = await runContainer(files);
+    assert.equal(violating.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    // Only the Dockerfile whose established context is unignored is reported; the
+    // protected root build is not dragged into the finding.
+    assert.deepEqual(
+      violating.findings.map((finding) => finding.metadata.path),
+      ["svc/Dockerfile"],
+    );
+
+    const protectedEntry = await runContainer({ ...files, "svc/.dockerignore": "node_modules\n" });
+    assert.equal(protectedEntry.status, RULE_OUTCOME_STATUSES.PASS);
+  });
+
+  it("declines when two declarations disagree about the same Dockerfile", async () => {
+    const files = {
+      "docker/Dockerfile": "FROM node:22\n",
+      ".dockerignore": "node_modules\n",
+      "compose.yml": COMPOSE_ROOT_CONTEXT,
+      "docker-compose.yml":
+        "services:\n  web:\n    build:\n      context: ./docker\n      dockerfile: Dockerfile\n",
+    };
+    const scan = await scanOf(files);
+    // Both declarations survive, in the order the ScanResult contract validates: the
+    // repository root (`null`) sorts before a nested context.
+    assert.deepEqual(
+      scan.containers.declarations.map((entry) => entry.context),
+      [null, "docker"],
+    );
+
+    const entry = await runContainer(files);
+    assert.equal(entry.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.ok(entry.applicability.reason.includes("declared twice"));
   });
 
   it("applies the same context model to custom Dockerfile names", async () => {
-    const protectedEntry = await runContainer({
+    const declared = {
       "deploy/App.dockerfile": "FROM node:22\n",
-      "deploy/.dockerignore": "node_modules\n",
-    });
+      "compose.yml":
+        "services:\n  app:\n    build:\n      context: ./deploy\n      dockerfile: App.dockerfile\n",
+    };
+    const protectedEntry = await runContainer({ ...declared, "deploy/.dockerignore": "x\n" });
     assert.equal(protectedEntry.status, RULE_OUTCOME_STATUSES.PASS);
 
-    const unprotectedEntry = await runContainer({
-      "Dockerfile.dev": "FROM node:22\n",
-    });
+    const unprotectedEntry = await runContainer(declared);
     assert.equal(unprotectedEntry.status, RULE_OUTCOME_STATUSES.VIOLATION);
-    assert.deepEqual(unprotectedEntry.findings[0].metadata.path, "Dockerfile.dev");
+    assert.equal(unprotectedEntry.findings[0].metadata.path, "deploy/App.dockerfile");
+    assert.equal(unprotectedEntry.findings[0].metadata.contextRoot, "deploy");
+
+    const rootDefault = await runContainer({ "Dockerfile.dev": "FROM node:22\n" });
+    assert.equal(rootDefault.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.equal(rootDefault.findings[0].metadata.path, "Dockerfile.dev");
+
+    const unestablished = await runContainer({ "deploy/App.dockerfile": "FROM node:22\n" });
+    assert.equal(unestablished.status, RULE_OUTCOME_STATUSES.UNKNOWN);
   });
 
   it("keeps a nested root-context ambiguity out of the clean result", async () => {
@@ -1081,6 +1252,31 @@ describe("correction 3: docker build context", () => {
       statusOf(run, SECURITY_RULE_IDS.CONTAINER_IGNORE),
       RULE_OUTCOME_STATUSES.PASS,
     );
+  });
+
+  it("is deterministic and carries no absolute host path", async () => {
+    const root = makeRepo({
+      "docker/Dockerfile": "FROM node:22\n",
+      "compose.yml": COMPOSE_ROOT_CONTEXT,
+    });
+    const scan = await scanRepository(root);
+    const model = buildRepositoryModel(scan);
+    const first = await runAnalyzer(model);
+    const second = await runAnalyzer(model);
+
+    const containerFindings = first.findings.filter(
+      (finding) => finding.ruleId === SECURITY_RULE_IDS.CONTAINER_IGNORE,
+    );
+    assert.equal(containerFindings.length, 1);
+    assert.match(containerFindings[0].fingerprint, /^cg-fp1-[0-9a-f]{32}$/);
+
+    assert.deepEqual(
+      first.findings.map((finding) => finding.fingerprint),
+      second.findings.map((finding) => finding.fingerprint),
+    );
+    assert.deepEqual(absolutePathsIn(scan.containers), []);
+    assert.deepEqual(absolutePathsIn(containerFindings), []);
+    assert.equal(JSON.stringify(scan.containers).includes(root), false);
   });
 });
 

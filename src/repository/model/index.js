@@ -44,6 +44,7 @@ export {
 } from "./identity.js";
 
 export {
+  CONTAINER_SIGNALS,
   CONTENT_SIGNALS,
   CONTENT_STATUSES,
   CONTENT_UNINSPECTED_REASONS,
@@ -53,6 +54,7 @@ export {
   EVIDENCE_TYPE_BY_SUBJECT,
   INVENTORY_KINDS,
   contentObservationKind,
+  createBuildContextObservation,
   createContentInspectionObservation,
   createContentPatternObservation,
   createInventoryObservation,

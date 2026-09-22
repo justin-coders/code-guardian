@@ -77,6 +77,19 @@ export const CONTENT_INSPECTION_REASONS = Object.freeze({
   NOT_TEXT: "not-text",
 });
 
+/**
+ * Why a Compose file's build declarations are not established. Closed vocabulary.
+ *
+ * `detail` on an unparsed entry carries the structural cause as a bounded identifier.
+ */
+export const CONTAINER_UNPARSED_REASONS = Object.freeze({
+  READ_FAILED: "read-failed",
+  NOT_TEXT: "not-text",
+  TOO_LARGE: "too-large",
+  BUDGET_EXHAUSTED: "budget-exhausted",
+  AMBIGUOUS: "ambiguous",
+});
+
 /** Stable signal ids used across detectors. */
 export const SCAN_SIGNALS = Object.freeze({
   SOURCE_EXTENSION: "source-extension",
@@ -188,6 +201,7 @@ export function createScanResult(overrides = {}) {
   const configuration = overrides.configuration ?? {};
   const git = overrides.git ?? {};
   const content = overrides.content ?? {};
+  const containers = overrides.containers ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -235,6 +249,15 @@ export function createScanResult(overrides = {}) {
       truncated: content.truncated ?? false,
       candidates: content.candidates ?? [],
       limits: content.limits ?? {},
+    },
+    // Empty and `inspected: false` by default: a draft that declares nothing about
+    // container build contexts must not look like one whose Compose files were read
+    // and found to establish nothing.
+    containers: {
+      inspected: containers.inspected ?? false,
+      declarations: containers.declarations ?? [],
+      unparsed: containers.unparsed ?? [],
+      limits: containers.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -414,6 +437,93 @@ function collectContentIssues(section, ctx, path) {
   }
 }
 
+/**
+ * Validate the container build-declaration section.
+ *
+ * A declaration states which Dockerfile a Compose service builds and from which
+ * context root. Both are repository-relative paths, so no host location can travel
+ * with a declaration; an entry that cannot be expressed that way is invalid rather
+ * than tolerated.
+ */
+function collectContainersIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  if (typeof section.inspected !== "boolean") {
+    ctx.fail(`${path}.inspected`, "must be a boolean");
+  }
+  if (!isPlainObject(section.limits)) {
+    ctx.fail(`${path}.limits`, "must be a plain object");
+  }
+
+  if (!Array.isArray(section.declarations)) {
+    ctx.fail(`${path}.declarations`, "must be an array");
+  } else {
+    section.declarations.forEach((declaration, index) => {
+      const at = `${path}.declarations[${index}]`;
+      if (!isPlainObject(declaration)) {
+        ctx.fail(at, "must be a plain object");
+        return;
+      }
+      for (const field of ["source", "service", "dockerfile"]) {
+        if (!isNonEmptyString(declaration[field])) {
+          ctx.fail(`${at}.${field}`, "must be a non-empty string");
+        } else if (field === "dockerfile" && isAbsolutePath(declaration[field])) {
+          ctx.fail(`${at}.${field}`, "must be a repository-relative path");
+        }
+      }
+      // `context` is `null` for the repository root, which has no relative form, and a
+      // repository-relative directory otherwise. An absolute host path is invalid.
+      if (declaration.context !== null) {
+        if (!isNonEmptyString(declaration.context)) {
+          ctx.fail(`${at}.context`, "must be a repository-relative path or null");
+        } else if (isAbsolutePath(declaration.context)) {
+          ctx.fail(`${at}.context`, "must be a repository-relative path or null");
+        }
+      }
+    });
+    for (let index = 1; index < section.declarations.length; index += 1) {
+      const previous = section.declarations[index - 1];
+      const current = section.declarations[index];
+      const key = (entry) =>
+        `${entry.dockerfile}\u0000${entry.context ?? ""}\u0000${entry.service}\u0000${entry.source}`;
+      if (key(previous) > key(current)) {
+        ctx.fail(`${path}.declarations[${index}]`, "must be sorted deterministically");
+        break;
+      }
+    }
+  }
+
+  if (!Array.isArray(section.unparsed)) {
+    ctx.fail(`${path}.unparsed`, "must be an array");
+    return;
+  }
+  const reasons = Object.values(CONTAINER_UNPARSED_REASONS);
+  section.unparsed.forEach((entry, index) => {
+    const at = `${path}.unparsed[${index}]`;
+    if (!isPlainObject(entry)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    if (!isNonEmptyString(entry.source) || isAbsolutePath(entry.source)) {
+      ctx.fail(`${at}.source`, "must be a repository-relative path");
+    }
+    if (!reasons.includes(entry.reason)) {
+      ctx.fail(`${at}.reason`, `must be one of: ${reasons.join(", ")}`);
+    }
+    if (entry.detail !== null && !isNonEmptyString(entry.detail)) {
+      ctx.fail(`${at}.detail`, "must be a bounded identifier or null");
+    }
+  });
+  for (let index = 1; index < section.unparsed.length; index += 1) {
+    if (section.unparsed[index - 1].source > section.unparsed[index].source) {
+      ctx.fail(`${path}.unparsed[${index}]`, "must be sorted by source");
+      break;
+    }
+  }
+}
+
 function collectDetectionIssues(section, ctx, path) {
   if (!isPlainObject(section)) {
     ctx.fail(path, "must be a plain object");
@@ -508,6 +618,7 @@ export function validateScanResult(value) {
   }
 
   collectContentIssues(value.content, ctx, "scanResult.content");
+  collectContainersIssues(value.containers, ctx, "scanResult.containers");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

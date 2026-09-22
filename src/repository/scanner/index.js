@@ -13,6 +13,7 @@
  */
 
 export {
+  CONTAINER_UNPARSED_REASONS,
   CONTENT_INSPECTION_REASONS,
   MAX_EVIDENCE_PER_SIGNAL,
   SCAN_RESULT_VERSION,
@@ -42,6 +43,23 @@ export {
   CONTENT_PATTERNS,
   detectContentPatterns,
 } from "./detectors/content.js";
+
+export {
+  COMPOSE_RULES,
+  CONTAINER_DECLARATION_DETAILS,
+  classifyBuildDeclaration,
+  detectContainers,
+  resolveBuildDeclaration,
+} from "./detectors/containers.js";
+
+export {
+  COMPOSE_FILENAMES,
+  COMPOSE_UNPARSED_REASONS,
+  CONTAINER_DECLARATION_LIMITS,
+  DEFAULT_DOCKERFILE_NAME,
+  isComposeUnparsedReason,
+  parseComposeBuildContexts,
+} from "./policies/containers.js";
 
 export {
   DEFAULT_IGNORED_DIRECTORIES,

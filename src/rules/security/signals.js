@@ -37,6 +37,7 @@
  */
 
 import {
+  CONTAINER_SIGNALS,
   CONTENT_SIGNALS,
   CONTENT_STATUSES,
   COVERAGE_GUARANTEES,
@@ -199,6 +200,70 @@ export function symlinkTargets(query) {
     truncated: inventory.truncated === true,
     reasons: Object.freeze([...reasons].sort()),
   });
+}
+
+/**
+ * The build context roots the repository *states* for one Dockerfile.
+ *
+ * Read from the Compose declarations the acquisition layer recorded on the Dockerfile
+ * itself. Zero contexts means "nothing in the model ties this Dockerfile to a
+ * context" — which the rule must treat as unknown rather than assume, and which is why
+ * this returns a list rather than a single best guess: two declarations with different
+ * roots are a contradiction, not a choice.
+ *
+ * A `null` recorded context is the repository root, which has no repository-relative
+ * form; it is normalized to `.` here so callers compare context roots with the same
+ * token a root-level `.dockerignore` produces.
+ *
+ * @param {object} query
+ * @param {object} dockerfile A `dockerfile` configuration entity.
+ * @returns {{contexts: string[], evidenceIds: string[]}} Frozen.
+ */
+export function declaredBuildContexts(query, dockerfile) {
+  const contexts = new Set();
+  const evidenceIds = new Set();
+
+  for (const record of query.getEvidenceForEntity(dockerfile.id).evidence ?? []) {
+    if (record?.data?.signal !== CONTAINER_SIGNALS.BUILD_CONTEXT) continue;
+    const contextPath = record.data.contextPath;
+    if (contextPath !== null && (typeof contextPath !== "string" || contextPath === "")) {
+      continue;
+    }
+    contexts.add(contextPath ?? ".");
+    evidenceIds.add(record.id);
+  }
+
+  return Object.freeze({
+    contexts: Object.freeze([...contexts].sort()),
+    evidenceIds: Object.freeze([...evidenceIds].sort()),
+  });
+}
+
+/**
+ * Compose files whose build declarations could not be interpreted.
+ *
+ * A file in this list *might* have declared a context for any Dockerfile, so an
+ * undeclared Dockerfile is unknown rather than unauthored. Returned in path order with
+ * the bounded reason the acquisition layer recorded.
+ *
+ * @param {object} query
+ * @returns {Array<{path: string, reason: string}>}
+ */
+export function uninterpretableComposeFiles(query) {
+  const files = [];
+
+  for (const entity of configurationEntities(query, "compose-file")) {
+    for (const record of query.getEvidenceForEntity(entity.id).evidence ?? []) {
+      if (record?.data?.signal !== CONTAINER_SIGNALS.UNPARSED) continue;
+      files.push({
+        path: entity.path,
+        reason: typeof record.data.reason === "string" ? record.data.reason : "uninterpretable",
+      });
+      break;
+    }
+  }
+
+  return files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 /**

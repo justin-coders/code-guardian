@@ -81,6 +81,19 @@ export const CONTENT_SIGNALS = Object.freeze({
 });
 
 /**
+ * Signals recorded on container build-context observations.
+ *
+ * `BUILD_CONTEXT` records a Compose declaration: this Dockerfile is built from this
+ * context root, by this service. `UNPARSED` records that a Compose file's build
+ * declarations could *not* be established, which is why a rule must answer `unknown`
+ * rather than treat the file as declaring nothing.
+ */
+export const CONTAINER_SIGNALS = Object.freeze({
+  BUILD_CONTEXT: "compose-build-context",
+  UNPARSED: "compose-unparsed",
+});
+
+/**
  * How far the bounded inspection of one candidate got.
  *
  *   inspected       the whole candidate was examined as text and no limit stopped
@@ -230,6 +243,35 @@ export function createContentPatternObservation({ path, patternId }) {
     type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONTENT],
     path,
     data: { signal: CONTENT_SIGNALS.PATTERN, pattern: patternId },
+  });
+}
+
+/**
+ * Build a container build-context observation.
+ *
+ * The evidence key includes the declaration's source and service, because the same
+ * Dockerfile can legitimately be declared by two services — two true observations,
+ * not a duplicate.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path of the Dockerfile.
+ * @param {string} input.source Compose file the declaration came from.
+ * @param {string} input.service Compose service that declares it.
+ * @param {string} input.contextPath Repository-relative context root.
+ * @returns {object}
+ */
+export function createBuildContextObservation({ path, source, service, contextPath }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+    key: `${CONTAINER_SIGNALS.BUILD_CONTEXT}:${source}:${service}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+    path,
+    data: {
+      signal: CONTAINER_SIGNALS.BUILD_CONTEXT,
+      source,
+      service,
+      contextPath,
+    },
   });
 }
 

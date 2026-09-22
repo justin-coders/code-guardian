@@ -26,13 +26,17 @@
 import { ValidationError } from "../../core/index.js";
 
 import {
+  CONTAINER_SIGNALS,
   CONTENT_STATUSES,
   CONTENT_UNINSPECTED_REASONS,
   EVIDENCE_SUBJECTS,
+  EVIDENCE_TYPE_BY_SUBJECT,
   INVENTORY_KINDS,
+  createBuildContextObservation,
   createContentInspectionObservation,
   createContentPatternObservation,
   createInventoryObservation,
+  createObservation,
   createSignalObservation,
 } from "./evidence.js";
 import { ENTITY_KINDS, GIT_ENTITY_ID, entityId } from "./identity.js";
@@ -93,6 +97,9 @@ export const UNINSPECTED_SYMLINK_TARGET = Object.freeze({
 
 /** Maximum content candidates a scan result may carry. */
 const MAX_CONTENT_CANDIDATES = 512;
+
+/** Maximum container build declarations a scan result may carry. */
+const MAX_CONTAINER_DECLARATIONS = 512;
 
 /** Bounded identifier text: letters, digits, `.`, `-`, `_`, `/` only. */
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._/-]{1,120}$/;
@@ -365,6 +372,126 @@ function projectContentSection(section, observedFilePaths, issues, record) {
 }
 
 /**
+ * Project the scan's container build declarations into observations.
+ *
+ * A declaration is recorded *at the Dockerfile it is about*, so the rule that owns
+ * container security finds it through the Dockerfile's own evidence. An unparsed
+ * Compose file is recorded at the Compose file, because that is the artifact whose
+ * declarations could not be established — which is what turns "no declaration" into
+ * the honest `unknown` rather than an absence of protection.
+ *
+ * Projection fails closed on an incoherent section (a declaration about an unobserved
+ * Dockerfile, an unparsed entry for a path the inventory never saw, an unbounded
+ * reason), because a dropped build declaration would silently weaken a security
+ * conclusion.
+ *
+ * @param {object|undefined} section The scan result's `containers` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues Issue collector.
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {void}
+ */
+function projectContainerSection(section, observedFilePaths, issues, record) {
+  if (section === undefined || section === null) return;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.containers", "must be a plain object");
+    return;
+  }
+
+  if (!Array.isArray(section.declarations) || !Array.isArray(section.unparsed)) {
+    fail(issues, "scanResult.containers", "must carry declarations and unparsed arrays");
+    return;
+  }
+  if (section.declarations.length > MAX_CONTAINER_DECLARATIONS) {
+    fail(issues, "scanResult.containers.declarations", "carries more declarations than a scan can report");
+    return;
+  }
+
+  for (const declaration of section.declarations) {
+    if (!isPlainObject(declaration)) {
+      fail(issues, "scanResult.containers.declarations[]", "must be a plain object");
+      continue;
+    }
+    const source = requireRepositoryRelativePath(
+      declaration.source,
+      "scanResult.containers.declarations[].source",
+    );
+    const service = identifier(declaration.service);
+    if (service === null) {
+      fail(issues, `scanResult.containers.declarations[${source}].service`, "must be a bounded service name");
+      continue;
+    }
+    const dockerfilePath = requireRepositoryRelativePath(
+      declaration.dockerfile,
+      "scanResult.containers.declarations[].dockerfile",
+    );
+    // `null` means the repository root: it has no repository-relative form, and the
+    // declaration still establishes it unambiguously.
+    const contextPath =
+      declaration.context === null || declaration.context === undefined
+        ? null
+        : requireRepositoryRelativePath(
+            declaration.context,
+            "scanResult.containers.declarations[].context",
+          );
+    if (!observedFilePaths.has(dockerfilePath)) {
+      fail(
+        issues,
+        `scanResult.containers.declarations[${dockerfilePath}]`,
+        "a declaration must name a Dockerfile the inventory observed",
+      );
+      continue;
+    }
+    record(
+      createBuildContextObservation({
+        path: dockerfilePath,
+        source,
+        service,
+        contextPath,
+      }),
+    );
+  }
+
+  for (const entry of section.unparsed) {
+    if (!isPlainObject(entry)) {
+      fail(issues, "scanResult.containers.unparsed[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(
+      entry.source,
+      "scanResult.containers.unparsed[].source",
+    );
+    const reason = identifier(entry.reason);
+    if (reason === null) {
+      fail(issues, `scanResult.containers.unparsed[${path}].reason`, "must be a bounded reason");
+      continue;
+    }
+    const detail = entry.detail === null || entry.detail === undefined ? null : identifier(entry.detail);
+    if (entry.detail !== null && entry.detail !== undefined && detail === null) {
+      fail(issues, `scanResult.containers.unparsed[${path}].detail`, "must be a bounded identifier");
+      continue;
+    }
+    if (!observedFilePaths.has(path)) {
+      fail(
+        issues,
+        `scanResult.containers.unparsed[${path}]`,
+        "an unparsed entry must name a file the inventory observed",
+      );
+      continue;
+    }
+    record(
+      createObservation({
+        subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+        key: `${CONTAINER_SIGNALS.UNPARSED}:${path}`,
+        type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+        path,
+        data: { signal: CONTAINER_SIGNALS.UNPARSED, reason, detail },
+      }),
+    );
+  }
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -586,6 +713,7 @@ export function buildEntities(scanResult, repositoryIdValue) {
 
   const observedFilePaths = new Set(files.map((file) => file.path));
   projectContentSection(scanResult.content, observedFilePaths, issues, record);
+  projectContainerSection(scanResult.containers, observedFilePaths, issues, record);
 
   // ── Languages ─────────────────────────────────────────────────────────────
 

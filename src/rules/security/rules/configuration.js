@@ -4,51 +4,46 @@
  * One rule, and it is the pack's only *derived* check: it compares observed paths
  * rather than naming one artifact.
  *
- *   a Dockerfile was observed, and no `.dockerignore` was observed at any build
- *   context root that could apply to it → `docker build` may copy secrets, local
+ *   a Dockerfile was observed, its build context root is established, and no
+ *   `.dockerignore` was observed at that root → `docker build` may copy secrets, local
  *   configuration and VCS metadata into the image
  *
- * ### Why the original version was wrong
+ * ### Why the context must be established, not guessed
  *
- * It required a `.dockerignore` in the Dockerfile's own directory. That assumption is
- * false for a nested Dockerfile: `docker build -f docker/Dockerfile .` builds with
- * the repository root as context, and Docker applies exactly one ignore file — the
- * one at the *context root*. A nested Dockerfile protected by a root `.dockerignore`
- * was therefore reported unprotected, which is a false positive, and the fix cannot
- * simply be the reverse (accepting any ignore file anywhere) because that would
- * silently clear a genuinely unprotected build. So the rule models the contexts
- * instead.
+ * Docker applies exactly one `.dockerignore`, and it is the file at the **build
+ * context root**. The rule cannot see the build command, so a context it cannot
+ * establish makes both "protected" and "unprotected" unsupported. Earlier revisions
+ * tried to work around that by inference — first "a `.dockerignore` must sit beside
+ * the Dockerfile", then "a root `.dockerignore` may apply to a nested Dockerfile" —
+ * and both turned a possibility into a security conclusion: the first reported
+ * protected builds as unprotected, the second reported possibly-unprotected builds as
+ * protected.
  *
- * ### The context model
+ * So the rule only concludes when the repository states the context:
  *
- * Docker's ignore file lives at the context root, and the model knows two roots that
- * can plausibly be the context for an observed Dockerfile:
+ *   **declared**      a Compose `build` configuration names this Dockerfile and its
+ *                     context root (Phase 12 acquisition records that as an
+ *                     observation on the Dockerfile). The applicable `.dockerignore` is
+ *                     the one at that root, and no other.
+ *   **root default**  the Dockerfile itself sits at the repository root, so the root
+ *                     is the context its own directory implies — the one case where
+ *                     the Dockerfile's location and the context root coincide without
+ *                     any further evidence.
+ *   **otherwise**     `unknown`. Nothing in the model ties this Dockerfile to a
+ *                     context, so neither conclusion is available.
  *
- *   1. **the Dockerfile's own directory** — the default for `cd <dir> && docker
- *      build .`, and what `docker build .` from inside a project directory does;
- *   2. **the repository root** — for `docker build -f <dir>/Dockerfile .`. This is
- *      only considered when a root `.dockerignore` actually exists, because that file
- *      is the observable evidence that a root-context build is configured.
+ * A Compose file whose build declarations could not be interpreted makes every
+ * undeclared Dockerfile `unknown` too, because such a file *could* have declared a
+ * context for it. Absence of a declaration is only as trustworthy as the parse.
  *
- * With those two candidates the rule is a small lattice, and each branch states a
- * different thing:
+ * ### Other ways the rule declines
  *
- *   every candidate root has an ignore file   → `pass`: protected under either build
- *   no candidate root has an ignore file      → violation: no ignore file exists that
- *                                               any plausible build could apply
- *   some do, some do not                      → `unknown`: which one applies depends
- *                                               on a build command the model does not
- *                                               record, so neither answer is honest
- *
- * A Dockerfile at the repository root has a single candidate (the root), so it keeps
- * the simple behaviour — protected with a `.dockerignore`, unprotected without one.
- *
- * ### What is still not modelled
- *
- * A `build:` block in a compose file or a build script can declare any context, and
- * the scanner does not parse either. That is the one input that would turn the
- * `unknown` branch into a definite answer, so it is recorded here as the intended
- * acquisition-side improvement rather than guessed at.
+ *   - no Dockerfile was observed at all: an absence claim like any other, so it needs
+ *     the coverage support every rule uses for one;
+ *   - more than one declaration for the same Dockerfile with **different** context
+ *     roots: the repository contradicts itself, which is `unknown`, not a coin flip;
+ *   - a build context that is not fully covered by the scan, which is where the
+ *     violation claim's other half (no `.dockerignore` there) cannot be established.
  */
 
 import { createRule } from "../../../core/index.js";
@@ -64,7 +59,13 @@ import {
   SECURITY_RULE_IDS,
   SECURITY_RULE_VERSION,
 } from "../contracts.js";
-import { configurationEntities, inventoryAbsence, queryFor } from "../signals.js";
+import {
+  configurationEntities,
+  declaredBuildContexts,
+  inventoryAbsence,
+  queryFor,
+  uninterpretableComposeFiles,
+} from "../signals.js";
 
 /** The one ignore filename Docker understands. */
 const DOCKERIGNORE = ".dockerignore";
@@ -83,41 +84,11 @@ function directoryOf(path) {
   return index === -1 ? ROOT_DIRECTORY : path.slice(0, index);
 }
 
-/**
- * The plausible build-context roots for one Dockerfile.
- *
- * @param {string} dockerfilePath
- * @param {Set<string>} ignorePaths Paths of observed `.dockerignore` files.
- * @returns {string[]} Container directories, most specific first.
- */
-function contextCandidates(dockerfilePath, ignorePaths) {
-  const directory = directoryOf(dockerfilePath);
-  if (directory === ROOT_DIRECTORY) return [ROOT_DIRECTORY];
-  if (!ignorePaths.has(DOCKERIGNORE)) return [directory];
-  return [directory, ROOT_DIRECTORY];
-}
-
-/** Whether an ignore file was observed in a container directory. */
-function isProtected(directory, ignoreDirectories) {
-  if (directory === ROOT_DIRECTORY) return ignoreDirectories.root;
-  return ignoreDirectories.local.has(directory);
-}
-
-/**
- * Index observed `.dockerignore` files by the container directory they sit in.
- *
- * A root-level ignore file is tracked separately from directory-local ones, because
- * the two mean different things to the context model above.
- */
-function indexIgnoreFiles(ignores) {
-  const local = new Set();
-  let root = false;
-  for (const ignore of ignores) {
-    const directory = directoryOf(ignore.path);
-    if (directory === ROOT_DIRECTORY) root = true;
-    else local.add(directory);
-  }
-  return { root, local };
+/** Whether a `.dockerignore` was observed at a container directory. */
+function ignoreFilesByDirectory(ignores) {
+  const directories = new Set();
+  for (const ignore of ignores) directories.add(directoryOf(ignore.path));
+  return directories;
 }
 
 export const configurationRules = Object.freeze([
@@ -127,7 +98,7 @@ export const configurationRules = Object.freeze([
     category: SECURITY_CATEGORY,
     title: "Container build context is not restricted by a .dockerignore file",
     description:
-      "A Dockerfile was observed and no `.dockerignore` was observed at any build context root that could apply to it. Without an ignore file the build context sent to the daemon includes everything beneath the context root — local environment files, credentials, `.git` and build output — so content that is not meant to ship can be copied into an image layer. Only the presence and location of the files was observed: neither was read.",
+      "A Dockerfile was observed whose build context root is established by the repository — from a Compose `build` declaration, or from the Dockerfile sitting at the repository root — and no `.dockerignore` was observed at that root. Without an ignore file the build context sent to the daemon includes everything beneath the context root — local environment files, credentials, `.git` and build output — so content that is not meant to ship can be copied into an image layer. Only the presence and location of the files was observed: neither was read.",
     severity: "medium",
     applicability: {},
     remediation: {},
@@ -150,62 +121,84 @@ export const configurationRules = Object.freeze([
         return { findings: [], evidence: [], metadata: cleanMetadata({ dockerfiles: 0 }) };
       }
 
-      const ignorePaths = new Set(
-        configurationEntities(query, CONFIGURATION_SIGNALS.CONTAINER_IGNORE).map(
-          (entity) => entity.path,
-        ),
-      );
-      const ignoreDirectories = indexIgnoreFiles(
+      const ignoreDirectories = ignoreFilesByDirectory(
         configurationEntities(query, CONFIGURATION_SIGNALS.CONTAINER_IGNORE),
       );
+      const uninterpretable = uninterpretableComposeFiles(query);
 
       const unprotected = [];
-      const ambiguous = [];
+      const unresolved = [];
       let protectedCount = 0;
 
       for (const dockerfile of dockerfiles) {
-        const candidates = contextCandidates(dockerfile.path, ignorePaths);
-        const covered = candidates.filter((directory) =>
-          isProtected(directory, ignoreDirectories),
-        );
+        const declaration = declaredBuildContexts(query, dockerfile);
 
-        if (covered.length === candidates.length) {
+        if (declaration.contexts.length > 1) {
+          unresolved.push(
+            `the build context of ${dockerfile.path} is declared twice with different roots (${declaration.contexts.join(
+              ", ",
+            )})`,
+          );
+          continue;
+        }
+
+        // An undeclared Dockerfile is only as trustworthy as the parse that found no
+        // declaration for it: a Compose file whose build configuration could not be
+        // interpreted could have declared this exact context, so nothing is concluded
+        // — not even from the Dockerfile's own location at the repository root, which
+        // such a declaration would have overridden.
+        if (declaration.contexts.length === 0 && uninterpretable.length > 0) {
+          unresolved.push(`the build context of ${dockerfile.path} is not established, and ${uninterpretable.length} Compose file(s) could not be interpreted (${uninterpretable
+            .map((entry) => `${entry.path}: ${entry.reason}`)
+            .join(", ")})`);
+          continue;
+        }
+
+        const contextRoot = declaration.contexts[0] ?? defaultContextRoot(dockerfile.path);
+        if (contextRoot === null) {
+          unresolved.push(
+            `the build context of ${dockerfile.path} is not established by the repository model`,
+          );
+          continue;
+        }
+
+        if (ignoreDirectories.has(contextRoot)) {
           protectedCount += 1;
           continue;
         }
 
-        const record = {
+        unprotected.push({
           entity: dockerfile,
-          path: dockerfile.path,
-          directory: directoryOf(dockerfile.path),
-          contexts: candidates,
-          protectedContexts: covered,
-        };
-        if (covered.length > 0) ambiguous.push(record);
-        else unprotected.push(record);
+          contextRoot,
+          declared: declaration.contexts.length === 1,
+          declarationEvidenceIds: declaration.evidenceIds,
+        });
       }
 
       if (unprotected.length > 0) {
-        // An unprotected build is still only a violation if the scan supports the
-        // absence half of the comparison.
+        // A missing ignore file is still an absence claim: the scan has to have seen
+        // enough of the repository for "there is none at that root" to hold.
         const absence = inventoryAbsence(query);
         if (!absence.established) {
           return createRuleDetection({
             findings: [],
             coverage: APPLICABILITY_COVERAGE.UNKNOWN,
-            reason: `a Dockerfile was observed with no .dockerignore at a build context root, but ${absence.reason}`,
+            reason: `a Dockerfile was observed with no .dockerignore at its build context root, but ${absence.reason}`,
           });
         }
 
         return {
           findings: unprotected.map((entry) => ({
             confidence: SECURITY_CONFIDENCE.DERIVED_CONDITION,
-            // The observation the model already recorded for this Dockerfile.
-            evidence: [...entry.entity.evidenceIds],
+            // The Dockerfile's own observation, plus the declaration that established
+            // the context when there is one.
+            evidence: [
+              ...new Set([...entry.entity.evidenceIds, ...entry.declarationEvidenceIds]),
+            ].sort(),
             metadata: {
-              path: entry.path,
-              contextRoot: entry.directory,
-              contexts: entry.contexts,
+              path: entry.entity.path,
+              contextRoot: entry.contextRoot,
+              contextSource: entry.declared ? "compose" : "dockerfile-location",
               basis: FINDING_BASES.BUILD_CONTEXT,
             },
           })),
@@ -214,24 +207,16 @@ export const configurationRules = Object.freeze([
             basis: FINDING_BASES.BUILD_CONTEXT,
             dockerfiles: dockerfiles.length,
             protected: protectedCount,
-            ambiguous: ambiguous.length,
+            unresolved: unresolved.length,
           },
         };
       }
 
-      if (ambiguous.length > 0) {
-        // A `.dockerignore` exists that may or may not be the applicable one. Which
-        // depends on the build command, which the model does not record, so neither
-        // "protected" nor "unprotected" is a claim the evidence supports.
-        const contexts = ambiguous
-          .flatMap((entry) => entry.protectedContexts.map((directory) => `${directory}/${DOCKERIGNORE}`))
-          .sort();
+      if (unresolved.length > 0) {
         return createRuleDetection({
           findings: [],
           coverage: APPLICABILITY_COVERAGE.UNKNOWN,
-          reason: `a Dockerfile was observed outside the repository root with a .dockerignore that applies to one plausible build context but not another (${contexts.join(
-            ", ",
-          )}); the build context is not recorded in the repository model`,
+          reason: unresolved.join("; "),
         });
       }
 
@@ -240,9 +225,23 @@ export const configurationRules = Object.freeze([
         evidence: [],
         metadata: cleanMetadata({
           dockerfiles: dockerfiles.length,
-          dockerignores: ignorePaths.size,
+          dockerignores: ignoreDirectories.size,
         }),
       };
     },
   }),
 ]);
+
+/**
+ * The context root a Dockerfile's own location establishes, or `null`.
+ *
+ * Only a Dockerfile at the repository root qualifies: its own directory *is* the
+ * repository root, so the file's location and the context root coincide without any
+ * further evidence. A nested Dockerfile's directory proves nothing about the context
+ * (`docker build -f docker/Dockerfile .` is equally ordinary), which is exactly the
+ * inference this rule no longer makes.
+ */
+function defaultContextRoot(dockerfilePath) {
+  return directoryOf(dockerfilePath) === ROOT_DIRECTORY ? ROOT_DIRECTORY : null;
+}
+

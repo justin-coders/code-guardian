@@ -317,6 +317,7 @@ export async function scanRepository(root, options = {}) {
     configuration: detection.configuration,
     git: detection.git,
     content: detection.content,
+    containers: detection.containers,
     statistics: {
       filesScanned: files.length,
       directoriesScanned: directories.length,
