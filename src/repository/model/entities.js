@@ -26,8 +26,12 @@
 import { ValidationError } from "../../core/index.js";
 
 import {
+  CONTENT_STATUSES,
+  CONTENT_UNINSPECTED_REASONS,
   EVIDENCE_SUBJECTS,
   INVENTORY_KINDS,
+  createContentInspectionObservation,
+  createContentPatternObservation,
   createInventoryObservation,
   createSignalObservation,
 } from "./evidence.js";
@@ -60,6 +64,35 @@ export const GIT_HEAD_KINDS = Object.freeze({
   GITFILE: "gitfile",
   UNKNOWN: "unknown",
 });
+
+/**
+ * Where a symlink target resolves. Re-declared here rather than imported from the
+ * scanner, because the model layer must not depend on the acquisition layer; a test
+ * pins the two vocabularies together.
+ */
+export const SYMLINK_TARGET_KINDS = Object.freeze({
+  INSIDE: "inside",
+  OUTSIDE: "outside",
+  UNKNOWN: "unknown",
+});
+
+/** Why a symlink target is `unknown`. Closed vocabulary, re-declared like the kinds. */
+export const SYMLINK_TARGET_REASONS = Object.freeze({
+  NOT_INSPECTED: "not-inspected",
+  UNREADABLE: "unreadable",
+  CYCLE: "cycle",
+  DEPTH_EXCEEDED: "depth-exceeded",
+});
+
+/** The target recorded for a symlink the scan did not classify. */
+export const UNINSPECTED_SYMLINK_TARGET = Object.freeze({
+  kind: SYMLINK_TARGET_KINDS.UNKNOWN,
+  path: null,
+  reason: SYMLINK_TARGET_REASONS.NOT_INSPECTED,
+});
+
+/** Maximum content candidates a scan result may carry. */
+const MAX_CONTENT_CANDIDATES = 512;
 
 /** Bounded identifier text: letters, digits, `.`, `-`, `_`, `/` only. */
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._/-]{1,120}$/;
@@ -219,6 +252,187 @@ function projectManifestParse(parse, issues, path) {
   return projected;
 }
 
+function requireContentReason(value, issues, path) {
+  const reasons = Object.values(CONTENT_UNINSPECTED_REASONS);
+  if (!reasons.includes(value)) {
+    fail(issues, path, `must be one of: ${reasons.join(", ")}`);
+    return null;
+  }
+  return value;
+}
+
+/**
+ * Project the scan's bounded content inspection into observations.
+ *
+ * Nothing is inferred from a filename here: the observations state only what the
+ * inspection did (`status`, `reason`, bytes examined) and which *pattern shapes*
+ * matched. A candidate that was not inspected keeps its reason, so the model keeps
+ * two very different situations apart — content that was examined and matched
+ * nothing, versus content that was never examined at all — a distinction a security
+ * rule must not lose.
+ *
+ * The projection fails closed on an incoherent section (a candidate that is not an
+ * observed file, an unknown status, an unbounded pattern id) rather than dropping
+ * the record, because a silently dropped content observation is a silently missing
+ * security fact.
+ *
+ * @param {object|undefined} section The scan result's `content` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues Issue collector.
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {void}
+ */
+function projectContentSection(section, observedFilePaths, issues, record) {
+  if (section === undefined || section === null) return;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.content", "must be a plain object");
+    return;
+  }
+  if (!Array.isArray(section.candidates)) {
+    fail(issues, "scanResult.content.candidates", "must be an array");
+    return;
+  }
+  if (section.candidates.length > MAX_CONTENT_CANDIDATES) {
+    fail(issues, "scanResult.content.candidates", "carries more candidates than a scan can report");
+    return;
+  }
+
+  for (const candidate of section.candidates) {
+    if (!isPlainObject(candidate)) {
+      fail(issues, "scanResult.content.candidates[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(
+      candidate.path,
+      "scanResult.content.candidates[].path",
+    );
+    const candidateClass = identifier(candidate.candidate);
+    if (candidateClass === null) {
+      fail(issues, `scanResult.content.candidates[${path}].candidate`, "must be a bounded class id");
+      continue;
+    }
+    if (!observedFilePaths.has(path)) {
+      fail(
+        issues,
+        `scanResult.content.candidates[${path}]`,
+        "a content candidate must be a file the inventory observed",
+      );
+      continue;
+    }
+
+    const inspected = candidate.inspected === true;
+    const truncated = candidate.truncated === true;
+    const bytesInspected =
+      Number.isInteger(candidate.bytesInspected) && candidate.bytesInspected >= 0
+        ? candidate.bytesInspected
+        : 0;
+
+    let status;
+    let reason;
+    if (inspected) {
+      status = truncated ? CONTENT_STATUSES.PARTIAL : CONTENT_STATUSES.INSPECTED;
+      reason = null;
+    } else {
+      status = CONTENT_STATUSES.UNINSPECTED;
+      reason = requireContentReason(
+        candidate.reason,
+        issues,
+        `scanResult.content.candidates[${path}].reason`,
+      );
+      // An uninspected candidate with no recorded reason cannot be modelled: the
+      // record's entire meaning is *why* the content is unknown.
+      if (reason === null) continue;
+    }
+
+    record(
+      createContentInspectionObservation({ path, status, reason, bytesInspected }),
+    );
+
+    if (!inspected) continue;
+    for (const patternId of Array.isArray(candidate.patterns) ? candidate.patterns : []) {
+      const pattern = identifier(patternId);
+      if (pattern === null) {
+        fail(
+          issues,
+          `scanResult.content.candidates[${path}].patterns`,
+          "must be bounded pattern ids",
+        );
+        continue;
+      }
+      record(createContentPatternObservation({ path, patternId: pattern }));
+    }
+  }
+}
+
+/**
+ * Project a symlink's recorded target into the model's closed vocabulary.
+ *
+ * The three kinds are exhaustive and a location is only ever recorded for `inside`
+ * — and then only as a repository-relative path. That is what makes the field safe
+ * to serialize: an escaping target keeps no text at all, so an absolute host path
+ * cannot be carried (or leaked) by the model, and `unknown` is a first-class value
+ * rather than a missing field.
+ *
+ * @param {unknown} target
+ * @param {string[]} issues
+ * @param {string} path
+ * @returns {{kind: string, path: string|null, reason: string|null}}
+ */
+export function projectSymlinkTarget(target, issues, path) {
+  if (target === undefined || target === null) return { ...UNINSPECTED_SYMLINK_TARGET };
+  if (!isPlainObject(target)) {
+    fail(issues, path, "must be a plain object when present");
+    return { ...UNINSPECTED_SYMLINK_TARGET };
+  }
+
+  const kinds = Object.values(SYMLINK_TARGET_KINDS);
+  if (!kinds.includes(target.kind)) {
+    fail(issues, `${path}.kind`, `must be one of: ${kinds.join(", ")}`);
+    return { ...UNINSPECTED_SYMLINK_TARGET };
+  }
+
+  if (target.kind === SYMLINK_TARGET_KINDS.INSIDE) {
+    if (target.path === null) return { kind: target.kind, path: null, reason: null };
+    let relative;
+    try {
+      relative = requireRepositoryRelativePath(target.path, `${path}.path`);
+    } catch (error) {
+      for (const issue of error?.details?.issues ?? [`${path}.path: invalid`]) {
+        issues.push(issue);
+      }
+      return { ...UNINSPECTED_SYMLINK_TARGET };
+    }
+    return { kind: target.kind, path: relative, reason: null };
+  }
+
+  if (target.path !== null && target.path !== undefined) {
+    fail(issues, `${path}.path`, `must be null for a ${target.kind} target`);
+  }
+
+  if (target.kind === SYMLINK_TARGET_KINDS.OUTSIDE) {
+    if (target.reason !== null && target.reason !== undefined) {
+      fail(issues, `${path}.reason`, "must be null for an outside target");
+    }
+    return { kind: target.kind, path: null, reason: null };
+  }
+
+  const reasons = Object.values(SYMLINK_TARGET_REASONS);
+  if (!reasons.includes(target.reason)) {
+    fail(issues, `${path}.reason`, `must be one of: ${reasons.join(", ")}`);
+    return { ...UNINSPECTED_SYMLINK_TARGET };
+  }
+  return { kind: SYMLINK_TARGET_KINDS.UNKNOWN, path: null, reason: target.reason };
+}
+
+/** Flattened target fields for a symlink's inventory observation. */
+function symlinkTargetData(target) {
+  return {
+    targetKind: target.kind,
+    targetPath: target.path,
+    targetReason: target.reason,
+  };
+}
+
 /**
  * Project `.git/HEAD` into the model's closed head vocabulary.
  *
@@ -339,6 +553,14 @@ export function buildEntities(scanResult, repositoryIdValue) {
       // The Phase 8A policy refuses to traverse symlinks, so every symlink the
       // scanner reports was recorded without being followed.
       followed: false,
+      // Where the link points, in the closed three-way vocabulary. A scan that did
+      // not classify the link yields `unknown`, never `inside`: "we did not look"
+      // must not read as "this link is harmless".
+      target: projectSymlinkTarget(
+        entry.target,
+        issues,
+        `scanResult.symlinks[${path}].target`,
+      ),
       directoryId: directoryIdFor(path),
       evidenceIds: [],
     };
@@ -352,10 +574,18 @@ export function buildEntities(scanResult, repositoryIdValue) {
       createInventoryObservation({
         path: entity.path,
         kind: entity.kind === ENTITY_KINDS.FILE ? INVENTORY_KINDS.FILE : INVENTORY_KINDS.SYMLINK,
-        data: entity.kind === ENTITY_KINDS.FILE ? { extension: entity.extension } : {},
+        data:
+          entity.kind === ENTITY_KINDS.FILE
+            ? { extension: entity.extension }
+            : symlinkTargetData(entity.target),
       }),
     );
   }
+
+  // ── Content observations (bounded file inspection) ───────────────────────────
+
+  const observedFilePaths = new Set(files.map((file) => file.path));
+  projectContentSection(scanResult.content, observedFilePaths, issues, record);
 
   // ── Languages ─────────────────────────────────────────────────────────────
 

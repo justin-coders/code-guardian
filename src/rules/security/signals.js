@@ -37,8 +37,11 @@
  */
 
 import {
+  CONTENT_SIGNALS,
+  CONTENT_STATUSES,
   COVERAGE_GUARANTEES,
   ENTITY_KINDS,
+  SYMLINK_TARGET_KINDS,
   createRepositoryQuery,
 } from "../../repository/model/index.js";
 
@@ -90,6 +93,112 @@ export function configurationEntities(query, signal) {
   return query
     .listEntities(ENTITY_KINDS.CONFIGURATION)
     .entities.filter((entity) => entity.signal === signal);
+}
+
+/**
+ * Symlink entities the inventory recorded, in deterministic id order.
+ *
+ * Every entity carries its classified `target`, so a rule can tell an escaping link
+ * (`outside`) from one that stays inside the repository and from one the scanner
+ * could not classify (`unknown`). The two shapes are deliberately distinct values:
+ * "we looked and it points out" is a finding, "we could not look" is not.
+ *
+ * @param {object} query
+ * @returns {{entities: object[], coverage: string, truncated: boolean}}
+ */
+export function symlinkInventory(query) {
+  return query.listEntities(ENTITY_KINDS.SYMLINK);
+}
+
+/**
+ * The content inspection the model recorded for one observed file.
+ *
+ * Returns `null` when the file has no inspection observation at all — an older scan,
+ * or an acquisition path that ran no content inspection. That is *not* "the content
+ * is clean": the caller must treat it as `unknown`, which is why "nothing was
+ * recorded" and "recorded as inspected" are different return values rather than two
+ * fields of one.
+ *
+ * @param {object} query
+ * @param {object} file A `file` entity.
+ * @returns {{status: string, reason: string|null, bytesInspected: number|null,
+ *   patterns: Array<{pattern: string, evidenceId: string}>}|null} Frozen, or null.
+ */
+export function contentInspectionFor(query, file) {
+  const result = query.getEvidenceForEntity(file.id);
+  const records = result.evidence ?? [];
+
+  let inspection = null;
+  const patterns = [];
+  for (const record of records) {
+    const signal = record?.data?.signal;
+    if (signal === CONTENT_SIGNALS.INSPECTION && inspection === null) {
+      inspection = record;
+    } else if (signal === CONTENT_SIGNALS.PATTERN) {
+      const pattern = record?.data?.pattern;
+      if (typeof pattern === "string" && pattern !== "") {
+        patterns.push({ pattern, evidenceId: record.id });
+      }
+    }
+  }
+
+  if (inspection === null) return null;
+
+  return Object.freeze({
+    status: typeof inspection.data.status === "string" ? inspection.data.status : null,
+    reason: typeof inspection.data.reason === "string" ? inspection.data.reason : null,
+    bytesInspected:
+      Number.isInteger(inspection.data.bytesInspected) ? inspection.data.bytesInspected : null,
+    evidenceId: inspection.id,
+    patterns: Object.freeze(patterns.sort((a, b) => (a.evidenceId < b.evidenceId ? -1 : 1))),
+  });
+}
+
+/** Whether a content inspection establishes a conclusion about a file's contents. */
+export function isCompleteContentInspection(inspection) {
+  return inspection !== null && inspection.status === CONTENT_STATUSES.INSPECTED;
+}
+
+/**
+ * The symlinks whose target escapes the repository, and those that are unresolved.
+ *
+ * Unresolved covers both `unknown` classifications and a missing `target` field: a
+ * model built from a scan that did not classify its links must not be read as one
+ * whose links are all inside.
+ *
+ * @param {object} query
+ * @returns {{escaping: object[], unresolved: object[], inside: object[], total: number,
+ *   reasons: string[]}}
+ */
+export function symlinkTargets(query) {
+  const inventory = symlinkInventory(query);
+  const escaping = [];
+  const unresolved = [];
+  const inside = [];
+  const reasons = new Set();
+
+  for (const entity of inventory.entities) {
+    const kind = entity.target?.kind;
+    if (kind === SYMLINK_TARGET_KINDS.OUTSIDE) {
+      escaping.push(entity);
+    } else if (kind === SYMLINK_TARGET_KINDS.INSIDE) {
+      inside.push(entity);
+    } else {
+      unresolved.push(entity);
+      const reason = entity.target?.reason;
+      if (typeof reason === "string" && reason !== "") reasons.add(reason);
+    }
+  }
+
+  return Object.freeze({
+    escaping: Object.freeze(escaping),
+    unresolved: Object.freeze(unresolved),
+    inside: Object.freeze(inside),
+    total: inventory.entities.length,
+    coverage: inventory.coverage,
+    truncated: inventory.truncated === true,
+    reasons: Object.freeze([...reasons].sort()),
+  });
 }
 
 /**

@@ -26,7 +26,11 @@ import { fileURLToPath } from "node:url";
 import { ValidationError, createEvidence, createRule } from "../src/core/index.js";
 
 import { SCAN_SIGNALS, createScanResult } from "../src/repository/scanner/index.js";
-import { buildRepositoryModel, getEvidence } from "../src/repository/model/index.js";
+import {
+  SYMLINK_TARGET_KINDS,
+  buildRepositoryModel,
+  getEvidence,
+} from "../src/repository/model/index.js";
 
 import {
   buildAnalysisContext,
@@ -42,6 +46,8 @@ import {
   RULE_FAILURE_KINDS,
   RULE_OUTCOME_STATUSES,
   RuleRegistrationError,
+  CONTENT_PATTERNS,
+  FINDING_BASES,
   SECURITY_ANALYZER_ID,
   SECURITY_CATEGORY,
   SECURITY_CONFIDENCE,
@@ -100,16 +106,23 @@ function modelOf({
   configuration = [],
   ignored = [],
   errors = [],
+  symlinks = [],
+  content = [],
   complete = true,
   truncated = false,
 } = {}) {
-  const directories = [...new Set(paths.flatMap(ancestorPaths))].sort();
+  const directories = [...new Set(paths.flatMap(ancestorPaths))]
+    .concat(symlinks.flatMap((entry) => ancestorPaths(entry.path)))
+    .filter((path, index, all) => all.indexOf(path) === index)
+    .sort();
   return buildRepositoryModel(
     createScanResult({
       root: "/scan-root",
       scannedAt: ISO,
       files: paths.map((path) => toEntry(path)).sort(byPath),
       directories: directories.map((path) => toEntry(path, true)),
+      symlinks: symlinks.map((entry) => symlinkEntry(entry.path, entry.target)).sort(byPath),
+      content: contentSection(content),
       ignored: ignored.map((entry) => ({ ...entry })).sort(byPath),
       configuration: {
         detected: configuration.length > 0,
@@ -119,7 +132,7 @@ function modelOf({
       statistics: {
         filesScanned: paths.length,
         directoriesScanned: directories.length,
-        symlinksScanned: 0,
+        symlinksScanned: symlinks.length,
         ignored: ignored.length,
         unreadable: errors.length,
         truncatedBy: truncated ? ["file-limit"] : [],
@@ -134,6 +147,48 @@ function modelOf({
   );
 }
 
+/** A symlink inventory entry, defaulting to a link whose target stays inside. */
+function symlinkEntry(path, target = { kind: SYMLINK_TARGET_KINDS.INSIDE, path: "src/app.js", reason: null }) {
+  return {
+    path,
+    name: path.split("/").pop(),
+    depth: path.split("/").length,
+    target,
+  };
+}
+
+/**
+ * A content-inspection candidate, as the scanner emits it.
+ *
+ * `pattern` is a *pattern id*, never a value: the scanner's records are value-free
+ * by construction, and the fixtures keep that property so a leak test proves
+ * something about the pack rather than about the fixture.
+ */
+function candidate(path, { patterns = [], inspected = true, reason = null, truncated = false, candidateClass = "dotenv", bytesInspected = 40 } = {}) {
+  return {
+    path,
+    candidate: candidateClass,
+    inspected,
+    reason,
+    bytesInspected,
+    truncated,
+    patterns,
+  };
+}
+
+/** Wrap candidate records in the scan result's `content` section. */
+function contentSection(candidates) {
+  return {
+    inspected: candidates.some((entry) => entry.inspected),
+    complete: candidates.every((entry) => entry.inspected && !entry.truncated),
+    truncated: candidates.some(
+      (entry) => entry.truncated || entry.reason === "budget-exhausted",
+    ),
+    candidates: [...candidates].sort(byPath),
+    limits: { maxFileBytes: 65536, maxTotalBytes: 262144, maxFiles: 12 },
+  };
+}
+
 /** A base repository with nothing security-relevant in it. */
 const BASE_PATHS = ["README.md", "package.json", "src/app.js"];
 
@@ -144,26 +199,59 @@ const SENSITIVE_PATHS = [
   ".env",
   ".env.example",
   ".netrc",
+  ".npmrc",
   "Dockerfile",
   "apps/web/.env",
   "id_rsa",
   "id_rsa.pub",
   "package.json",
+  "secrets.tfvars",
   "server.pem",
   "service-account.json",
   "store.p12",
   "terraform.tfstate",
 ];
 
+/**
+ * The content the scanner inspected in the sensitive fixture.
+ *
+ * Three candidates were examined and matched nothing (so the pack has complete
+ * information about them and stays quiet), one holds a credential assignment and one
+ * inlines a private-key block. Only pattern ids appear — the values never exist in a
+ * fixture, an observation or a finding.
+ */
+const SENSITIVE_CONTENT = [
+  candidate(".env"),
+  candidate(".env.example"),
+  candidate("apps/web/.env"),
+  candidate(".npmrc", {
+    candidateClass: "npm-config",
+    patterns: [CONTENT_PATTERNS.CREDENTIAL_ASSIGNMENT],
+  }),
+  candidate("secrets.tfvars", {
+    candidateClass: "terraform-vars",
+    patterns: [CONTENT_PATTERNS.PRIVATE_KEY_BLOCK],
+  }),
+];
+
+/** One symlink whose target escapes the repository. */
+const SENSITIVE_SYMLINKS = [
+  { path: "escape", target: { kind: SYMLINK_TARGET_KINDS.OUTSIDE, path: null, reason: null } },
+];
+
 const SENSITIVE = modelOf({
   paths: SENSITIVE_PATHS,
   configuration: [["Dockerfile", CONFIGURATION_SIGNALS.DOCKERFILE]],
+  symlinks: SENSITIVE_SYMLINKS,
+  content: SENSITIVE_CONTENT,
 });
 
 /** Same sensitive files, but the scan stopped at a limit. */
 const SENSITIVE_PARTIAL = modelOf({
   paths: SENSITIVE_PATHS,
   configuration: [["Dockerfile", CONFIGURATION_SIGNALS.DOCKERFILE]],
+  symlinks: SENSITIVE_SYMLINKS,
+  content: SENSITIVE_CONTENT,
   complete: false,
   truncated: true,
 });
@@ -239,6 +327,9 @@ const findingPaths = (findings) => findings.map((finding) => finding.metadata.pa
 
 const EXPECTED_RULE_IDS = [
   "security.configuration.container-ignore",
+  "security.exposure.symlink-escape",
+  "security.sensitive-content.credential-assignment",
+  "security.sensitive-content.private-key-material",
   "security.sensitive-file.credentials",
   "security.sensitive-file.dotenv",
   "security.sensitive-file.key-material",
@@ -269,7 +360,8 @@ describe("security pack: rule set", () => {
       assert.deepEqual({ ...rule.applicability }, {});
       // Phase 12 detects; remediation belongs to a later phase.
       assert.deepEqual({ ...rule.remediation }, {});
-      assert.equal(rule.metadata.basis, FINDING_BASIS);
+      // Every rule states which kind of observation it rests on.
+      assert.ok(Object.values(FINDING_BASES).includes(rule.metadata.basis), rule.id);
       assert.ok(["info", "low", "medium", "high", "critical"].includes(rule.severity));
       assert.equal(typeof rule.detect, "function");
     }
@@ -444,13 +536,15 @@ describe("security pack: clean repository", () => {
     assert.deepEqual(ruleIdsOf(run), EXPECTED_RULE_IDS);
     for (const entry of run.rules) {
       assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS, entry.rule.id);
-      assert.equal(entry.metadata.basis, FINDING_BASIS);
+      assert.ok(Object.values(FINDING_BASES).includes(entry.metadata.basis), entry.rule.id);
     }
     for (const entry of run.rules) {
       if (entry.rule.id === SECURITY_RULE_IDS.CONTAINER_IGNORE) {
         assert.equal(entry.metadata.dockerfiles, 0);
         continue;
       }
+      // The clean fixture carries no symlink and no content candidate, so the rules
+      // that could have said something about either rest on the file inventory.
       assert.equal(entry.metadata.observedFiles, BASE_PATHS.length, entry.rule.id);
       assert.equal(entry.metadata.ignoredPaths, 0);
     }
@@ -472,8 +566,10 @@ describe("security pack: sensitive repository", () => {
   it("reports every sensitive artifact once, and ignores the look-alikes", async () => {
     const run = await runRules(SENSITIVE);
 
-    // One per rule, plus a second dotenv file nested deeper in the tree.
-    assert.equal(run.findings.length, 9);
+    // One per rule, plus a second dotenv file nested deeper in the tree, plus the
+    // three findings the corrections added (credential content, key-block content
+    // and the escaping symlink).
+    assert.equal(run.findings.length, 12);
     assert.equal(run.complete, true);
 
     const byRule = new Map();
@@ -497,6 +593,13 @@ describe("security pack: sensitive repository", () => {
       "terraform.tfstate",
     ]);
     assert.deepEqual(findingPaths(byRule.get(SECURITY_RULE_IDS.CONTAINER_IGNORE)), ["Dockerfile"]);
+    assert.deepEqual(findingPaths(byRule.get(SECURITY_RULE_IDS.CREDENTIAL_CONTENT)), [
+      ".npmrc",
+    ]);
+    assert.deepEqual(findingPaths(byRule.get(SECURITY_RULE_IDS.PRIVATE_KEY_CONTENT)), [
+      "secrets.tfvars",
+    ]);
+    assert.deepEqual(findingPaths(byRule.get(SECURITY_RULE_IDS.SYMLINK_ESCAPE)), ["escape"]);
 
     // `.env.example` and `id_rsa.pub` are observed and deliberately not reported.
     assert.equal(run.findings.some((finding) => finding.metadata.path === ".env.example"), false);
@@ -543,8 +646,31 @@ describe("security pack: sensitive repository", () => {
       assert.equal(finding.confidence, confidence);
       assert.equal(finding.category, SECURITY_CATEGORY);
       assert.ok(finding.evidence.length > 0);
-      assert.equal(finding.metadata.basis, FINDING_BASIS);
+      assert.ok(Object.values(FINDING_BASES).includes(finding.metadata.basis));
     }
+  });
+
+  it("reports content findings with their pattern, and never the matched value", async () => {
+    const run = await runRules(SENSITIVE);
+
+    const credential = resultOf(run, SECURITY_RULE_IDS.CREDENTIAL_CONTENT);
+    assert.equal(credential.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.deepEqual(credential.findings[0].metadata.patterns, [
+      CONTENT_PATTERNS.CREDENTIAL_ASSIGNMENT,
+    ]);
+    assert.equal(credential.findings[0].metadata.basis, FINDING_BASES.CONTENT);
+    assert.equal(credential.findings[0].confidence, SECURITY_CONFIDENCE.OBSERVED_CONTENT);
+
+    const keyBlock = resultOf(run, SECURITY_RULE_IDS.PRIVATE_KEY_CONTENT);
+    assert.equal(keyBlock.status, RULE_OUTCOME_STATUSES.VIOLATION);
+    assert.deepEqual(keyBlock.findings[0].metadata.patterns, [CONTENT_PATTERNS.PRIVATE_KEY_BLOCK]);
+
+    // The candidate files that matched nothing are inspected, not unknown: the pack
+    // has complete information and stays silent.
+    assert.equal(credential.metadata.unresolved, 0);
+    // Every candidate was fully inspected: the three that matched nothing, the one
+    // this rule reports, and the one the key-block rule reports.
+    assert.equal(credential.metadata.inspected, 5);
   });
 
   it("produces an independent finding per artifact, so one file cannot mask another", async () => {
@@ -621,7 +747,7 @@ describe("security pack: coverage semantics", () => {
   it("still reports what it did observe in an incomplete scan", async () => {
     const run = await runRules(SENSITIVE_PARTIAL);
     // Coverage limits the *absence* claim; it must never suppress an observation.
-    assert.equal(run.findings.length, 8);
+    assert.equal(run.findings.length, 11);
     assert.equal(statusOf(run, SECURITY_RULE_IDS.DOTENV), RULE_OUTCOME_STATUSES.VIOLATION);
     assert.equal(statusOf(run, SECURITY_RULE_IDS.KEYSTORE), RULE_OUTCOME_STATUSES.VIOLATION);
     assert.equal(statusOf(run, SECURITY_RULE_IDS.TERRAFORM_STATE), RULE_OUTCOME_STATUSES.VIOLATION);
@@ -692,7 +818,7 @@ describe("security pack: evidence", () => {
 describe("security pack: canonical findings", () => {
   it("reaches the Phase 9 Finding Engine and comes back canonical", async () => {
     const result = await runAnalyzer(SENSITIVE);
-    assert.equal(result.findings.length, 9);
+    assert.equal(result.findings.length, 12);
     for (const finding of result.findings) {
       assert.match(finding.fingerprint, /^cg-fp1-[0-9a-f]{32}$/);
       assert.equal(finding.id, `finding:${finding.fingerprint}`);
@@ -777,7 +903,7 @@ describe("security pack: isolation", () => {
     ];
     const run = await runRules(SENSITIVE, { rules });
     assert.equal(statusOf(run, "security.fixture-rule"), RULE_OUTCOME_STATUSES.FAILED);
-    assert.equal(run.rules.filter((entry) => entry.status === RULE_OUTCOME_STATUSES.VIOLATION).length, 8);
+    assert.equal(run.rules.filter((entry) => entry.status === RULE_OUTCOME_STATUSES.VIOLATION).length, 11);
     assert.equal(run.complete, false);
   });
 

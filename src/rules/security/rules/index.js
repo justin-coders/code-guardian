@@ -8,6 +8,8 @@
  */
 
 import { configurationRules } from "./configuration.js";
+import { exposureRules } from "./exposure.js";
+import { sensitiveContentRules } from "./sensitive-content.js";
 import { sensitiveFileRules } from "./sensitive-files.js";
 
 function byId(a, b) {
@@ -17,5 +19,7 @@ function byId(a, b) {
 
 /** Every rule this pack ships, sorted by rule id. */
 export const securityRules = Object.freeze(
-  [...sensitiveFileRules, ...configurationRules].sort(byId),
+  [...sensitiveFileRules, ...configurationRules, ...sensitiveContentRules, ...exposureRules].sort(
+    byId,
+  ),
 );

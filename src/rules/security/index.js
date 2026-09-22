@@ -22,6 +22,9 @@
 
 export {
   CONFIGURATION_SIGNALS,
+  CONTENT_CANDIDATE_FILES,
+  CONTENT_PATTERNS,
+  FINDING_BASES,
   FINDING_BASIS,
   SECURITY_ANALYZER_ID,
   SECURITY_ANALYZER_NAME,
@@ -39,10 +42,14 @@ export { FILE_SPEC_CRITERIA, defineFileSpec, matchesFileSpec } from "./matching.
 
 export {
   configurationEntities,
+  contentInspectionFor,
   fileInventory,
   filesMatching,
   inventoryAbsence,
+  isCompleteContentInspection,
   queryFor,
+  symlinkInventory,
+  symlinkTargets,
 } from "./signals.js";
 
 export { securityRules } from "./rules/index.js";

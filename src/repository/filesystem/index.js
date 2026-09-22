@@ -34,8 +34,12 @@ export {
 
 export {
   DIRECTORY_ENTRY_TYPES,
+  LINK_TARGET_KINDS,
+  LINK_UNKNOWN_REASONS,
   SYMLINK_POLICY,
+  classifyLinkTarget,
   readFile,
+  readLink,
   listDirectory,
 } from "./operations.js";
 

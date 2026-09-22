@@ -42,6 +42,7 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   DOCUMENTATION: "documentation",
   CONFIGURATION: "configuration",
   GIT: "git",
+  CONTENT: "content",
 });
 
 /**
@@ -60,7 +61,64 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   [EVIDENCE_SUBJECTS.DOCUMENTATION]: "documentation",
   [EVIDENCE_SUBJECTS.CONFIGURATION]: "configuration",
   [EVIDENCE_SUBJECTS.GIT]: "git",
+  // A content observation is *about* a file's bytes, so `configuration` is the
+  // closest Core type: the Core vocabulary has no "content" type, and inventing
+  // one would change the Core contract rather than extend this layer.
+  [EVIDENCE_SUBJECTS.CONTENT]: "configuration",
 });
+
+/**
+ * Signals recorded on content observations.
+ *
+ * `INSPECTION` states what the inspection did (or could not do) for one candidate;
+ * `PATTERN` states which credential-shaped structure was observed. They are kept
+ * apart so "the file was read and nothing matched" and "a pattern matched" are
+ * different records rather than different fields of one record.
+ */
+export const CONTENT_SIGNALS = Object.freeze({
+  INSPECTION: "content-inspection",
+  PATTERN: "content-pattern",
+});
+
+/**
+ * How far the bounded inspection of one candidate got.
+ *
+ *   inspected       the whole candidate was examined as text and no limit stopped
+ *                   the examination, so "no pattern matched" is a supported claim
+ *   partial         the examination was cut short (the file is larger than the
+ *                   per-file limit), so "no pattern matched" is only a claim about
+ *                   the prefix that was read
+ *   uninspected     nothing was examined (a budget was spent, the file could not be
+ *                   read, or it is not text)
+ *
+ * `partial` and `uninspected` are *not* evidence of a clean file, which is why they
+ * are distinct values rather than a `false`.
+ */
+export const CONTENT_STATUSES = Object.freeze({
+  INSPECTED: "inspected",
+  PARTIAL: "partial",
+  UNINSPECTED: "uninspected",
+});
+
+/** Why a candidate is `uninspected`. Mirrors the scanner's closed vocabulary. */
+export const CONTENT_UNINSPECTED_REASONS = Object.freeze({
+  BUDGET_EXHAUSTED: "budget-exhausted",
+  UNREADABLE: "unreadable",
+  NOT_TEXT: "not-text",
+});
+
+/**
+ * Whether an evidence record is a content observation, and which kind.
+ *
+ * Exported so consumers (the security rule pack) can recognize content evidence
+ * through the public evidence record alone, without depending on id layout.
+ */
+export function contentObservationKind(record) {
+  const signal = record?.data?.signal;
+  if (signal === CONTENT_SIGNALS.INSPECTION) return CONTENT_SIGNALS.INSPECTION;
+  if (signal === CONTENT_SIGNALS.PATTERN) return CONTENT_SIGNALS.PATTERN;
+  return null;
+}
 
 /** Producer recorded on every observation. */
 export const EVIDENCE_SOURCE = Object.freeze({
@@ -119,6 +177,59 @@ export function createInventoryObservation({ path, kind, data = {} }) {
     type: kind === INVENTORY_KINDS.DIRECTORY ? "directory" : "file",
     path,
     data: { kind, ...data },
+  });
+}
+
+/**
+ * Build a content observation: what the bounded inspection did with one candidate.
+ *
+ * The payload is deliberately value-free — status, reason, byte count and the
+ * pattern ids that matched. No matched text, no line, and no file byte is ever
+ * copied into the model, so a secret cannot travel through the model to a finding,
+ * a log or an MCP response.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.status One of `CONTENT_STATUSES`.
+ * @param {string|null} input.reason Why the content was not inspected, or null.
+ * @param {number} input.bytesInspected Bytes actually examined.
+ * @returns {object}
+ */
+export function createContentInspectionObservation({
+  path,
+  status,
+  reason,
+  bytesInspected,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONTENT,
+    key: `${CONTENT_SIGNALS.INSPECTION}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONTENT],
+    path,
+    data: {
+      signal: CONTENT_SIGNALS.INSPECTION,
+      status,
+      reason,
+      bytesInspected,
+    },
+  });
+}
+
+/**
+ * Build one content-pattern observation: which pattern shape was observed where.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.patternId A pattern id from the scanner's closed vocabulary.
+ * @returns {object}
+ */
+export function createContentPatternObservation({ path, patternId }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONTENT,
+    key: `${CONTENT_SIGNALS.PATTERN}:${patternId}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONTENT],
+    path,
+    data: { signal: CONTENT_SIGNALS.PATTERN, pattern: patternId },
   });
 }
 

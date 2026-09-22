@@ -25,11 +25,13 @@
  *   - **Evidence-oriented.** Every signal records the repository-relative path it
  *     was observed at, so a later phase can trace a conclusion back to a file.
  *
- * Deliberate omissions, so no later phase assumes otherwise: file sizes and
- * modification times are not recorded (the Phase 8A boundary exposes no `stat`
- * data, and no Phase 8C signal needs them yet), and no file *content* is parsed
- * beyond the shallow `package.json` subset in the manifests detector. Git history,
- * status and refs are likewise out of scope — see the git detector.
+ * Content reading is bounded and deliberate. Exactly three detectors read a file's
+ * bytes: manifests (the shallow `package.json` subset), git (`.git/HEAD`) and the
+ * content detector, which inspects a closed candidate set under an explicit byte and
+ * file budget and reports *which pattern shape* it observed — never a matched value,
+ * line or byte. Nothing else in this layer parses source. File sizes and modification
+ * times are still not recorded, and Git history, status and refs are out of scope —
+ * see the git detector.
  *
  * Failure policy: invalid *arguments* throw a Core `ValidationError`; filesystem
  * *conditions* (missing root, unreadable subdirectory, unparsable manifest) are
@@ -57,6 +59,7 @@ import {
   buildIgnorePolicy,
   isIgnored,
 } from "./policies/ignore.js";
+import { uninspectedTarget, resolveSymlinkTargets } from "./policies/symlinks.js";
 import { DEFAULT_SCANNER_LIMITS, resolveScanLimits } from "./policies/limits.js";
 
 export { DEFAULT_SCANNER_LIMITS };
@@ -124,14 +127,16 @@ function toEntry(relativePath, isDirectory) {
  * Build the detector view from the (already ignore-filtered) inventory.
  *
  * `read` and `list` go through the Phase 8A boundary, so every detector read is
- * contained, symlink-refused and classified.
+ * contained, symlink-refused and classified. `read` forwards its options, which is
+ * how the content detector expresses its byte budget — no detector reaches the
+ * filesystem directly.
  */
 function buildView(root, files, directories) {
   return {
     root,
     files,
     directories,
-    read: (relativePath) => readFile(root, relativePath),
+    read: (relativePath, options) => readFile(root, relativePath, options),
     list: (relativePath) => listDirectory(root, relativePath),
   };
 }
@@ -280,6 +285,11 @@ export async function scanRepository(root, options = {}) {
 
   const { files, directories, ignored } = applyIgnorePolicy(policy, walkResult);
 
+  // Where each link points, established by reading the links themselves (never by
+  // following them). A link's target is part of the inventory, so it is resolved
+  // before the detectors run.
+  const symlinkTargets = await resolveSymlinkTargets(resolvedRoot, walkResult.symlinks);
+
   const view = buildView(resolvedRoot, files, directories);
   const detection = await runDetectors(view);
 
@@ -288,6 +298,7 @@ export async function scanRepository(root, options = {}) {
       path: entry.relative,
       name: entry.name,
       depth: depthOf(entry.relative),
+      target: symlinkTargets.get(entry.relative) ?? uninspectedTarget(),
     }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
@@ -305,6 +316,7 @@ export async function scanRepository(root, options = {}) {
     documentation: detection.documentation,
     configuration: detection.configuration,
     git: detection.git,
+    content: detection.content,
     statistics: {
       filesScanned: files.length,
       directoriesScanned: directories.length,

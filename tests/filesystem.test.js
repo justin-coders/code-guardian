@@ -31,8 +31,11 @@ import {
   FILESYSTEM_ERROR_CODES,
   FILESYSTEM_ERROR_KINDS,
   FilesystemError,
+  LINK_TARGET_KINDS,
+  LINK_UNKNOWN_REASONS,
   SYMLINK_POLICY,
   classifyFilesystemError,
+  classifyLinkTarget,
   createPathTools,
   filesystemErrorMessage,
   isContained,
@@ -40,6 +43,7 @@ import {
   listDirectory,
   normalizeRoot,
   readFile,
+  readLink,
   resolvePath,
   resolveWithin,
   sanitizeFilesystemPath,
@@ -842,3 +846,217 @@ describe("walk", () => {
     );
   });
 });
+
+// ─── Symlink inspection and bounded reads (Phase 12 corrections) ─────────────
+
+describe("symlink inspection (readLink)", () => {
+  it("classifies a relative target that stays inside the repository", async () => {
+    const root = register(makeFixture({ "real.txt": "ok", "a/keep.txt": "x" }));
+    symlinkSync("../real.txt", join(root, "a", "alias"), "file");
+
+    const result = await readLink(root, "a/alias");
+    assert.equal(result.ok, true);
+    assert.equal(result.relative, "a/alias");
+    assert.deepEqual(result.target, {
+      kind: LINK_TARGET_KINDS.INSIDE,
+      path: "real.txt",
+      reason: null,
+    });
+  });
+
+  it(
+    "classifies an absolute target that leaves the repository as outside, and keeps the raw path out of the result",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "secret.txt": "top secret" }));
+      const root = register(makeFixture({ "real.txt": "ok" }));
+      symlinkSync(join(outside, "secret.txt"), join(root, "escape"), "file");
+
+      const result = await readLink(root, "escape");
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.target, {
+        kind: LINK_TARGET_KINDS.OUTSIDE,
+        path: null,
+        reason: null,
+      });
+      // The target's text is discarded: no host location travels with the result.
+      const serialized = JSON.stringify(result.target);
+      assert.equal(serialized.includes(outside), false);
+      assert.equal(serialized.includes("secret.txt"), false);
+    },
+  );
+
+  it(
+    "classifies a traversal target that normalizes outside the repository",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const root = register(makeFixture({ "a/keep.txt": "x" }));
+      symlinkSync("../../outside", join(root, "a", "up"), "file");
+
+      const result = await readLink(root, "a/up");
+      assert.equal(result.target.kind, LINK_TARGET_KINDS.OUTSIDE);
+    },
+  );
+
+  it(
+    "classifies a target that climbs back to the repository root",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const root = register(makeFixture({ "a/keep.txt": "x" }));
+      symlinkSync("..", join(root, "a", "root-link"), "dir");
+
+      const result = await readLink(root, "a/root-link");
+      // The root has no repository-relative form, so it is recorded as `inside`
+      // with a null path rather than as a fabricated ".".
+      assert.deepEqual(result.target, {
+        kind: LINK_TARGET_KINDS.INSIDE,
+        path: null,
+        reason: null,
+      });
+    },
+  );
+
+  it(
+    "never follows the link it inspects, and never reads its target",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const outside = register(makeFixture({ "secret.txt": "top secret" }));
+      const root = register(makeFixture({ "real.txt": "ok" }));
+      symlinkSync(outside, join(root, "link-dir"), "dir");
+
+      const result = await readLink(root, "link-dir");
+      assert.equal(result.ok, true);
+      assert.equal(result.target.kind, LINK_TARGET_KINDS.OUTSIDE);
+      assert.equal("content" in result, false);
+      assert.equal("entries" in result, false);
+
+      // Following the same path through readFile is still refused.
+      const read = await readFile(root, "link-dir/secret.txt");
+      assert.equal(read.ok, false);
+      assert.equal(read.error.kind, FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED);
+    },
+  );
+
+  it(
+    "refuses to inspect a link behind a symlinked directory",
+    { skip: SYMLINK_SKIP },
+    async () => {
+      const real = register(makeFixture({ "inner": "" }));
+      const root = register(makeFixture({ "keep.txt": "" }));
+      symlinkSync(real, join(root, "linked-dir"), "dir");
+      symlinkSync(join(real, "inner"), join(real, "inner-link"), "file");
+
+      const result = await readLink(root, "linked-dir/inner-link");
+      assert.equal(result.ok, false);
+      assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED);
+      assert.equal(result.relative, "linked-dir/inner-link");
+    },
+  );
+
+  it("rejects a path that is not a symlink with a stable, path-free error", async () => {
+    const root = register(makeFixture({ "real.txt": "ok" }));
+    const result = await readLink(root, "real.txt");
+    assert.equal(result.ok, false);
+    assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.NOT_A_SYMLINK);
+    assert.equal(result.error.code, FILESYSTEM_ERROR_CODES.NOT_A_SYMLINK);
+    assert.equal(result.error.toJSON().details.path, "real.txt");
+
+    const missing = await readLink(root, "nope");
+    assert.equal(missing.ok, false);
+    assert.equal(missing.error.kind, FILESYSTEM_ERROR_KINDS.NOT_FOUND);
+  });
+
+  it("refuses a target outside the requested root without inspecting it", async () => {
+    const root = register(makeFixture({ "real.txt": "ok" }));
+    const result = await readLink(root, "../outside");
+    assert.equal(result.ok, false);
+    assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.INVALID_PATH);
+  });
+});
+
+describe("link target classification", () => {
+  const root = nodePath.resolve("/repo");
+
+  it("classifies without touching the filesystem", () => {
+    assert.deepEqual(classifyLinkTarget(root, nodePath.resolve("/repo/a/l"), "b"), {
+      kind: LINK_TARGET_KINDS.INSIDE,
+      path: "a/b",
+      reason: null,
+    });
+    assert.equal(
+      classifyLinkTarget(root, nodePath.resolve("/repo/a/l"), "/etc/passwd").kind,
+      LINK_TARGET_KINDS.OUTSIDE,
+    );
+    assert.equal(
+      classifyLinkTarget(root, nodePath.resolve("/repo/a/l"), "../../../etc").kind,
+      LINK_TARGET_KINDS.OUTSIDE,
+    );
+    assert.deepEqual(classifyLinkTarget(root, nodePath.resolve("/repo/a/l"), "."), {
+      kind: LINK_TARGET_KINDS.INSIDE,
+      path: "a",
+      reason: null,
+    });
+  });
+
+  it("reports an unusable target as unknown rather than guessing", () => {
+    for (const raw of ["", null, undefined, "bad\u0000target", 42]) {
+      const target = classifyLinkTarget(root, nodePath.resolve("/repo/a/l"), raw);
+      assert.equal(target.kind, LINK_TARGET_KINDS.UNKNOWN, String(raw));
+      assert.equal(target.reason, LINK_UNKNOWN_REASONS.UNREADABLE);
+      assert.equal(target.path, null);
+    }
+  });
+});
+
+describe("bounded reads", () => {
+  it("reads at most maxBytes and reports the truncation", async () => {
+    const root = register(makeFixture({ "big.txt": "0123456789" }));
+
+    const exact = await readFile(root, "big.txt", { maxBytes: 10 });
+    assert.equal(exact.ok, true);
+    assert.equal(exact.content, "0123456789");
+    assert.equal(exact.bytesRead, 10);
+    assert.equal(exact.truncated, false);
+
+    const over = await readFile(root, "big.txt", { maxBytes: 9 });
+    assert.equal(over.content, "0123456789".slice(0, 9));
+    assert.equal(over.bytesRead, 9);
+    assert.equal(over.truncated, true);
+
+    const zero = await readFile(root, "big.txt", { maxBytes: 0 });
+    assert.equal(zero.content, "");
+    assert.equal(zero.truncated, true);
+
+    const larger = await readFile(root, "big.txt", { maxBytes: 4096 });
+    assert.equal(larger.truncated, false);
+    assert.equal(larger.bytesRead, 10);
+  });
+
+  it("returns raw bytes for a bounded binary read", async () => {
+    const root = register(makeFixture({ "bin.dat": "ab\u0000cd" }));
+    const result = await readFile(root, "bin.dat", { encoding: null, maxBytes: 128 });
+    assert.equal(result.ok, true);
+    assert.ok(Buffer.isBuffer(result.content));
+    assert.equal(result.content.includes(0), true);
+    assert.equal(result.bytesRead, 5);
+  });
+
+  it("rejects an invalid byte budget instead of reading unbounded", async () => {
+    const root = register(makeFixture({ "a.txt": "x" }));
+    for (const maxBytes of [-1, 1.5, Number.MAX_SAFE_INTEGER + 2, "10", NaN]) {
+      const result = await readFile(root, "a.txt", { maxBytes });
+      assert.equal(result.ok, false, String(maxBytes));
+      assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.INVALID_PATH);
+    }
+  });
+
+  it("still refuses to read through a symlink when bounded", async () => {
+    const root = register(makeFixture({ "real.txt": "secret-value" }));
+    if (!SYMLINKS_SUPPORTED) return;
+    symlinkSync(join(root, "real.txt"), join(root, "alias.txt"), "file");
+    const result = await readFile(root, "alias.txt", { maxBytes: 128 });
+    assert.equal(result.ok, false);
+    assert.equal(result.error.kind, FILESYSTEM_ERROR_KINDS.SYMLINK_NOT_ALLOWED);
+  });
+});
+

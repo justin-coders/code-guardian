@@ -73,6 +73,9 @@ export const SECURITY_RULE_IDS = Object.freeze({
   SERVICE_ACCOUNT: "security.sensitive-file.service-account",
   TERRAFORM_STATE: "security.sensitive-file.terraform-state",
   CONTAINER_IGNORE: "security.configuration.container-ignore",
+  CREDENTIAL_CONTENT: "security.sensitive-content.credential-assignment",
+  PRIVATE_KEY_CONTENT: "security.sensitive-content.private-key-material",
+  SYMLINK_ESCAPE: "security.exposure.symlink-escape",
 });
 
 /**
@@ -86,11 +89,22 @@ export const SECURITY_RULE_IDS = Object.freeze({
  *                      claim stops short of certainty because what the file
  *                      *contains* is not read in this phase.
  *   DERIVED_CONDITION  the finding compares two observations (a Dockerfile with no
- *                      `.dockerignore` beside it) rather than naming one artifact.
+ *                      `.dockerignore` at a plausible build-context root) rather
+ *                      than naming one artifact.
+ *   OBSERVED_CONTENT   the bounded content inspection read the bytes and matched a
+ *                      pattern, so the condition is directly established. It is the
+ *                      strongest claim this pack can make and is still not "a secret
+ *                      was stolen": the pattern proves a credential-shaped string is
+ *                      present, nothing about its validity or reach.
+ *   OBSERVED_LINK      the model classified a symlink's target as escaping the
+ *                      repository, which is a recorded fact about the link rather
+ *                      than an inference from its name.
  */
 export const SECURITY_CONFIDENCE = Object.freeze({
   OBSERVED_ARTIFACT: 0.9,
   DERIVED_CONDITION: 0.6,
+  OBSERVED_CONTENT: 0.95,
+  OBSERVED_LINK: 0.9,
 });
 
 /**
@@ -114,8 +128,10 @@ export const CONFIGURATION_SIGNALS = Object.freeze({
  *
  * Sensitive names are listed explicitly rather than pattern-matched loosely,
  * because a security rule that reports everything reports nothing. Names that
- * *would* need content to decide (`.npmrc`, `*.tfvars`, generic `*.sql` dumps) are
- * deliberately absent — see the report's future-work notes.
+ * cannot be decided by name alone — `.npmrc`, `*.tfvars`, generic `*.sql` dumps —
+ * are absent from this table because they are decided by the **content** rules
+ * instead (see `CONTENT_CANDIDATE_FILES`): a `.npmrc` with no credential in it is
+ * not a finding, and only reading it can tell the two apart.
  */
 export const SENSITIVE_FILE_SPECS = Object.freeze({
   /** Live dotenv files, excluding the committed `.env.example` template family. */
@@ -190,5 +206,54 @@ export const SENSITIVE_FILE_SPECS = Object.freeze({
   },
 });
 
-/** `metadata.basis` recorded on every finding this pack produces. */
+/**
+ * `metadata.basis` recorded on every finding this pack produces.
+ *
+ * The basis names *what was observed*, so a consumer can tell a finding that rests
+ * on a path from one that rests on bytes:
+ *
+ *   filename  a name was observed in the inventory (Phase 12)
+ *   content   bounded content inspection matched a pattern (correction 2)
+ *   link      a symlink target was classified (correction 1)
+ *   build-context  the container rule compared observed paths (correction 3)
+ */
 export const FINDING_BASIS = "filename";
+
+export const FINDING_BASES = Object.freeze({
+  FILENAME: "filename",
+  CONTENT: "content",
+  LINK: "link",
+  BUILD_CONTEXT: "build-context",
+});
+
+/**
+ * The content patterns this pack reports, and which rule owns each.
+ *
+ * The ids are the scanner's closed vocabulary, re-declared here for the same reason
+ * `CONFIGURATION_SIGNALS` is: the rules layer must not depend on the acquisition
+ * layer. `tests/security-rules.test.js` asserts this list against a real scan, so a
+ * rename on either side fails the suite instead of silently retiring a rule.
+ */
+export const CONTENT_PATTERNS = Object.freeze({
+  PRIVATE_KEY_BLOCK: "private-key-block",
+  CREDENTIAL_ASSIGNMENT: "credential-assignment",
+  AWS_CREDENTIAL_ASSIGNMENT: "aws-credential-assignment",
+  BASIC_AUTH_URL: "basic-auth-url",
+  SQL_PASSWORD_STATEMENT: "sql-password-statement",
+});
+
+/**
+ * Which files the content rules consider.
+ *
+ * The spec mirrors the scanner's candidate table (`.npmrc`, `.pypirc`, `.envrc`,
+ * dotenv files, Terraform variable files, SQL dumps). It exists so a rule can find
+ * the files that *should* carry a content observation; whether one actually does is
+ * read from the model, never assumed. A candidate with no observation is `unknown`,
+ * not `pass`, so an older scan that inspected nothing cannot produce a clean bill of
+ * health.
+ */
+export const CONTENT_CANDIDATE_FILES = Object.freeze({
+  basenames: [".npmrc", ".pypirc", ".envrc", ".env"],
+  namePrefixes: [".env."],
+  nameSuffixes: [".tfvars", ".tfvars.json", ".sql"],
+});

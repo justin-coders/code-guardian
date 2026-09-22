@@ -81,6 +81,9 @@ export { createRuleAnalyzer } from "./analyzer.js";
 // adapter), so a single import boundary still covers the whole rules layer.
 export {
   CONFIGURATION_SIGNALS,
+  CONTENT_CANDIDATE_FILES,
+  CONTENT_PATTERNS,
+  FINDING_BASES,
   FINDING_BASIS,
   SECURITY_ANALYZER_ID,
   SECURITY_ANALYZER_NAME,
@@ -94,14 +97,18 @@ export {
   SENSITIVE_FILE_SPECS,
   FILE_SPEC_CRITERIA,
   configurationEntities,
+  contentInspectionFor,
   createSecurityAnalyzer,
   createSecurityRuleRegistry,
   defineFileSpec,
   fileInventory,
   filesMatching,
   inventoryAbsence,
+  isCompleteContentInspection,
   matchesFileSpec,
   queryFor,
   securityRuleSetIssues,
   securityRules,
+  symlinkInventory,
+  symlinkTargets,
 } from "./security/index.js";

@@ -126,6 +126,20 @@ function signal(path, signalId, extra = {}) {
   return { path, signal: signalId, ...extra };
 }
 
+/** A content-inspection candidate record, defaulting to a fully inspected file. */
+function candidate(path, extra = {}) {
+  return {
+    path,
+    candidate: "npm-config",
+    inspected: true,
+    reason: null,
+    bytesInspected: 0,
+    truncated: false,
+    patterns: [],
+    ...extra,
+  };
+}
+
 /** A representative populated scan, used by many construction tests. */
 function populatedScan(overrides = {}) {
   return scanOf({
@@ -534,7 +548,22 @@ describe("model: evidence", () => {
   });
 
   it("emits the documented observation subjects", () => {
-    const model = buildRepositoryModel(populatedScan());
+    // One candidate whose content was fully inspected, and one the inspection could
+    // not reach, so the content subject is exercised in both of its two shapes.
+    const model = buildRepositoryModel(
+      populatedScan({
+        content: {
+          inspected: true,
+          complete: false,
+          truncated: true,
+          candidates: [
+            candidate("README.md", { candidate: "dotenv", bytesInspected: 42, patterns: ["credential-assignment"] }),
+            candidate("tsconfig.json", { candidate: "build-config", inspected: false, reason: "budget-exhausted" }),
+          ],
+          limits: { maxFileBytes: 65536, maxTotalBytes: 262144, maxFiles: 12 },
+        },
+      }),
+    );
     const subjects = new Set(
       model.evidence.map((record) => record.id.split(":")[1]),
     );

@@ -30,6 +30,18 @@
  * `root` and `scannedAt` are scan metadata only. Neither takes part in
  * classification or ordering, so two scans of the same repository state produce
  * structurally equal results apart from `scannedAt`.
+ *
+ * Two sections added after the original Phase 8C contract follow the same rules:
+ *
+ *   - `symlinks[].target` records where a link points, in the closed vocabulary
+ *     `inside` / `outside` / `unknown` (Phase 12 correction 1). An `inside` target
+ *     is a repository-relative path; `outside` and `unknown` carry no location at
+ *     all, so an absolute host path can never reach this contract. A symlink entry
+ *     with no `target` is accepted and means `unknown`: a scanner that did not
+ *     inspect the link must not look like one that found it harmless.
+ *   - `content` records what the bounded content inspection observed (Phase 12
+ *     correction 2): one entry per inspected candidate, each carrying the pattern
+ *     ids that matched — never a matched value, line or byte.
  */
 
 import { ValidationError } from "../../core/index.js";
@@ -39,6 +51,31 @@ export const SCAN_RESULT_VERSION = "1";
 
 /** Limit on evidence paths retained per detected signal. */
 export const MAX_EVIDENCE_PER_SIGNAL = 10;
+
+/** Where a symlink target resolves, relative to the repository root. */
+export const SYMLINK_TARGET_KINDS = Object.freeze({
+  INSIDE: "inside",
+  OUTSIDE: "outside",
+  UNKNOWN: "unknown",
+});
+
+/**
+ * Why a symlink target is `unknown`. Closed vocabulary: a reason is never free
+ * text, so a hostile path can never be smuggled through this field.
+ */
+export const SYMLINK_UNKNOWN_REASONS = Object.freeze({
+  NOT_INSPECTED: "not-inspected",
+  UNREADABLE: "unreadable",
+  CYCLE: "cycle",
+  DEPTH_EXCEEDED: "depth-exceeded",
+});
+
+/** Why a candidate's content was not inspected. Closed vocabulary. */
+export const CONTENT_INSPECTION_REASONS = Object.freeze({
+  BUDGET_EXHAUSTED: "budget-exhausted",
+  UNREADABLE: "unreadable",
+  NOT_TEXT: "not-text",
+});
 
 /** Stable signal ids used across detectors. */
 export const SCAN_SIGNALS = Object.freeze({
@@ -97,6 +134,13 @@ function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
 }
 
+/** Absolute in POSIX, drive-letter or UNC terms — never a repository path. */
+function isAbsolutePath(value) {
+  return (
+    value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value) || value.startsWith("\\\\")
+  );
+}
+
 function sortByPath(entries) {
   return [...entries].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
@@ -143,6 +187,7 @@ export function createScanResult(overrides = {}) {
   const documentation = overrides.documentation ?? {};
   const configuration = overrides.configuration ?? {};
   const git = overrides.git ?? {};
+  const content = overrides.content ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -180,6 +225,16 @@ export function createScanResult(overrides = {}) {
       detected: git.detected ?? false,
       head: git.head ?? null,
       evidence: git.evidence ?? [],
+    },
+    // `complete` defaults to `false`, exactly like `scan.complete`: a draft that
+    // declares no content inspection must not read as "content was inspected and
+    // nothing was found".
+    content: {
+      inspected: content.inspected ?? false,
+      complete: content.complete ?? false,
+      truncated: content.truncated ?? false,
+      candidates: content.candidates ?? [],
+      limits: content.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -236,6 +291,126 @@ function collectEvidenceIssues(evidence, ctx, path) {
       ctx.fail(`${path}[${index}]`, "evidence must be sorted by path then signal");
       return;
     }
+  }
+}
+
+/**
+ * Validate an optional symlink target record.
+ *
+ * Absent is valid and means `unknown`. Present must be the closed vocabulary:
+ * `inside` carries a repository-relative path (or `null` for the repository root
+ * itself), while `outside` and `unknown` must carry no location and no reason
+ * respectively — a location on an escaping target would be a host path, which is
+ * precisely what this field exists to prevent.
+ */
+function collectSymlinkTargetIssues(target, ctx, path) {
+  if (target === undefined || target === null) return;
+  if (!isPlainObject(target)) {
+    ctx.fail(path, "must be a plain object when present");
+    return;
+  }
+
+  const kinds = Object.values(SYMLINK_TARGET_KINDS);
+  if (!kinds.includes(target.kind)) {
+    ctx.fail(`${path}.kind`, `must be one of: ${kinds.join(", ")}`);
+    return;
+  }
+
+  if (target.kind === SYMLINK_TARGET_KINDS.INSIDE) {
+    if (target.path !== null && !isNonEmptyString(target.path)) {
+      ctx.fail(`${path}.path`, "must be a repository-relative path or null");
+    } else if (typeof target.path === "string" && isAbsolutePath(target.path)) {
+      ctx.fail(`${path}.path`, "must not be an absolute path");
+    }
+  } else if (target.path !== null) {
+    ctx.fail(`${path}.path`, `must be null for a ${target.kind} target`);
+  }
+
+  if (target.kind === SYMLINK_TARGET_KINDS.UNKNOWN) {
+    const reasons = Object.values(SYMLINK_UNKNOWN_REASONS);
+    if (!reasons.includes(target.reason)) {
+      ctx.fail(`${path}.reason`, `must be one of: ${reasons.join(", ")}`);
+    }
+  } else if (target.reason !== null) {
+    ctx.fail(`${path}.reason`, `must be null for a ${target.kind} target`);
+  }
+}
+
+/** Validate the content-inspection section. */
+function collectContentIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") {
+      ctx.fail(`${path}.${field}`, "must be a boolean");
+    }
+  }
+  if (!isPlainObject(section.limits)) {
+    ctx.fail(`${path}.limits`, "must be a plain object");
+  }
+
+  if (!Array.isArray(section.candidates)) {
+    ctx.fail(`${path}.candidates`, "must be an array");
+    return;
+  }
+
+  const reasons = Object.values(CONTENT_INSPECTION_REASONS);
+  section.candidates.forEach((candidate, index) => {
+    const at = `${path}.candidates[${index}]`;
+    if (!isPlainObject(candidate)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    if (!isNonEmptyString(candidate.path)) ctx.fail(`${at}.path`, "must be a non-empty string");
+    if (!isNonEmptyString(candidate.candidate)) {
+      ctx.fail(`${at}.candidate`, "must record the candidate class");
+    }
+    if (typeof candidate.inspected !== "boolean") {
+      ctx.fail(`${at}.inspected`, "must be a boolean");
+    }
+    if (candidate.reason !== null && !reasons.includes(candidate.reason)) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${reasons.join(", ")}`);
+    }
+    if (candidate.inspected === false && candidate.reason === null) {
+      ctx.fail(`${at}.reason`, "must record why an uninspected candidate was not inspected");
+    }
+    if (!isNonNegativeInteger(candidate.bytesInspected)) {
+      ctx.fail(`${at}.bytesInspected`, "must be a non-negative integer");
+    }
+    if (typeof candidate.truncated !== "boolean") {
+      ctx.fail(`${at}.truncated`, "must be a boolean");
+    }
+    if (!Array.isArray(candidate.patterns)) {
+      ctx.fail(`${at}.patterns`, "must be an array of pattern ids");
+      return;
+    }
+    candidate.patterns.forEach((pattern, patternIndex) => {
+      if (!isNonEmptyString(pattern)) {
+        ctx.fail(`${at}.patterns[${patternIndex}]`, "must be a non-empty string");
+      }
+    });
+    for (let next = 1; next < candidate.patterns.length; next += 1) {
+      if (candidate.patterns[next - 1] >= candidate.patterns[next]) {
+        ctx.fail(`${at}.patterns`, "must be sorted and unique");
+        break;
+      }
+    }
+  });
+
+  assertSortedByPath(section.candidates, ctx, `${path}.candidates`);
+
+  // A section cannot claim completeness while a candidate is unknown: the two
+  // facts are the same fact stated twice.
+  const fullyInspected = section.candidates.every(
+    (candidate) => candidate.inspected === true && candidate.truncated !== true,
+  );
+  if (section.complete === true && !fullyInspected) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true while a candidate was not inspected or was truncated",
+    );
   }
 }
 
@@ -321,7 +496,18 @@ export function validateScanResult(value) {
     assertSortedByPath(value.directories, ctx, "scanResult.directories");
   }
 
-  if (Array.isArray(value.symlinks)) assertSortedByPath(value.symlinks, ctx, "scanResult.symlinks");
+  if (Array.isArray(value.symlinks)) {
+    assertSortedByPath(value.symlinks, ctx, "scanResult.symlinks");
+    value.symlinks.forEach((entry, index) =>
+      collectSymlinkTargetIssues(
+        entry?.target,
+        ctx,
+        `scanResult.symlinks[${index}].target`,
+      ),
+    );
+  }
+
+  collectContentIssues(value.content, ctx, "scanResult.content");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

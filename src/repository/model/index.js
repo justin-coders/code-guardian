@@ -44,17 +44,30 @@ export {
 } from "./identity.js";
 
 export {
+  CONTENT_SIGNALS,
+  CONTENT_STATUSES,
+  CONTENT_UNINSPECTED_REASONS,
   EVIDENCE_COLLECTOR,
   EVIDENCE_SOURCE,
   EVIDENCE_SUBJECTS,
   EVIDENCE_TYPE_BY_SUBJECT,
   INVENTORY_KINDS,
+  contentObservationKind,
+  createContentInspectionObservation,
+  createContentPatternObservation,
   createInventoryObservation,
   createObservation,
   createSignalObservation,
 } from "./evidence.js";
 
-export { TEST_KINDS, GIT_HEAD_KINDS, projectGitHead } from "./entities.js";
+export {
+  GIT_HEAD_KINDS,
+  SYMLINK_TARGET_KINDS,
+  SYMLINK_TARGET_REASONS,
+  TEST_KINDS,
+  projectGitHead,
+  projectSymlinkTarget,
+} from "./entities.js";
 
 export {
   GRAPH_ENTITY_KINDS,

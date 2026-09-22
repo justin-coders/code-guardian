@@ -13,14 +13,35 @@
  */
 
 export {
+  CONTENT_INSPECTION_REASONS,
   MAX_EVIDENCE_PER_SIGNAL,
   SCAN_RESULT_VERSION,
   SCAN_SIGNALS,
+  SYMLINK_TARGET_KINDS,
+  SYMLINK_UNKNOWN_REASONS,
   capEvidence,
   compareEvidence,
   createScanResult,
   validateScanResult,
 } from "./contracts.js";
+
+export {
+  MAX_SYMLINK_CHAIN,
+  SYMLINK_UNKNOWN_REASONS as SYMLINK_POLICY_REASONS,
+  isSymlinkUnknownReason,
+  resolveSymlinkChain,
+  resolveSymlinkTargets,
+  uninspectedTarget,
+} from "./policies/symlinks.js";
+
+export {
+  CONTENT_CANDIDATE_CLASSES,
+  CONTENT_CANDIDATE_RULES,
+  CONTENT_INSPECTION_LIMITS,
+  CONTENT_PATTERN_IDS,
+  CONTENT_PATTERNS,
+  detectContentPatterns,
+} from "./detectors/content.js";
 
 export {
   DEFAULT_IGNORED_DIRECTORIES,
