@@ -44,6 +44,7 @@ import {
   validateRepositoryModelGraph,
 } from "./contracts.js";
 import { buildEntities } from "./entities.js";
+import { buildDependencyGraph } from "./dependency-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
@@ -133,6 +134,20 @@ export function buildRepositoryModel(scanResult) {
   });
 
   const collections = buildEntities(scan, repositoryIdValue);
+
+  // Phase 14 — the dependency graph. A projection of the facts buildEntities just
+  // projected: same nodes (`(ecosystem, name)` dependency entities), same edges (the
+  // `depends-on` relationships), plus the per-edge provenance and the coverage
+  // statement the entity list cannot express. It parses nothing, resolves nothing
+  // and reads nothing; it is derived here rather than on demand so the model stays
+  // the single frozen source of truth and validation can reject an incoherent graph.
+  const dependencyGraph = buildDependencyGraph({
+    dependencies: collections.dependencies,
+    edges: collections.dependencyEdges,
+    coverage: collections.dependencyCoverage,
+    sources: collections.dependencySources,
+  });
+
   const relationships = buildRelationships(collections, repositoryIdValue);
   const indexes = buildIndexes(collections, relationships, collections.evidence);
 
@@ -190,6 +205,10 @@ export function buildRepositoryModel(scanResult) {
       count: collections.dependencies.length,
       coverage: { ...collections.dependencyCoverage },
       sources: collections.dependencySources,
+      // The graph projection: nodes, edges with provenance, and a coverage state that
+      // keeps an established-but-empty graph apart from a graph acquisition never
+      // established at all.
+      graph: dependencyGraph,
     },
     scripts: skeleton.scripts,
     architecture: skeleton.architecture,

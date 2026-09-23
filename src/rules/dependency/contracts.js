@@ -47,6 +47,7 @@ export const DEPENDENCY_RULE_ID_PREFIX = "dependency.";
 /** The rules this pack ships. */
 export const DEPENDENCY_RULE_IDS = Object.freeze({
   DECLARATIONS: "dependency.inventory.declarations",
+  GRAPH_INVENTORY: "dependency.graph.inventory",
 });
 
 /**
@@ -59,6 +60,12 @@ export const DEPENDENCY_RULE_IDS = Object.freeze({
  */
 export const DEPENDENCY_CONFIDENCE = Object.freeze({
   OBSERVED_DECLARATION: 0.9,
+  /**
+   * A relationship a supported lockfile stated and the model preserved verbatim.
+   * Not certainty about the *installed* tree, and not a claim about whether either
+   * package is current, safe or wanted — none of that was observed.
+   */
+  OBSERVED_RELATIONSHIP: 0.9,
 });
 
 /**
@@ -75,11 +82,24 @@ export const DEPENDENCY_SIGNALS = Object.freeze({
   RESOLUTION: "dependency-resolution",
 });
 
-/** `metadata.basis` recorded on every finding this pack produces. */
+/** `metadata.basis` recorded on every declaration finding. */
 export const DEPENDENCY_BASIS = "manifest-declaration";
+
+/**
+ * `metadata.basis` recorded on every graph finding.
+ *
+ * Different from `DEPENDENCY_BASIS` on purpose: a declaration finding rests on what
+ * a manifest *declared*, a graph finding rests on a relationship a lockfile
+ * *stated*. Collapsing the two would let a rule cite a declaration as proof of a
+ * dependency edge.
+ */
+export const DEPENDENCY_GRAPH_BASIS = "lockfile-relationship";
 
 /** Findings one rule run will report before it stops and says so. */
 export const MAX_DECLARATION_FINDINGS = 200;
+
+/** Findings the graph inventory rule will report before it stops and says so. */
+export const MAX_GRAPH_FINDINGS = 200;
 
 /** Deterministic ordering: declaration records are compared by manifest, then name. */
 export function compareDeclarations(a, b) {

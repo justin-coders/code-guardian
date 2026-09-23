@@ -29,6 +29,7 @@
 
 import { ValidationError } from "../../core/index.js";
 
+import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -84,6 +85,51 @@ export const TRAVERSAL_RESULT_FIELDS = Object.freeze([
   "limited",
 ]);
 
+/**
+ * Fields a whole-graph result declares.
+ *
+ * Graph results carry **two** coverage statements on purpose, because they answer
+ * different questions: `coverage` (inherited from every other query result) is the
+ * scan's guarantee — "how much of the repository was inventoried" — while `state`
+ * is the graph's own five-way state — "was a graph established at all, and how
+ * completely". An empty graph and a graph that was never established are different
+ * answers, and `established` makes that unmissable.
+ */
+export const DEPENDENCY_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded dependency-graph traversal result declares. */
+export const DEPENDENCY_TRAVERSAL_RESULT_FIELDS = Object.freeze([
+  ...DEPENDENCY_GRAPH_RESULT_FIELDS,
+  "limited",
+]);
+
+/** Fields a bounded dependency edge-list result declares. */
+export const DEPENDENCY_EDGE_RESULT_FIELDS = Object.freeze([
+  "edges",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded dependency-path result declares. */
+export const DEPENDENCY_PATH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "found",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -132,6 +178,55 @@ export function createTraversalResult(input = {}) {
     entities: input.entities ?? [],
     relationships: input.relationships ?? [],
     coverage: input.coverage,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a whole-dependency-graph result draft. */
+export function createDependencyGraphResult(input = {}) {
+  return createEnvelope(DEPENDENCY_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded dependency-graph traversal result draft. */
+export function createDependencyTraversalResult(input = {}) {
+  return createEnvelope(DEPENDENCY_TRAVERSAL_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded dependency edge-list result draft. */
+export function createDependencyEdgeQueryResult(input = {}) {
+  return createEnvelope(DEPENDENCY_EDGE_RESULT_FIELDS, {
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded dependency-path result draft. */
+export function createDependencyPathResult(input = {}) {
+  return createEnvelope(DEPENDENCY_PATH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    found: input.found === true,
+    coverage: input.coverage,
+    state: input.state,
     truncated: input.truncated === true,
     limited: input.limited === true,
   });
@@ -208,4 +303,76 @@ export function validateTraversalResult(value) {
     "TraversalResult",
   );
   return validated;
+}
+
+/**
+ * The extra checks every graph result shares.
+ *
+ * `state` must be one of the closed graph states and `established` must be a
+ * boolean, so a consumer can branch on them without defensively guessing. The
+ * graph-specific booleans are checked per contract below.
+ */
+function validateGraphEnvelope(value, fields, arrayFields, contract, booleanFields) {
+  validateEnvelope(value, fields, arrayFields, contract);
+
+  const issues = [];
+  if (!DEPENDENCY_GRAPH_STATE_VALUES.includes(value.state)) {
+    issues.push(
+      `${contract}.state: must be one of: ${DEPENDENCY_GRAPH_STATE_VALUES.join(", ")}`,
+    );
+  }
+  for (const field of booleanFields) {
+    if (typeof value[field] !== "boolean") {
+      issues.push(`${contract}.${field}: must be a boolean`);
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new ValidationError(`Invalid ${contract}`, { details: { contract, issues } });
+  }
+  return value;
+}
+
+/** Validate a whole-dependency-graph result. */
+export function validateDependencyGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    DEPENDENCY_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "DependencyGraphResult",
+    ["established", "truncated"],
+  );
+}
+
+/** Validate a bounded dependency-graph traversal result. */
+export function validateDependencyTraversalResult(value) {
+  return validateGraphEnvelope(
+    value,
+    DEPENDENCY_TRAVERSAL_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "DependencyTraversalResult",
+    ["established", "truncated", "limited"],
+  );
+}
+
+/** Validate a bounded dependency edge-list result. */
+export function validateDependencyEdgeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    DEPENDENCY_EDGE_RESULT_FIELDS,
+    ["edges"],
+    "DependencyEdgeQueryResult",
+    ["truncated", "limited"],
+  );
+}
+
+/** Validate a bounded dependency-path result. */
+export function validateDependencyPathResult(value) {
+  return validateGraphEnvelope(
+    value,
+    DEPENDENCY_PATH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "DependencyPathResult",
+    ["found", "truncated", "limited"],
+  );
 }

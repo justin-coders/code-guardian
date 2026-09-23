@@ -59,15 +59,29 @@ import {
 } from "./query.js";
 import { ENTITY_KINDS } from "./identity.js";
 import { GRAPH_RELATIONSHIP_TYPES } from "./graph.js";
+import {
+  DEPENDENCY_GRAPH_EDGE_TYPE_VALUES,
+  DEPENDENCY_GRAPH_STATES,
+  isSourceEstablished,
+  unestablishedSourceRecord,
+} from "./dependency-graph.js";
 import { isRepositoryRelativePath } from "./paths.js";
 import {
   QUERY_DIRECTIONS,
   QUERY_DIRECTION_VALUES,
   QUERY_LIMITS,
+  createDependencyEdgeQueryResult,
+  createDependencyGraphResult,
+  createDependencyPathResult,
+  createDependencyTraversalResult,
   createEntityQueryResult,
   createEvidenceQueryResult,
   createRelationshipQueryResult,
   createTraversalResult,
+  validateDependencyEdgeQueryResult,
+  validateDependencyGraphResult,
+  validateDependencyPathResult,
+  validateDependencyTraversalResult,
   validateEntityQueryResult,
   validateEvidenceQueryResult,
   validateRelationshipQueryResult,
@@ -115,6 +129,18 @@ const TRAVERSAL_OPTION_KEYS = Object.freeze([
   "maxDepth",
   "maxResults",
 ]);
+
+/**
+ * Options a dependency-graph traversal accepts.
+ *
+ * No `direction`: the direction *is* the method (`dependenciesOf` follows edges
+ * out, `dependentsOf` follows them in), so a caller cannot ask `dependenciesOf`
+ * for dependents and quietly get the opposite answer.
+ */
+const GRAPH_TRAVERSAL_OPTION_KEYS = Object.freeze(["maxDepth", "maxResults"]);
+
+/** Criteria a dependency edge list accepts. */
+const DEPENDENCY_EDGE_FILTER_KEYS = Object.freeze(["from", "to", "type", "maxResults"]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -329,6 +355,174 @@ export function createRepositoryQuery(model) {
         ? edges
         : edges.filter((relationship) => relationshipTypes.includes(relationship.type));
     return uniqueSortedRelationships(filtered);
+  };
+
+  // ── Dependency graph (Phase 14) ───────────────────────────────────────────
+  //
+  // Read from `model.dependencies.graph` — a projection the builder already built
+  // and validated — and never recomputed here, so a query answer cannot disagree
+  // with the model. Adjacency is indexed once per handle (the model is frozen, so
+  // the index cannot go stale) and both indexes keep the graph's own edge order,
+  // which is the deterministic `(from, to, type)` order.
+  const dependencyGraph =
+    model.dependencies?.graph ??
+    Object.freeze({
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      state: DEPENDENCY_GRAPH_STATES.UNKNOWN,
+      established: false,
+      coverage: Object.freeze({
+        state: DEPENDENCY_GRAPH_STATES.UNKNOWN,
+        established: false,
+        inspected: false,
+        complete: false,
+        truncated: false,
+        nodes: 0,
+        edges: 0,
+        declarations: 0,
+        resolved: 0,
+        unestablishedSources: Object.freeze([]),
+        versionInstances: Object.freeze({
+          ambiguous: false,
+          count: 0,
+          packages: Object.freeze([]),
+        }),
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const graphNodeById = new Map(dependencyGraph.nodes.map((node) => [node.id, node]));
+  const outgoingEdgesByNode = new Map();
+  const incomingEdgesByNode = new Map();
+  for (const edge of dependencyGraph.edges) {
+    const out = outgoingEdgesByNode.get(edge.from);
+    if (out === undefined) outgoingEdgesByNode.set(edge.from, [edge]);
+    else out.push(edge);
+
+    const incoming = incomingEdgesByNode.get(edge.to);
+    if (incoming === undefined) incomingEdgesByNode.set(edge.to, [edge]);
+    else incoming.push(edge);
+  }
+
+  /** Freeze a fresh list of entries, so nothing a query returns can be mutated. */
+  const frozenEntries = (entries) => {
+    for (const entry of entries) Object.freeze(entry);
+    return Object.freeze(entries);
+  };
+
+  /**
+   * The scan's guarantee plus the graph's own truncation.
+   *
+   * Kept apart from the graph's `state`: `coverage`/`truncated` say how much of the
+   * *repository* was inventoried, `state` says whether a dependency graph was
+   * established at all and how completely.
+   */
+  const graphCoverageState = () => ({
+    coverage:
+      model.scan.complete === true && model.scan.truncated !== true
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || dependencyGraph.coverage.truncated === true,
+  });
+
+  const compareGraphNodes = (a, b) => {
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  };
+
+  const compareGraphEdges = (a, b) => {
+    if (a.from !== b.from) return a.from < b.from ? -1 : 1;
+    if (a.to !== b.to) return a.to < b.to ? -1 : 1;
+    return a.type < b.type ? -1 : a.type > b.type ? 1 : 0;
+  };
+
+  /** Build and validate a bounded graph traversal result. */
+  const graphTraversalResult = (nodes, edges, limited) => {
+    const result = createDependencyTraversalResult({
+      nodes: frozenEntries(nodes),
+      edges: frozenEntries(edges),
+      ...graphCoverageState(),
+      state: dependencyGraph.state,
+      established: dependencyGraph.established,
+      limited,
+    });
+    validateDependencyTraversalResult(result);
+    return Object.freeze(result);
+  };
+
+  /** Parse the shared traversal limits. */
+  const parseGraphTraversalOptions = (options, defaultDepth) => {
+    requireKeys(options, GRAPH_TRAVERSAL_OPTION_KEYS, "traversalOptions");
+    return {
+      maxDepth: requireLimit(options.maxDepth ?? defaultDepth, {
+        field: "maxDepth",
+        min: 0,
+        max: QUERY_LIMITS.MAX_DEPTH,
+      }),
+      maxResults: requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      }),
+    };
+  };
+
+  /**
+   * Bounded, cycle-safe traversal over `depends-on` edges only.
+   *
+   * The declaration (`declares-dependency`) and resolution (`resolved-by`) edges are
+   * deliberately *not* traversed: they mean "a manifest stated this" and "a lockfile
+   * pinned this", not "this package needs that one", and mixing them into a walk
+   * would make a dependency path that the repository never stated.
+   */
+  const traverseGraph = (id, direction, maxDepth, maxResults) => {
+    const start = typeof id === "string" && graphNodeById.has(id) ? id : null;
+    const visited = new Set(start === null ? [] : [start]);
+    const reached = [];
+    const collected = new Map();
+    let limited = false;
+    let frontier = start === null ? [] : [{ id: start, depth: 0 }];
+
+    while (frontier.length > 0) {
+      const next = [];
+      for (const node of frontier) {
+        if (node.depth >= maxDepth) continue;
+        const edges =
+          direction === QUERY_DIRECTIONS.IN
+            ? (incomingEdgesByNode.get(node.id) ?? [])
+            : (outgoingEdgesByNode.get(node.id) ?? []);
+        for (const edge of edges) {
+          const targetId = direction === QUERY_DIRECTIONS.IN ? edge.from : edge.to;
+          const summary = graphNodeById.get(targetId);
+          if (summary === undefined) continue;
+
+          if (!visited.has(targetId)) {
+            visited.add(targetId);
+            if (reached.length >= maxResults) {
+              limited = true;
+            } else {
+              reached.push({ ...summary, depth: node.depth + 1 });
+              next.push({ id: targetId, depth: node.depth + 1 });
+            }
+          }
+
+          const key = edgeKey(edge);
+          if (collected.has(key)) continue;
+          if (collected.size >= maxResults) {
+            limited = true;
+            continue;
+          }
+          collected.set(key, edge);
+        }
+      }
+      frontier = next;
+    }
+
+    return graphTraversalResult(
+      [...reached].sort(compareGraphNodes),
+      [...collected.values()].sort(compareGraphEdges),
+      limited,
+    );
   };
 
   const query = {
@@ -748,18 +942,10 @@ export function createRepositoryQuery(model) {
      */
     dependencyCoverage() {
       const coverage = model.dependencies.coverage ?? {};
-      const unestablished = (model.dependencies.sources ?? []) 
-        .filter((source) => source.status !== "parsed" || (source.problems ?? []).length > 0)
-        .map((source) =>
-          Object.freeze({
-            path: source.path,
-            ecosystem: source.ecosystem,
-            status: source.status,
-            reason: source.reason ?? null,
-            problems: Object.freeze([...(source.problems ?? [])]),
-            evidenceId: source.evidenceId ?? null,
-          }),
-        );
+      const unestablished = (model.dependencies.sources ?? [])
+        .filter((source) => !isSourceEstablished(source))
+        .map(unestablishedSourceRecord)
+        .sort(compareByField("path"));
 
       return Object.freeze({
         detected: model.dependencies.detected === true,
@@ -772,6 +958,221 @@ export function createRepositoryQuery(model) {
         edges: Number.isInteger(coverage.edges) ? coverage.edges : 0,
         unestablishedSources: Object.freeze(unestablished),
       });
+    },
+
+    // ── Dependency graph questions (Phase 14) ────────────────────────────────
+    /**
+     * The whole dependency graph the repository establishes.
+     *
+     * `nodes` are dependency entity ids (`dependency:<ecosystem>:<name>`) with the
+     * declared/direct/resolved facts each carries — never derived from topology, so a
+     * path of length one does not make a package "direct"; `edges` are the
+     * `depends-on` relationships a supported lockfile stated, each with the
+     * observations and lockfile paths that established it.
+     *
+     * `state`/`established` are the graph's own coverage answer, and they are the
+     * reason this is not `edges: []`: an empty graph the repository establishes and a
+     * graph that was never established are different facts. `coverage`/`truncated`
+     * stay the scan's guarantee, exactly as on every other query result.
+     *
+     * Version instances are NOT distinguished — see
+     * `dependencyGraphCoverage().versionInstances`, which names every package whose
+     * resolution records disagree about the version.
+     */
+    dependencyGraph() {
+      const result = createDependencyGraphResult({
+        nodes: frozenEntries([...dependencyGraph.nodes]),
+        edges: frozenEntries([...dependencyGraph.edges]),
+        ...graphCoverageState(),
+        state: dependencyGraph.state,
+        established: dependencyGraph.established,
+      });
+      validateDependencyGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What the dependency graph does and does not establish.
+     *
+     * The graph's five-way state, the sources that stopped it being complete, and the
+     * documented identity limitation, in one frozen statement.
+     */
+    dependencyGraphCoverage() {
+      return Object.freeze({ ...dependencyGraph.coverage });
+    },
+
+    /**
+     * Graph edges matching a `{ from, to, type }` filter, sorted and bounded.
+     *
+     * `type` accepts only the graph's edge vocabulary (today just `depends-on`), so a
+     * caller cannot ask the graph for a declaration or resolution edge and receive a
+     * dependency edge instead. `limited` is true when `maxResults` cut the list short.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` / `invalid-relationship-type`.
+     */
+    dependencyEdges(criteria = {}) {
+      requireKeys(criteria, DEPENDENCY_EDGE_FILTER_KEYS, "dependencyEdgeCriteria");
+      if ("type" in criteria && !DEPENDENCY_GRAPH_EDGE_TYPE_VALUES.includes(criteria.type)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_RELATIONSHIP_TYPE, {
+          received: safeQueryToken(criteria.type),
+        });
+      }
+      for (const endpoint of ["from", "to"]) {
+        if (endpoint in criteria && typeof criteria[endpoint] !== "string") {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `dependencyEdgeCriteria.${endpoint}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = dependencyGraph.edges.filter((edge) => {
+        if ("from" in criteria && edge.from !== criteria.from) return false;
+        if ("to" in criteria && edge.to !== criteria.to) return false;
+        if ("type" in criteria && edge.type !== criteria.type) return false;
+        return true;
+      });
+
+      const result = createDependencyEdgeQueryResult({
+        edges: frozenEntries(matching.slice(0, maxResults)),
+        ...graphCoverageState(),
+        state: dependencyGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateDependencyEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Dependencies the graph says an entity depends on — one hop by default.
+     *
+     * An unknown id is an ordinary miss (an empty result, not an error). Passing
+     * `maxDepth` widens the walk; `dependencyDescendants` is the closure form.
+     */
+    dependenciesOf(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      return traverseGraph(id, QUERY_DIRECTIONS.OUT, maxDepth, maxResults);
+    },
+
+    /** Dependencies the graph says depend on an entity — one hop by default. */
+    dependentsOf(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      return traverseGraph(id, QUERY_DIRECTIONS.IN, maxDepth, maxResults);
+    },
+
+    /**
+     * Everything reachable from an entity by following `depends-on` edges.
+     *
+     * The default depth is the traversal ceiling (`QUERY_LIMITS.MAX_DEPTH`), so the
+     * closure is complete within the bound; cycles terminate because a node is
+     * entered at most once.
+     */
+    dependencyDescendants(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+      return traverseGraph(id, QUERY_DIRECTIONS.OUT, maxDepth, maxResults);
+    },
+
+    /** Everything that reaches an entity by following `depends-on` edges backwards. */
+    dependencyAncestors(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+      return traverseGraph(id, QUERY_DIRECTIONS.IN, maxDepth, maxResults);
+    },
+
+    /**
+     * A bounded path between two dependencies, following `depends-on` edges.
+     *
+     * Breadth-first, so the path returned is a shortest one, and `found: false` with
+     * `limited: true` means the search stopped at a bound rather than proving the two
+     * are disconnected. `nodes` are in path order (each carrying its `depth`) and
+     * `edges` are the traversed graph edges, also in path order — deliberately not
+     * sorted, because a path's order is its meaning.
+     */
+    dependencyPath(fromId, toId, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+
+      const pathResult = (nodes, edges, found, limited) => {
+        const result = createDependencyPathResult({
+          nodes: frozenEntries(nodes),
+          edges: frozenEntries(edges),
+          found,
+          ...graphCoverageState(),
+          state: dependencyGraph.state,
+          limited,
+        });
+        validateDependencyPathResult(result);
+        return Object.freeze(result);
+      };
+
+      const startNode = typeof fromId === "string" ? graphNodeById.get(fromId) : undefined;
+      const targetNode = typeof toId === "string" ? graphNodeById.get(toId) : undefined;
+      if (startNode === undefined || targetNode === undefined) {
+        return pathResult([], [], false, false);
+      }
+      if (fromId === toId) {
+        // A node is trivially reachable from itself; reporting that as a path with
+        // edges would invent a relationship the repository never stated.
+        return pathResult([{ ...startNode, depth: 0 }], [], true, false);
+      }
+
+      const predecessor = new Map([[fromId, null]]);
+      let frontier = [fromId];
+      let found = false;
+      let limited = false;
+      let depth = 0;
+
+      while (frontier.length > 0 && !found && depth < maxDepth) {
+        const next = [];
+        for (const id of frontier) {
+          for (const edge of outgoingEdgesByNode.get(id) ?? []) {
+            if (predecessor.has(edge.to)) continue;
+            if (predecessor.size >= maxResults) {
+              limited = true;
+              continue;
+            }
+            predecessor.set(edge.to, { via: id, edge });
+            if (edge.to === toId) {
+              found = true;
+              break;
+            }
+            next.push(edge.to);
+          }
+          if (found) break;
+        }
+        frontier = found ? [] : next;
+        depth += 1;
+      }
+
+      if (!found) return pathResult([], [], false, limited);
+
+      const nodeChain = [];
+      const edgeChain = [];
+      let cursor = toId;
+      while (typeof cursor === "string") {
+        nodeChain.push(cursor);
+        const step = predecessor.get(cursor);
+        if (step === undefined || step === null) break;
+        edgeChain.push(step.edge);
+        cursor = step.via;
+      }
+      nodeChain.reverse();
+      edgeChain.reverse();
+
+      return pathResult(
+        nodeChain.map((id, index) => ({ ...graphNodeById.get(id), depth: index })),
+        edgeChain,
+        true,
+        limited,
+      );
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

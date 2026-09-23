@@ -17,12 +17,13 @@
  * instead of collapsed into one.
  */
 
-import { createRepositoryQuery } from "../../repository/model/index.js";
-
 import {
-  DEPENDENCY_SIGNALS,
-  compareDeclarations,
-} from "./contracts.js";
+  DEPENDENCY_GRAPH_STATES,
+  createRepositoryQuery,
+  stabilityHash,
+} from "../../repository/model/index.js";
+
+import { DEPENDENCY_SIGNALS, compareDeclarations } from "./contracts.js";
 
 /**
  * Build the read-only query handle for an AnalysisContext.
@@ -151,5 +152,120 @@ export function dependencyAbsence(query) {
     established: reasons.length === 0 && coverage.complete === true,
     reason: reasons.length === 0 && coverage.complete === true ? null : reasons.join("; "),
     sources: coverage.unestablishedSources.length,
+  });
+}
+
+// ─── Dependency graph (Phase 14) ─────────────────────────────────────────────
+//
+// The graph questions a rule may ask. All of them go through the Phase 11 query
+// API over the frozen model: a rule never reads `model.dependencies.graph`
+// directly, never re-derives an edge and never parses a lockfile.
+
+/**
+ * Every dependency relationship the repository established, with provenance.
+ *
+ * Flattened from the graph's edges rather than read off the model, and sorted by
+ * `(from, to, type)` locally so the order does not depend on a model internal. Each
+ * relationship carries the observations that established it and the lockfile paths
+ * that stated it, so a finding built from one is traceable to a real file-level
+ * observation.
+ *
+ * Each edge also carries a `fingerprintKey`: the acquisition layer records one
+ * file-level observation per lockfile, so two relationships from the same lockfile
+ * cite the *same* observation ids. A finding's canonical fingerprint is derived from
+ * its rule, category and evidence set, so without a disambiguator two edges of one
+ * lockfile would collapse into one finding. The key is a stability hash of the
+ * endpoints (never an index, which would shift every fingerprint when an unrelated
+ * edge is added), and it is deterministic and bounded.
+ *
+ * @param {object} query
+ * @returns {Array<{from: string, fromName: string|null, to: string, toName: string|null,
+ *   ecosystem: string|null, type: string, evidenceIds: string[], manifestPaths: string[],
+ *   fingerprintKey: string}>}
+ */
+export function dependencyGraphEdges(query) {
+  const graph = query.dependencyGraph();
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+
+  const edges = [];
+  for (const edge of graph.edges) {
+    const from = nodeById.get(edge.from);
+    const to = nodeById.get(edge.to);
+    edges.push({
+      from: edge.from,
+      fromName: from?.name ?? null,
+      to: edge.to,
+      toName: to?.name ?? null,
+      // Both endpoints of a recorded edge always share an ecosystem: the acquisition
+      // layer records lockfile relationships inside one ecosystem and never connects
+      // `node:foo` to `python:foo`.
+      ecosystem: from?.ecosystem ?? to?.ecosystem ?? null,
+      type: edge.type,
+      evidenceIds: [...(edge.evidenceIds ?? [])],
+      manifestPaths: [...(edge.manifestPaths ?? [])],
+      fingerprintKey: `edge:${stabilityHash(`${edge.from}|${edge.to}|${edge.type}`)}`,
+    });
+  }
+
+  return edges.sort((a, b) => {
+    if (a.from !== b.from) return a.from < b.from ? -1 : 1;
+    if (a.to !== b.to) return a.to < b.to ? -1 : 1;
+    return a.type < b.type ? -1 : a.type > b.type ? 1 : 0;
+  });
+}
+
+/**
+ * The graph's own coverage statement: its five-way state, what stopped it being
+ * complete, and the documented version-instance limitation.
+ *
+ * @param {object} query
+ * @returns {object} Frozen coverage statement.
+ */
+export function dependencyGraphCoverage(query) {
+  return query.dependencyGraphCoverage();
+}
+
+/**
+ * Whether the model supports a claim that the repository establishes no dependency
+ * relationship at all.
+ *
+ * Two separate things have to hold, and neither is inferred from an empty edge
+ * list: a graph must actually have been established (`unsupported` and `unknown`
+ * are not "no relationships", they are "no answer"), it must be `complete` rather
+ * than `partial`, and the scan behind it must have covered the repository. A
+ * partial graph can be missing exactly the edge a caller would conclude does not
+ * exist.
+ *
+ * @param {object} query
+ * @returns {{established: boolean, reason: string|null, state: string}}
+ */
+export function dependencyGraphAbsence(query) {
+  const graph = dependencyGraphCoverage(query);
+  const inventory = query.coverage();
+  const reasons = [];
+
+  if (graph.established !== true) {
+    reasons.push(
+      graph.state === DEPENDENCY_GRAPH_STATES.UNSUPPORTED
+        ? "no dependency source uses a format this build interprets"
+        : "dependency acquisition did not establish a graph",
+    );
+  } else if (graph.state !== DEPENDENCY_GRAPH_STATES.COMPLETE) {
+    reasons.push(
+      "dependency acquisition interpreted only part of the repository's dependency sources",
+    );
+  }
+  if (inventory.complete !== true) {
+    reasons.push(
+      inventory.truncated === true
+        ? "the scan stopped at a limit before the inventory was complete"
+        : "the scan did not cover the repository completely",
+    );
+  }
+
+  return Object.freeze({
+    established: reasons.length === 0,
+    reason: reasons.length === 0 ? null : reasons.join("; "),
+    state: graph.state,
   });
 }

@@ -20,6 +20,11 @@
  * `query-errors.js`) is a pure read-only view over a built model. It adds
  * `node:path` to the prohibition above: it operates on already-normalized model
  * paths and must not manipulate filesystem paths independently.
+ *
+ * The Phase 14 dependency graph (`dependency-graph.js`) is part of that view: it is
+ * a deterministic projection of the dependency entities and `depends-on`
+ * relationships, with per-edge provenance and an explicit coverage state, and it
+ * imports nothing at all — no filesystem, no parser, no resolver, no clock.
  */
 
 export {
@@ -87,6 +92,21 @@ export {
   RELATIONSHIP_TYPES,
 } from "./graph.js";
 
+// Phase 14 — the dependency graph: its closed vocabularies, its bounds, and the
+// projection the builder materializes into `model.dependencies.graph`.
+export {
+  DEPENDENCY_GRAPH_EDGE_TYPES,
+  DEPENDENCY_GRAPH_EDGE_TYPE_VALUES,
+  DEPENDENCY_GRAPH_LIMITS,
+  DEPENDENCY_GRAPH_STATES,
+  DEPENDENCY_GRAPH_STATE_VALUES,
+  DEPENDENCY_GRAPH_VERSION,
+  buildDependencyGraph,
+  dependencyGraphState,
+  isSourceEstablished,
+  unestablishedSourceRecord,
+} from "./dependency-graph.js";
+
 export {
   COVERAGE_CLASSES,
   COVERAGE_GUARANTEES,
@@ -115,6 +135,10 @@ export {
 // Phase 11 — repository-intelligence query layer: contracts, errors and the
 // read-only semantic API. `createRepositoryQuery(model)` is the entry point.
 export {
+  DEPENDENCY_EDGE_RESULT_FIELDS,
+  DEPENDENCY_GRAPH_RESULT_FIELDS,
+  DEPENDENCY_PATH_RESULT_FIELDS,
+  DEPENDENCY_TRAVERSAL_RESULT_FIELDS,
   ENTITY_QUERY_RESULT_FIELDS,
   EVIDENCE_QUERY_RESULT_FIELDS,
   QUERY_DIRECTIONS,
@@ -122,10 +146,18 @@ export {
   QUERY_LIMITS,
   RELATIONSHIP_QUERY_RESULT_FIELDS,
   TRAVERSAL_RESULT_FIELDS,
+  createDependencyEdgeQueryResult,
+  createDependencyGraphResult,
+  createDependencyPathResult,
+  createDependencyTraversalResult,
   createEntityQueryResult,
   createEvidenceQueryResult,
   createRelationshipQueryResult,
   createTraversalResult,
+  validateDependencyEdgeQueryResult,
+  validateDependencyGraphResult,
+  validateDependencyPathResult,
+  validateDependencyTraversalResult,
   validateEntityQueryResult,
   validateEvidenceQueryResult,
   validateRelationshipQueryResult,

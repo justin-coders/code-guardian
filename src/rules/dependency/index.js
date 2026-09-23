@@ -5,6 +5,11 @@
  * CLI, a CI job, a future aggregate analyzer — should import from here rather than
  * reaching into the individual rule modules.
  *
+ * Phase 14 extends the pack with one graph rule (`dependency.graph.inventory`) that
+ * inventories the relationships a lockfile established. It consumes the Phase 14
+ * dependency graph through the same query API, invents no edge and makes no judgment
+ * about graph shape.
+ *
  * Dependency direction, unchanged from Phase 10 and enforced by an architectural test
  * in `tests/dependency-intelligence.test.js`:
  *
@@ -28,12 +33,14 @@ export {
   DEPENDENCY_BASIS,
   DEPENDENCY_CATEGORY,
   DEPENDENCY_CONFIDENCE,
+  DEPENDENCY_GRAPH_BASIS,
   DEPENDENCY_RULE_ID_PREFIX,
   DEPENDENCY_RULE_IDS,
   DEPENDENCY_RULE_PACK_VERSION,
   DEPENDENCY_RULE_VERSION,
   DEPENDENCY_SIGNALS,
   MAX_DECLARATION_FINDINGS,
+  MAX_GRAPH_FINDINGS,
   compareDeclarations,
 } from "./contracts.js";
 
@@ -41,11 +48,14 @@ export {
   dependencyAbsence,
   dependencyAcquisitionCoverage,
   dependencyDeclarations,
+  dependencyGraphAbsence,
+  dependencyGraphCoverage,
+  dependencyGraphEdges,
   dependencyObservations,
   queryFor,
 } from "./signals.js";
 
-export { dependencyRules } from "./rules/index.js";
+export { dependencyGraphRules, dependencyRules } from "./rules/index.js";
 
 export { createDependencyRuleRegistry, dependencyRuleSetIssues } from "./registry.js";
 

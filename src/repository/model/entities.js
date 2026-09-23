@@ -649,7 +649,8 @@ function compareByKeys(keys) {
  * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
  * @param {string[]} issues Issue collector.
  * @param {Function} record Records one observation and returns its id.
- * @returns {{entries: object[], sources: object[], edges: Array<{from: string, to: string}>,
+ * @returns {{entries: object[], sources: object[],
+ *   edges: Array<{from: string, to: string, evidenceIds: string[], manifestPaths: string[]}>,
  *   coverage: object}}
  */
 function projectDependenciesSection(section, manifests, observedFilePaths, issues, record) {
@@ -1029,15 +1030,38 @@ function projectDependenciesSection(section, manifests, observedFilePaths, issue
           }
           paths.add(path);
         }
+        // The edge itself carries its own provenance: which lockfile observations
+        // established it and which lockfile paths stated it. Phase 14's dependency
+        // graph is traceable because of this, so an edge can never be cited without
+        // the observation that supports it. Two lockfiles stating the same
+        // relationship produce one edge citing both.
         const key = `${fromEntity.id}\u0000${toEntity.id}`;
-        if (!edgeKeys.has(key)) edgeKeys.set(key, { from: fromEntity.id, to: toEntity.id });
+        let record = edgeKeys.get(key);
+        if (record === undefined) {
+          record = {
+            from: fromEntity.id,
+            to: toEntity.id,
+            evidenceIds: new Set(),
+            manifestPaths: new Set(),
+          };
+          edgeKeys.set(key, record);
+        }
+        record.evidenceIds.add(resolutionEvidenceId);
+        record.manifestPaths.add(path);
       }
     }
   }
 
-  const edges = [...edgeKeys.values()].sort((a, b) =>
-    a.from === b.from ? (a.to < b.to ? -1 : a.to > b.to ? 1 : 0) : a.from < b.from ? -1 : 1,
-  );
+  const edges = [...edgeKeys.values()]
+    .map((record) => ({
+      from: record.from,
+      to: record.to,
+      evidenceIds: [...record.evidenceIds].sort(),
+      manifestPaths: [...record.manifestPaths].sort(),
+    }))
+    .sort((a, b) =>
+      a.from === b.from ? (a.to < b.to ? -1 : a.to > b.to ? 1 : 0) : a.from < b.from ? -1 : 1,
+    );
   if (edges.length > MAX_DEPENDENCY_EDGES) {
     fail(issues, "scanResult.dependencies", "states more dependency edges than a scan can report");
     return empty;

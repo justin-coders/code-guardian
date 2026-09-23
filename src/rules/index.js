@@ -113,11 +113,11 @@ export {
   symlinkTargets,
 } from "./security/index.js";
 
-// Phase 13 — the dependency rule pack. The minimum integration that proves dependency
-// intelligence is consumable through the accepted Rule Engine: one inventory rule,
-// its own registry and analyzer adapter. Purely additive — the Rule Engine is
-// unchanged, the security pack is untouched, and both packs are consumers of the same
-// generic framework.
+// Phase 13/14 — the dependency rule pack. The minimum integration that proves
+// dependency intelligence is consumable through the accepted Rule Engine: two
+// inventory rules (declarations and the Phase 14 dependency graph), their own registry
+// and analyzer adapter. Purely additive — the Rule Engine is unchanged, the security
+// pack is untouched, and both packs are consumers of the same generic framework.
 export {
   DEPENDENCY_ANALYZER_ID,
   DEPENDENCY_ANALYZER_NAME,
@@ -125,17 +125,23 @@ export {
   DEPENDENCY_BASIS,
   DEPENDENCY_CATEGORY,
   DEPENDENCY_CONFIDENCE,
+  DEPENDENCY_GRAPH_BASIS,
   DEPENDENCY_RULE_ID_PREFIX,
   DEPENDENCY_RULE_IDS,
   DEPENDENCY_RULE_PACK_VERSION,
   DEPENDENCY_RULE_VERSION,
   DEPENDENCY_SIGNALS,
   MAX_DECLARATION_FINDINGS,
+  MAX_GRAPH_FINDINGS,
   createDependencyAnalyzer,
   createDependencyRuleRegistry,
   dependencyAbsence,
   dependencyAcquisitionCoverage,
   dependencyDeclarations,
+  dependencyGraphAbsence,
+  dependencyGraphCoverage,
+  dependencyGraphEdges,
+  dependencyGraphRules,
   dependencyObservations,
   dependencyRuleSetIssues,
   dependencyRules,

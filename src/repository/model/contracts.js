@@ -25,6 +25,12 @@ import {
   ValidationError,
 } from "../../core/index.js";
 
+import {
+  DEPENDENCY_GRAPH_EDGE_TYPE_VALUES,
+  DEPENDENCY_GRAPH_LIMITS,
+  DEPENDENCY_GRAPH_STATES,
+  DEPENDENCY_GRAPH_STATE_VALUES,
+} from "./dependency-graph.js";
 import { DEPENDENCY_SCOPES, DEPENDENCY_SOURCE_STATUSES, DEPENDENCY_SPEC_KINDS } from "./entities.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
@@ -417,6 +423,203 @@ export function validateRepositoryModelGraph(model) {
   );
   for (const id of entityIds) {
     if (!contained.has(id)) fail("relationships", `"${id}" is not connected to the repository`);
+  }
+
+  // ── Dependency graph (Phase 14) ───────────────────────────────────────────
+  //
+  // The graph is a projection of the dependency entities and the `depends-on`
+  // relationships above, so validating it here is what stops it from becoming a
+  // second, disagreeing source of truth: every node must be a dependency entity the
+  // model contains, every edge must be a relationship the model already states (in
+  // both directions — no invented edge, no silently dropped one), and every edge's
+  // provenance must resolve to real observations and real manifests.
+  const graph = model.dependencies.graph;
+  if (!isPlainObject(graph)) {
+    fail("dependencies.graph", "must be a plain object");
+  } else {
+    const dependencyById = new Map(
+      (model.dependencies.entries ?? []).map((dependency) => [dependency.id, dependency]),
+    );
+
+    if (!isNonEmptyString(graph.version)) {
+      fail("dependencies.graph.version", "must be a non-empty string");
+    }
+    if (!DEPENDENCY_GRAPH_STATE_VALUES.includes(graph.state)) {
+      fail(
+        "dependencies.graph.state",
+        `must be one of: ${DEPENDENCY_GRAPH_STATE_VALUES.join(", ")}`,
+      );
+    }
+    if (typeof graph.established !== "boolean") {
+      fail("dependencies.graph.established", "must be a boolean");
+    } else if (
+      graph.established !==
+      (graph.state !== DEPENDENCY_GRAPH_STATES.UNKNOWN &&
+        graph.state !== DEPENDENCY_GRAPH_STATES.UNSUPPORTED)
+    ) {
+      fail("dependencies.graph.established", "must agree with the state it reports");
+    }
+
+    const nodeIds = new Set();
+    if (!Array.isArray(graph.nodes)) {
+      fail("dependencies.graph.nodes", "must be an array");
+    } else if (graph.nodes.length > DEPENDENCY_GRAPH_LIMITS.MAX_NODES) {
+      fail("dependencies.graph.nodes", "must stay within the graph node bound");
+    } else {
+      graph.nodes.forEach((node, index) => {
+        const at = `dependencies.graph.nodes[${index}]`;
+        if (!isPlainObject(node)) {
+          fail(at, "must be a plain object");
+          return;
+        }
+        if (typeof node.id !== "string" || !dependencyById.has(node.id)) {
+          fail(at, "must name a dependency entity the model contains");
+          return;
+        }
+        if (nodeIds.has(node.id)) fail(at, `duplicate graph node "${node.id}"`);
+        nodeIds.add(node.id);
+        if (node.id !== `${ENTITY_KINDS.DEPENDENCY}:${node.ecosystem}:${node.name}`) {
+          fail(at, "id must be derived from the ecosystem and the name");
+        }
+        const entity = dependencyById.get(node.id);
+        for (const field of ["declared", "direct", "resolved"]) {
+          if (typeof node[field] !== "boolean") {
+            fail(at, `${field} must be a boolean`);
+            continue;
+          }
+          if (node[field] !== (entity[field] === true)) {
+            fail(at, `${field} must agree with the dependency entity it names`);
+          }
+        }
+      });
+      // Deterministic ordering is part of the contract, not a nicety: two builds of
+      // one repository state must produce byte-identical graphs.
+      for (let next = 1; next < graph.nodes.length; next += 1) {
+        const previous = graph.nodes[next - 1]?.id;
+        const current = graph.nodes[next]?.id;
+        if (typeof previous === "string" && typeof current === "string" && !(previous < current)) {
+          fail(`dependencies.graph.nodes[${next}]`, "nodes must be sorted by id and unique");
+        }
+      }
+      if (nodeIds.size !== dependencyById.size) {
+        fail(
+          "dependencies.graph.nodes",
+          "every dependency entity must project to exactly one node",
+        );
+      }
+    }
+
+    const edgeKeys = new Set();
+    if (!Array.isArray(graph.edges)) {
+      fail("dependencies.graph.edges", "must be an array");
+    } else if (graph.edges.length > DEPENDENCY_GRAPH_LIMITS.MAX_EDGES) {
+      fail("dependencies.graph.edges", "must stay within the graph edge bound");
+    } else {
+      graph.edges.forEach((edge, index) => {
+        const at = `dependencies.graph.edges[${index}]`;
+        if (!isPlainObject(edge)) {
+          fail(at, "must be a plain object");
+          return;
+        }
+        if (!DEPENDENCY_GRAPH_EDGE_TYPE_VALUES.includes(edge.type)) {
+          fail(at, `type must be one of: ${DEPENDENCY_GRAPH_EDGE_TYPE_VALUES.join(", ")}`);
+        }
+        for (const endpoint of ["from", "to"]) {
+          if (!nodeIds.has(edge[endpoint])) {
+            fail(at, `${endpoint} must name a graph node`);
+          }
+        }
+        const key = `${edge.from}\u0000${edge.type}\u0000${edge.to}`;
+        if (edgeKeys.has(key)) fail(at, "must not repeat an edge the graph already states");
+        edgeKeys.add(key);
+
+        if (!Array.isArray(edge.evidenceIds) || edge.evidenceIds.length === 0) {
+          fail(at, "must cite at least one observation");
+        } else {
+          for (const id of edge.evidenceIds) {
+            if (!evidenceIds.has(id)) fail(at, `references unknown observation "${String(id)}"`);
+          }
+        }
+        if (!Array.isArray(edge.manifestPaths) || edge.manifestPaths.length === 0) {
+          fail(at, "must name the lockfile that established it");
+        } else {
+          for (const path of edge.manifestPaths) {
+            if (
+              typeof path !== "string" ||
+              path.startsWith("/") ||
+              !manifestIds.has(`${ENTITY_KINDS.MANIFEST}:${path}`)
+            ) {
+              fail(at, "provenance must name a manifest the model contains");
+            }
+          }
+        }
+      });
+      for (let next = 1; next < graph.edges.length; next += 1) {
+        const previous = graph.edges[next - 1];
+        const current = graph.edges[next];
+        if (
+          isPlainObject(previous) &&
+          isPlainObject(current) &&
+          !(
+            previous.from < current.from ||
+            (previous.from === current.from && previous.to < current.to)
+          )
+        ) {
+          fail(`dependencies.graph.edges[${next}]`, "edges must be sorted by endpoints, unique");
+        }
+      }
+    }
+
+    // The two views of one fact must agree exactly.
+    const relationshipEdges = new Set(
+      (model.relationships ?? [])
+        .filter((relationship) => relationship?.type === RELATIONSHIP_TYPES.DEPENDS_ON)
+        .map(
+          (relationship) =>
+            `${relationship.from}\u0000${relationship.type}\u0000${relationship.to}`,
+        ),
+    );
+    for (const key of edgeKeys) {
+      if (!relationshipEdges.has(key)) {
+        fail("dependencies.graph.edges", "an edge must be a depends-on relationship the model states");
+      }
+    }
+    for (const key of relationshipEdges) {
+      if (!edgeKeys.has(key)) {
+        fail("dependencies.graph.edges", "a depends-on relationship must appear in the graph");
+      }
+    }
+
+    const graphCoverage = graph.coverage;
+    if (!isPlainObject(graphCoverage)) {
+      fail("dependencies.graph.coverage", "must be a plain object");
+    } else {
+      if (graphCoverage.state !== graph.state) {
+        fail("dependencies.graph.coverage.state", "must agree with the graph state");
+      }
+      if (graphCoverage.nodes !== nodeIds.size) {
+        fail("dependencies.graph.coverage.nodes", "must count the nodes the graph contains");
+      }
+      if (graphCoverage.edges !== edgeKeys.size) {
+        fail("dependencies.graph.coverage.edges", "must count the edges the graph contains");
+      }
+      if (!Array.isArray(graphCoverage.unestablishedSources)) {
+        fail("dependencies.graph.coverage.unestablishedSources", "must be an array");
+      }
+      const versionInstances = graphCoverage.versionInstances;
+      if (!isPlainObject(versionInstances)) {
+        fail("dependencies.graph.coverage.versionInstances", "must state the identity limitation");
+      } else if (!Array.isArray(versionInstances.packages)) {
+        fail("dependencies.graph.coverage.versionInstances.packages", "must be an array");
+      } else if (
+        versionInstances.packages.length > DEPENDENCY_GRAPH_LIMITS.MAX_AMBIGUOUS_PACKAGES
+      ) {
+        fail(
+          "dependencies.graph.coverage.versionInstances.packages",
+          "must stay within the graph bound",
+        );
+      }
+    }
   }
 
   // ── Completeness ──────────────────────────────────────────────────────────
