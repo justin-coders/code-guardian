@@ -176,11 +176,21 @@ export function buildRepositoryModel(scanResult) {
       count: collections.manifests.length,
       ecosystemCount: collections.ecosystems.length,
     },
-    // Deliberately left as the empty contracted skeleton: no dependency graph, no
-    // script inventory and no architecture inference in this phase. Manifest-level
-    // shallow metadata (including the script *keys* the scanner recorded) stays on
-    // the manifest entity, where it was observed.
-    dependencies: skeleton.dependencies,
+    // Phase 13 — the dependency substrate. `entries` are `(ecosystem, name)`
+    // entities carrying one declaration record per manifest and one resolution
+    // record per lockfile, so multi-manifest provenance and contradictory
+    // declarations survive; `sources` states what each manifest turned out to be as
+    // a dependency source, which is what makes `unknown` coverage expressible.
+    // Scripts and architecture remain the empty contracted skeleton: no script
+    // inventory and no architecture inference exist in this phase.
+    dependencies: {
+      ...skeleton.dependencies,
+      detected: collections.dependencies.length > 0,
+      entries: collections.dependencies,
+      count: collections.dependencies.length,
+      coverage: { ...collections.dependencyCoverage },
+      sources: collections.dependencySources,
+    },
     scripts: skeleton.scripts,
     architecture: skeleton.architecture,
     configuration: {

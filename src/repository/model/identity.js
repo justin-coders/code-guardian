@@ -14,6 +14,7 @@
  *   documentation:README.md
  *   configuration:tsconfig.json
  *   symlink:vendor-link
+ *   dependency:node:react
  *   git
  *
  * The identifier is `kind:key`, where the key is the canonical
@@ -61,6 +62,7 @@ export const ENTITY_KINDS = Object.freeze({
   FRAMEWORK: "framework",
   ECOSYSTEM: "ecosystem",
   MANIFEST: "manifest",
+  DEPENDENCY: "dependency",
   TEST: "test",
   CICD: "cicd",
   DOCUMENTATION: "documentation",

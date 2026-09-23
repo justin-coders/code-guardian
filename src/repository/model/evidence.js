@@ -43,6 +43,7 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   CONFIGURATION: "configuration",
   GIT: "git",
   CONTENT: "content",
+  DEPENDENCY: "dependency",
 });
 
 /**
@@ -65,6 +66,28 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // closest Core type: the Core vocabulary has no "content" type, and inventing
   // one would change the Core contract rather than extend this layer.
   [EVIDENCE_SUBJECTS.CONTENT]: "configuration",
+  // Core has a `dependency` evidence type (Phase 7), so a dependency observation
+  // needs no borrowed vocabulary.
+  [EVIDENCE_SUBJECTS.DEPENDENCY]: "dependency",
+});
+
+/**
+ * Signals recorded on dependency observations.
+ *
+ *   SOURCE       what one manifest turned out to be as a dependency source
+ *                (parsed / unsupported / failed, with its bounded problems)
+ *   DECLARATION  one dependency declaration a manifest made
+ *   RESOLUTION   one lockfile's resolved graph, recorded as counts
+ *
+ * They are separate records rather than fields of one because they answer
+ * different questions: which file could be read, what it declared, and what it
+ * resolved. A consumer that needs "what did the repository declare" reads
+ * declarations and never has to guess from the resolution counts.
+ */
+export const DEPENDENCY_SIGNALS = Object.freeze({
+  SOURCE: "dependency-source",
+  DECLARATION: "dependency-declaration",
+  RESOLUTION: "dependency-resolution",
 });
 
 /**
@@ -126,6 +149,119 @@ export const CONTENT_UNINSPECTED_REASONS = Object.freeze({
  * Exported so consumers (the security rule pack) can recognize content evidence
  * through the public evidence record alone, without depending on id layout.
  */
+/**
+ * Build the observation for one manifest's dependency source status.
+ *
+ * One record per manifest, always recorded — including for a manifest that could
+ * not be interpreted at all. That is what lets a consumer cite the reason a
+ * dependency question is `unknown` instead of asserting an absence it cannot
+ * support.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative manifest path.
+ * @param {string} input.ecosystem
+ * @param {string} input.status Parsed / unsupported / failed.
+ * @param {string|null} input.reason Bounded reason when not parsed.
+ * @param {string|null} input.detail Bounded detail token.
+ * @param {string[]} input.problems Bounded problem reason ids.
+ * @returns {object} A Core Evidence object.
+ */
+export function createDependencySourceObservation({
+  path,
+  ecosystem,
+  status,
+  reason,
+  detail,
+  problems,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.DEPENDENCY,
+    key: `${DEPENDENCY_SIGNALS.SOURCE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.DEPENDENCY],
+    path,
+    data: {
+      signal: DEPENDENCY_SIGNALS.SOURCE,
+      ecosystem,
+      status,
+      reason,
+      detail,
+      problems: [...problems],
+    },
+  });
+}
+
+/**
+ * Build the observation for one dependency declaration.
+ *
+ * The key includes the scope because a manifest may legitimately declare the same
+ * dependency twice — `dependencies` and `devDependencies` in one `package.json` is
+ * an error npm reports, and the model preserves both facts rather than choosing.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative manifest path.
+ * @param {string} input.name Normalized dependency name.
+ * @param {string} input.scope One of the dependency scopes.
+ * @param {string|null} input.spec Declared version/specifier, or null.
+ * @param {string} input.specKind How the specifier is sourced.
+ * @param {boolean} input.direct Whether the manifest declares it directly.
+ * @returns {object} A Core Evidence object.
+ */
+export function createDependencyDeclarationObservation({
+  path,
+  name,
+  scope,
+  spec,
+  specKind,
+  direct,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.DEPENDENCY,
+    key: `${DEPENDENCY_SIGNALS.DECLARATION}:${path}:${name}:${scope}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.DEPENDENCY],
+    path,
+    data: {
+      signal: DEPENDENCY_SIGNALS.DECLARATION,
+      name,
+      scope,
+      spec,
+      specKind,
+      direct,
+    },
+  });
+}
+
+/**
+ * Build the observation for one lockfile's resolved graph.
+ *
+ * Recorded as counts, deliberately: a lockfile for a large application resolves
+ * thousands of packages, and duplicating every `(name, version)` pair into the
+ * evidence list would multiply the model's size without adding a fact the
+ * dependency entities do not already carry. The record states what the file
+ * established (`resolved` packages, `edges`) and remains the provenance a finding
+ * cites for it.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative manifest path.
+ * @param {string} input.ecosystem
+ * @param {number} input.resolved Packages the lockfile resolved.
+ * @param {number} input.edges Edges the lockfile stated.
+ * @returns {object} A Core Evidence object.
+ */
+export function createDependencyResolutionObservation({ path, ecosystem, resolved, edges }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.DEPENDENCY,
+    key: `${DEPENDENCY_SIGNALS.RESOLUTION}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.DEPENDENCY],
+    path,
+    data: {
+      signal: DEPENDENCY_SIGNALS.RESOLUTION,
+      ecosystem,
+      resolved,
+      edges,
+    },
+  });
+}
+
 export function contentObservationKind(record) {
   const signal = record?.data?.signal;
   if (signal === CONTENT_SIGNALS.INSPECTION) return CONTENT_SIGNALS.INSPECTION;

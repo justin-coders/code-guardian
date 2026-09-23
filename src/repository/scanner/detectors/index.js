@@ -18,13 +18,14 @@ import { detectCicd } from "./cicd.js";
 import { detectConfiguration } from "./configuration.js";
 import { detectContainers } from "./containers.js";
 import { detectContent } from "./content.js";
+import { detectDependencies } from "./dependencies.js";
 import { detectDocumentation } from "./documentation.js";
 import { detectGit } from "./git.js";
 import { detectLanguages } from "./languages.js";
 import { detectManifests } from "./manifests.js";
 import { detectTesting } from "./testing.js";
 
-export { detectCicd, detectConfiguration, detectContainers, detectContent };
+export { detectCicd, detectConfiguration, detectContainers, detectContent, detectDependencies };
 export { detectDocumentation, detectGit, detectLanguages, detectManifests, detectTesting };
 
 /**
@@ -39,6 +40,9 @@ export async function runDetectors(view) {
   return {
     languages: detectLanguages(view, manifests),
     manifests,
+    // Dependency acquisition reads the manifests the detector above inventoried,
+    // so it can never read a file the scan did not observe.
+    dependencies: await detectDependencies(view, manifests),
     tests: detectTesting(view),
     cicd: detectCicd(view),
     documentation: detectDocumentation(view),

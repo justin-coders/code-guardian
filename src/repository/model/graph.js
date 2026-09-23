@@ -39,6 +39,12 @@ export const RELATIONSHIP_TYPES = Object.freeze({
   ECOSYSTEM: "ecosystem",
   /** Test evidence entity → the framework it belongs to. */
   FRAMEWORK: "framework",
+  /** Manifest → a dependency that manifest declares (Phase 13). */
+  DECLARES_DEPENDENCY: "declares-dependency",
+  /** Dependency → a dependency a lockfile states it depends on (Phase 13). */
+  DEPENDS_ON: "depends-on",
+  /** Dependency → the lockfile that resolved it (Phase 13). */
+  RESOLVED_BY: "resolved-by",
 });
 
 function compareRelationships(a, b) {
@@ -53,6 +59,31 @@ function edge(from, type, to) {
 }
 
 /**
+ * The entity collections the graph connects, in one place.
+ *
+ * Both the containment edges and the indexes are built from this list, so an entity
+ * collection can never be contained by the repository but missing from the index (or
+ * the reverse) — the failure mode that would make a query silently return nothing.
+ */
+function allEntities(collections) {
+  return [
+    ...collections.files,
+    ...collections.directories,
+    ...collections.symlinks,
+    ...collections.languages,
+    ...collections.frameworks,
+    ...collections.ecosystems,
+    ...collections.manifests,
+    ...collections.dependencies,
+    ...collections.tests,
+    ...collections.cicd,
+    ...collections.documentation,
+    ...collections.configuration,
+    collections.git,
+  ];
+}
+
+/**
  * Build the relationship list.
  *
  * @param {object} collections Entity collections from `entities.js`.
@@ -62,36 +93,21 @@ function edge(from, type, to) {
 export function buildRelationships(collections, repositoryIdValue) {
   const {
     files,
-    directories,
     symlinks,
-    languages,
-    frameworks,
-    ecosystems,
     manifests,
+    dependencies,
+    dependencyEdges,
     tests,
     cicd,
     documentation,
     configuration,
+    directories,
     git,
   } = collections;
 
   const relationships = [];
 
-  const contained = [
-    ...files,
-    ...directories,
-    ...symlinks,
-    ...languages,
-    ...frameworks,
-    ...ecosystems,
-    ...manifests,
-    ...tests,
-    ...cicd,
-    ...documentation,
-    ...configuration,
-    git,
-  ];
-  for (const entity of contained) {
+  for (const entity of allEntities(collections)) {
     relationships.push(edge(repositoryIdValue, RELATIONSHIP_TYPES.CONTAINS, entity.id));
   }
 
@@ -121,6 +137,32 @@ export function buildRelationships(collections, repositoryIdValue) {
     relationships.push(edge(test.id, RELATIONSHIP_TYPES.FRAMEWORK, test.frameworkId));
   }
 
+  // Dependency relationships are derived only from recorded declaration and
+  // resolution facts: a manifest *declares* what its sections declared, a lockfile
+  // edge *depends-on* another package, and a resolved package is *resolved-by* the
+  // lockfile that pinned it. No import, call or source-level relationship is built
+  // here — that requires a parsing phase this architecture does not have yet.
+  const manifestIds = new Set(manifests.map((manifest) => manifest.id));
+  const dependencyIds = new Set(dependencies.map((dependency) => dependency.id));
+  for (const dependency of dependencies) {
+    for (const declaration of dependency.declarations) {
+      if (!manifestIds.has(declaration.manifestId)) continue;
+      relationships.push(
+        edge(declaration.manifestId, RELATIONSHIP_TYPES.DECLARES_DEPENDENCY, dependency.id),
+      );
+    }
+    for (const resolution of dependency.resolutions) {
+      if (!manifestIds.has(resolution.manifestId)) continue;
+      relationships.push(edge(dependency.id, RELATIONSHIP_TYPES.RESOLVED_BY, resolution.manifestId));
+    }
+  }
+  for (const dependencyEdge of dependencyEdges) {
+    if (!dependencyIds.has(dependencyEdge.from) || !dependencyIds.has(dependencyEdge.to)) continue;
+    relationships.push(
+      edge(dependencyEdge.from, RELATIONSHIP_TYPES.DEPENDS_ON, dependencyEdge.to),
+    );
+  }
+
   return relationships.sort(compareRelationships);
 }
 
@@ -144,20 +186,7 @@ function sortedRecord(entries) {
  * @returns {object} The index record.
  */
 export function buildIndexes(collections, relationships, evidence) {
-  const entities = [
-    ...collections.files,
-    ...collections.directories,
-    ...collections.symlinks,
-    ...collections.languages,
-    ...collections.frameworks,
-    ...collections.ecosystems,
-    ...collections.manifests,
-    ...collections.tests,
-    ...collections.cicd,
-    ...collections.documentation,
-    ...collections.configuration,
-    collections.git,
-  ];
+  const entities = allEntities(collections);
 
   const entitiesById = sortedRecord(entities.map((entity) => [entity.id, entity]));
 
@@ -198,6 +227,23 @@ export function buildIndexes(collections, relationships, evidence) {
     [...ecosystemBuckets.entries()].map(([ecosystemId, ids]) => [ecosystemId, [...ids].sort()]),
   );
 
+  const dependencyBuckets = new Map();
+  for (const dependency of collections.dependencies) {
+    const bucket = dependencyBuckets.get(dependency.ecosystemId);
+    if (bucket === undefined) dependencyBuckets.set(dependency.ecosystemId, [dependency.id]);
+    else bucket.push(dependency.id);
+  }
+  const dependenciesByEcosystem = sortedRecord(
+    [...dependencyBuckets.entries()].map(([ecosystemId, ids]) => [ecosystemId, [...ids].sort()]),
+  );
+
+  const dependencyIdsByName = sortedRecord(
+    collections.dependencies.map((dependency) => [
+      `${dependency.ecosystem}:${dependency.name}`,
+      dependency.id,
+    ]),
+  );
+
   const evidenceById = sortedRecord(evidence.map((record) => [record.id, record]));
 
   const entityBuckets = new Map();
@@ -235,6 +281,8 @@ export function buildIndexes(collections, relationships, evidence) {
     manifestsByPath,
     filesByLanguage,
     manifestsByEcosystem,
+    dependenciesByEcosystem,
+    dependencyIdsByName,
     evidenceById,
     entityIdsByEvidence,
     relationshipsByFrom: sortedRecord([...fromBuckets.entries()]),

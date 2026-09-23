@@ -29,12 +29,16 @@ import {
   CONTAINER_SIGNALS,
   CONTENT_STATUSES,
   CONTENT_UNINSPECTED_REASONS,
+  DEPENDENCY_SIGNALS,
   EVIDENCE_SUBJECTS,
   EVIDENCE_TYPE_BY_SUBJECT,
   INVENTORY_KINDS,
   createBuildContextObservation,
   createContentInspectionObservation,
   createContentPatternObservation,
+  createDependencyDeclarationObservation,
+  createDependencyResolutionObservation,
+  createDependencySourceObservation,
   createInventoryObservation,
   createObservation,
   createSignalObservation,
@@ -94,6 +98,85 @@ export const UNINSPECTED_SYMLINK_TARGET = Object.freeze({
   path: null,
   reason: SYMLINK_TARGET_REASONS.NOT_INSPECTED,
 });
+
+/**
+ * Dependency vocabularies and bounds.
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like
+ * `SYMLINK_TARGET_KINDS` above: the model must not depend on the scanner. A test in
+ * `tests/dependency-intelligence.test.js` pins the two vocabularies together, so a
+ * rename on either side fails the suite instead of silently retiring a value.
+ *
+ * What the model *does* re-derive is the safety property, not the ecosystem rules:
+ * a dependency name is projected only when it is bounded, free of control
+ * characters and free of path traversal. Which names an ecosystem permits is the
+ * acquisition contract's question; whether a name may become a model identity is
+ * this layer's, and a malformed ScanResult that smuggled `../evil` past the scan
+ * contract is rejected here.
+ */
+export const DEPENDENCY_SOURCE_STATUSES = Object.freeze([
+  "parsed",
+  "unsupported",
+  "failed",
+]);
+
+export const DEPENDENCY_SOURCE_REASONS = Object.freeze([
+  "format-not-interpreted",
+  "invalid-json",
+  "json-value-is-not-an-object",
+  "not-text",
+  "manifest-could-not-be-read",
+  "exceeds-max-manifest-bytes",
+  "budget-exhausted",
+]);
+
+export const DEPENDENCY_SCOPES = Object.freeze([
+  "runtime",
+  "development",
+  "optional",
+  "peer",
+  "unknown",
+]);
+
+export const DEPENDENCY_SPEC_KINDS = Object.freeze([
+  "registry",
+  "workspace",
+  "local",
+  "url",
+  "git",
+  "alias",
+  "unknown",
+]);
+
+export const DEPENDENCY_PROBLEM_REASONS = Object.freeze([
+  "invalid-name",
+  "invalid-spec",
+  "invalid-version",
+  "invalid-entry-key",
+  "duplicate-declaration",
+  "depth-limit",
+  "entry-limit",
+  "edge-limit",
+  "include-directive",
+  "editable-requirement",
+  "line-continuation-unsupported",
+  "replace-directive",
+  "exclude-directive",
+]);
+
+/** Maximum dependency sources (manifest records) a scan result may carry. */
+const MAX_DEPENDENCY_SOURCES = 512;
+
+/** Maximum dependency entities a scan result may describe. */
+const MAX_DEPENDENCY_ENTITIES = 8000;
+
+/** Maximum dependency edges a scan result may state. */
+const MAX_DEPENDENCY_EDGES = 12000;
+
+/** Bounded dependency name text. Wider than `IDENTIFIER_PATTERN` by `@`, for npm. */
+const DEPENDENCY_NAME_PATTERN = /^[A-Za-z0-9@][A-Za-z0-9@._/+-]*$/;
+const MAX_DEPENDENCY_NAME_LENGTH = 214;
+const MAX_DEPENDENCY_SPEC_LENGTH = 200;
 
 /** Maximum content candidates a scan result may carry. */
 const MAX_CONTENT_CANDIDATES = 512;
@@ -492,6 +575,529 @@ function projectContainerSection(section, observedFilePaths, issues, record) {
 }
 
 /**
+ * Project a dependency name that is about to become a model identity.
+ *
+ * Bounded, printable, path-free text only: `..`, a leading `/` or a leading `.`,
+ * a control character or an out-of-vocabulary character is rejected, because the
+ * name is part of an entity id and of evidence ids. The message never echoes the
+ * rejected value — hostile text must not travel into an error a caller serializes.
+ *
+ * @param {unknown} value
+ * @returns {string|null} The name, or `null` when it cannot be an identity.
+ */
+export function projectDependencyName(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_DEPENDENCY_NAME_LENGTH) return null;
+  if (value.includes("..") || value.startsWith("/") || value.startsWith(".")) return null;
+  if (!DEPENDENCY_NAME_PATTERN.test(value)) return null;
+  return value;
+}
+
+/**
+ * Whether a declared spec is safe to record.
+ *
+ * The scan contract already bounded specs; this re-checks the property the model
+ * depends on (bounded, control-character free) so a malformed ScanResult cannot
+ * put a newline or a NUL into a model field.
+ */
+function projectDependencySpec(value) {
+  if (value === null || value === undefined) return { ok: true, spec: null };
+  if (typeof value !== "string") return { ok: false };
+  if (value.length > MAX_DEPENDENCY_SPEC_LENGTH) return { ok: false };
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(value)) return { ok: false };
+  return { ok: true, spec: value };
+}
+
+function compareByKeys(keys) {
+  return (a, b) => {
+    for (const key of keys) {
+      if (a[key] === b[key]) continue;
+      return a[key] < b[key] ? -1 : 1;
+    }
+    return 0;
+  };
+}
+
+/**
+ * Project the scan's dependency acquisition into dependency entities.
+ *
+ * This is where "what the manifests said" becomes a graph the query layer and the
+ * rules can consume. Four properties are load-bearing:
+ *
+ *   1. **One entity per `(ecosystem, name)`.** A dependency is the same dependency
+ *      whichever manifest declares it, so multi-manifest repositories get one node
+ *      per package with a *declaration record per manifest*. Contradictory
+ *      declarations in independent manifests are therefore both preserved, never
+ *      reconciled or overwritten.
+ *   2. **Provenance is per source.** Every declaration cites the manifest's own
+ *      declaration observation; every resolution and edge cites the lockfile's
+ *      resolution observation. A source that could not be interpreted cites its
+ *      own source observation, which is what makes an `unknown` conclusion
+ *      expressible in the model instead of invisible.
+ *   3. **Nothing is invented.** A dependency exists because a manifest declared it,
+ *      a lockfile resolved it, or a lockfile edge named it — never because a name
+ *      looked like a package. `direct` is only ever set from a declaration the
+ *      format itself marked direct, and `resolved` only from a lockfile entry.
+ *   4. **Everything is bounded and fail-closed.** An incoherent section (an
+ *      unobserved source path, an unknown status or scope, an unsafe name, more
+ *      edges than a scan may state) fails the build rather than producing a model
+ *      whose dependency facts are quietly partial.
+ *
+ * @param {object|undefined} section The scan result's `dependencies` section.
+ * @param {object[]} manifests Built manifest entities (with ids).
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues Issue collector.
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {{entries: object[], sources: object[], edges: Array<{from: string, to: string}>,
+ *   coverage: object}}
+ */
+function projectDependenciesSection(section, manifests, observedFilePaths, issues, record) {
+  const empty = {
+    entries: [],
+    sources: [],
+    edges: [],
+    coverage: {
+      inspected: false,
+      complete: false,
+      truncated: false,
+      declarations: 0,
+      resolved: 0,
+      edges: 0,
+    },
+  };
+
+  if (section === undefined || section === null) return empty;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.dependencies", "must be a plain object");
+    return empty;
+  }
+  if (!Array.isArray(section.manifests)) {
+    fail(issues, "scanResult.dependencies.manifests", "must be an array");
+    return empty;
+  }
+  if (section.manifests.length > MAX_DEPENDENCY_SOURCES) {
+    fail(
+      issues,
+      "scanResult.dependencies.manifests",
+      "carries more dependency sources than a scan can report",
+    );
+    return empty;
+  }
+
+  const manifestByPath = new Map(manifests.map((manifest) => [manifest.path, manifest]));
+  const entitiesById = new Map();
+  const evidenceByEntity = new Map();
+  const referencedByEntity = new Map();
+  const declaredScopes = new Map();
+  const sources = [];
+  const edgeKeys = new Map();
+  let declarationCount = 0;
+  let resolvedCount = 0;
+
+  const addEvidence = (entityIdValue, evidenceIdValue) => {
+    let bucket = evidenceByEntity.get(entityIdValue);
+    if (bucket === undefined) {
+      bucket = new Set();
+      evidenceByEntity.set(entityIdValue, bucket);
+    }
+    bucket.add(evidenceIdValue);
+  };
+
+  const ensureEntity = (ecosystem, name) => {
+    const id = entityId(ENTITY_KINDS.DEPENDENCY, `${ecosystem}:${name}`);
+    let entity = entitiesById.get(id);
+    if (entity === undefined) {
+      entity = {
+        id,
+        kind: ENTITY_KINDS.DEPENDENCY,
+        // Value-shaped, like a language or an ecosystem: a dependency is identified
+        // by `(ecosystem, name)`, not by a path in this repository.
+        path: null,
+        ecosystem,
+        ecosystemId: entityId(ENTITY_KINDS.ECOSYSTEM, ecosystem),
+        name,
+        declared: false,
+        direct: false,
+        resolved: false,
+        declarations: [],
+        resolutions: [],
+        referencedBy: [],
+        scopes: [],
+        evidenceIds: [],
+      };
+      entitiesById.set(id, entity);
+      return { entity, created: true };
+    }
+    return { entity, created: false };
+  };
+
+  for (const source of section.manifests) {
+    if (!isPlainObject(source)) {
+      fail(issues, "scanResult.dependencies.manifests[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(
+      source.path,
+      "scanResult.dependencies.manifests[].path",
+    );
+    const ecosystem = identifier(source.ecosystem);
+    if (ecosystem === null) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}].ecosystem`,
+        "must be a bounded ecosystem id",
+      );
+      continue;
+    }
+    if (!observedFilePaths.has(path)) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}]`,
+        "a dependency source must be a file the inventory observed",
+      );
+      continue;
+    }
+    const manifest = manifestByPath.get(path);
+    if (manifest === undefined) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}]`,
+        "a dependency source must be a manifest the scan observed",
+      );
+      continue;
+    }
+
+    const status = source.status;
+    if (!DEPENDENCY_SOURCE_STATUSES.includes(status)) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}].status`,
+        "must be a documented dependency source status",
+      );
+      continue;
+    }
+    const reason =
+      source.reason === null || source.reason === undefined ? null : identifier(source.reason);
+    if (reason === null && status !== "parsed") {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}].reason`,
+        "must record why the source could not be parsed",
+      );
+      continue;
+    }
+    if (reason !== null && !DEPENDENCY_SOURCE_REASONS.includes(reason)) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}].reason`,
+        "must be a documented source reason",
+      );
+      continue;
+    }
+    const detail =
+      source.detail === null || source.detail === undefined ? null : identifier(source.detail);
+    if (source.detail !== null && source.detail !== undefined && detail === null) {
+      fail(
+        issues,
+        `scanResult.dependencies.manifests[${path}].detail`,
+        "must be a bounded detail identifier",
+      );
+      continue;
+    }
+
+    const problems = [];
+    for (const problemEntry of Array.isArray(source.problems) ? source.problems : []) {
+      if (!isPlainObject(problemEntry)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].problems`,
+          "entries must be plain objects",
+        );
+        continue;
+      }
+      const problemReason = identifier(problemEntry.reason);
+      if (problemReason === null || !DEPENDENCY_PROBLEM_REASONS.includes(problemReason)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].problems`,
+          "must carry documented problem reasons",
+        );
+        continue;
+      }
+      problems.push(problemReason);
+    }
+    problems.sort();
+
+    const sourceEvidenceId = record(
+      createDependencySourceObservation({
+        path,
+        ecosystem,
+        status,
+        reason,
+        detail,
+        problems,
+      }),
+    );
+    sources.push({
+      path,
+      ecosystem,
+      status,
+      reason,
+      detail,
+      // Whether this source's facts were cut short by a limit. Kept on the record so a
+      // consumer can tell a lockfile that resolved 5000 packages apart because it had
+      // exactly that many, and one whose 5000 is the cap.
+      truncated: source.truncated === true,
+      problems,
+      evidenceId: sourceEvidenceId,
+    });
+
+    // ── Declarations ────────────────────────────────────────────────────────
+    for (const declaration of Array.isArray(source.dependencies) ? source.dependencies : []) {
+      if (!isPlainObject(declaration)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[]`,
+          "must be a plain object",
+        );
+        continue;
+      }
+      const name = projectDependencyName(declaration.name);
+      if (name === null) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[].name`,
+          "must be a bounded, path-free dependency name",
+        );
+        continue;
+      }
+      const scope = declaration.scope;
+      if (!DEPENDENCY_SCOPES.includes(scope)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[].scope`,
+          "must be a documented dependency scope",
+        );
+        continue;
+      }
+      const specKind = declaration.specKind;
+      if (!DEPENDENCY_SPEC_KINDS.includes(specKind)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[].specKind`,
+          "must be a documented spec kind",
+        );
+        continue;
+      }
+      const projectedSpec = projectDependencySpec(declaration.spec);
+      if (!projectedSpec.ok) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[].spec`,
+          "must be a bounded spec string or null",
+        );
+        continue;
+      }
+      if (declaration.direct !== true && declaration.direct !== false) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].dependencies[].direct`,
+          "must be a boolean",
+        );
+        continue;
+      }
+
+      const { entity } = ensureEntity(ecosystem, name);
+      const declarationEvidenceId = record(
+        createDependencyDeclarationObservation({
+          path,
+          name,
+          scope,
+          spec: projectedSpec.spec,
+          specKind,
+          direct: declaration.direct,
+        }),
+      );
+      addEvidence(entity.id, declarationEvidenceId);
+
+      entity.declarations.push({
+        manifestId: manifest.id,
+        manifestPath: path,
+        scope,
+        spec: projectedSpec.spec,
+        specKind,
+        direct: declaration.direct,
+        conditional: declaration.conditional === true,
+        evidenceIds: [declarationEvidenceId],
+      });
+      entity.declared = true;
+      if (declaration.direct === true) entity.direct = true;
+      declarationCount += 1;
+
+      let scopes = declaredScopes.get(entity.id);
+      if (scopes === undefined) {
+        scopes = new Set();
+        declaredScopes.set(entity.id, scopes);
+      }
+      scopes.add(scope);
+    }
+
+    // ── Resolutions (lockfiles only) ────────────────────────────────────────
+    const resolvedEntries = [];
+    for (const resolved of Array.isArray(source.resolved) ? source.resolved : []) {
+      if (!isPlainObject(resolved)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].resolved[]`,
+          "must be a plain object",
+        );
+        continue;
+      }
+      const name = projectDependencyName(resolved.name);
+      if (name === null || !identifier(resolved.version)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].resolved[]`,
+          "must carry a bounded name and version",
+        );
+        continue;
+      }
+      resolvedEntries.push({ name, version: resolved.version });
+    }
+
+    const edgeEntries = [];
+    for (const edge of Array.isArray(source.edges) ? source.edges : []) {
+      if (!isPlainObject(edge)) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].edges[]`,
+          "must be a plain object",
+        );
+        continue;
+      }
+      const from = projectDependencyName(edge.from);
+      const to = projectDependencyName(edge.to);
+      if (from === null || to === null) {
+        fail(
+          issues,
+          `scanResult.dependencies.manifests[${path}].edges[]`,
+          "must name two bounded, path-free dependencies",
+        );
+        continue;
+      }
+      edgeEntries.push({ from, to });
+    }
+
+    if (resolvedEntries.length > 0 || edgeEntries.length > 0) {
+      // One file-level observation per lockfile: the resolved pair list is carried by
+      // the entities (bounded per package), while the counts here state what the
+      // file established. Recorded before the per-package records below so every
+      // one of them can cite it.
+      const resolutionEvidenceId = record(
+        createDependencyResolutionObservation({
+          path,
+          ecosystem,
+          resolved: resolvedEntries.length,
+          edges: edgeEntries.length,
+        }),
+      );
+
+      for (const resolved of resolvedEntries) {
+        const { entity } = ensureEntity(ecosystem, resolved.name);
+        entity.resolved = true;
+        entity.resolutions.push({
+          manifestId: manifest.id,
+          manifestPath: path,
+          version: resolved.version,
+          evidenceIds: [resolutionEvidenceId],
+        });
+        addEvidence(entity.id, resolutionEvidenceId);
+        resolvedCount += 1;
+      }
+
+      for (const edge of edgeEntries) {
+        const fromEntity = ensureEntity(ecosystem, edge.from).entity;
+        const toEntity = ensureEntity(ecosystem, edge.to).entity;
+        addEvidence(fromEntity.id, resolutionEvidenceId);
+        addEvidence(toEntity.id, resolutionEvidenceId);
+        for (const entity of [fromEntity, toEntity]) {
+          let paths = referencedByEntity.get(entity.id);
+          if (paths === undefined) {
+            paths = new Set();
+            referencedByEntity.set(entity.id, paths);
+          }
+          paths.add(path);
+        }
+        const key = `${fromEntity.id}\u0000${toEntity.id}`;
+        if (!edgeKeys.has(key)) edgeKeys.set(key, { from: fromEntity.id, to: toEntity.id });
+      }
+    }
+  }
+
+  const edges = [...edgeKeys.values()].sort((a, b) =>
+    a.from === b.from ? (a.to < b.to ? -1 : a.to > b.to ? 1 : 0) : a.from < b.from ? -1 : 1,
+  );
+  if (edges.length > MAX_DEPENDENCY_EDGES) {
+    fail(issues, "scanResult.dependencies", "states more dependency edges than a scan can report");
+    return empty;
+  }
+
+  const entries = [];
+  for (const entity of entitiesById.values()) {
+    entity.declarations.sort(compareByKeys(["manifestPath", "scope"]));
+    entity.resolutions.sort(compareByKeys(["manifestPath", "version"]));
+    const referencedBy = referencedByEntity.get(entity.id);
+    entity.referencedBy = referencedBy === undefined ? [] : [...referencedBy].sort();
+    const scopes = declaredScopes.get(entity.id);
+    entity.scopes = scopes === undefined ? [] : [...scopes].sort();
+    entity.evidenceIds = sortEvidenceIds([...(evidenceByEntity.get(entity.id) ?? [])]);
+
+    if (
+      entity.declarations.length === 0 &&
+      entity.resolutions.length === 0 &&
+      entity.referencedBy.length === 0
+    ) {
+      fail(
+        issues,
+        `scanResult.dependencies[${entity.name}]`,
+        "a dependency must be declared, resolved or named by an edge",
+      );
+      continue;
+    }
+    if (entity.evidenceIds.length === 0) {
+      fail(
+        issues,
+        `scanResult.dependencies[${entity.name}]`,
+        "a dependency must reference at least one observation",
+      );
+      continue;
+    }
+    entries.push(entity);
+  }
+  entries.sort(compareByKeys(["id"]));
+
+  if (entries.length > MAX_DEPENDENCY_ENTITIES) {
+    fail(issues, "scanResult.dependencies", "describes more dependencies than a scan can report");
+    return empty;
+  }
+
+  return {
+    entries,
+    sources: sources.sort(compareByKeys(["path"])),
+    edges,
+    coverage: {
+      inspected: section.inspected === true,
+      complete: section.complete === true,
+      truncated: section.truncated === true,
+      declarations: declarationCount,
+      resolved: resolvedCount,
+      edges: edges.length,
+    },
+  };
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -855,6 +1461,21 @@ export function buildEntities(scanResult, repositoryIdValue) {
     evidenceIds: [],
   }));
 
+  // ── Dependencies ──────────────────────────────────────────────────────────
+  //
+  // Built after the manifests, because every dependency fact is *about* a
+  // manifest: a declaration cites the manifest that made it, a resolution cites the
+  // lockfile that stated it. A dependency therefore cannot exist without an
+  // observed manifest behind it.
+
+  const dependencySection = projectDependenciesSection(
+    scanResult.dependencies,
+    manifests,
+    observedFilePaths,
+    issues,
+    record,
+  );
+
   // ── Testing, frameworks, CI/CD, documentation, configuration ──────────────
 
   const tests = [];
@@ -1028,13 +1649,46 @@ export function buildEntities(scanResult, repositoryIdValue) {
       );
     }
   }
-  for (const entity of [...manifests, ...tests, ...cicd, ...documentation, ...configuration]) {
+  for (const entity of [
+    ...manifests,
+    ...tests,
+    ...cicd,
+    ...documentation,
+    ...configuration,
+  ]) {
     if (entity.directoryId !== repositoryIdValue && !directoryIds.has(entity.directoryId)) {
       fail(
         issues,
         `scanResult[${entity.path}]`,
         "a path-bearing entity's parent directory was not observed",
       );
+    }
+  }
+  {
+    const manifestIds = new Set(manifests.map((manifest) => manifest.id));
+    for (const dependency of dependencySection.entries) {
+      for (const declaration of dependency.declarations) {
+        if (!manifestIds.has(declaration.manifestId)) {
+          fail(
+            issues,
+            `scanResult.dependencies[${dependency.name}]`,
+            "a declaration must cite a manifest the scan observed",
+          );
+        }
+      }
+      for (const resolution of dependency.resolutions) {
+        if (!manifestIds.has(resolution.manifestId)) {
+          fail(
+            issues,
+            `scanResult.dependencies[${dependency.name}]`,
+            "a resolution must cite a manifest the scan observed",
+          );
+        }
+      }
+    }
+    const sourcePaths = new Set(dependencySection.sources.map((source) => source.path));
+    if (sourcePaths.size !== dependencySection.sources.length) {
+      fail(issues, "scanResult.dependencies.manifests", "must describe each source once");
     }
   }
   for (const manifest of manifests) {
@@ -1100,7 +1754,14 @@ export function buildEntities(scanResult, repositoryIdValue) {
   // Identity is `kind:path`, so a duplicated path within one section is an
   // inconsistent inventory rather than a modelling choice.
   const seenIds = new Set();
-  for (const entity of [...pathBasedEntities, ...languages, ...frameworks, ...ecosystems, git]) {
+  for (const entity of [
+    ...pathBasedEntities,
+    ...languages,
+    ...frameworks,
+    ...ecosystems,
+    ...dependencySection.entries,
+    git,
+  ]) {
     if (seenIds.has(entity.id)) {
       fail(issues, `scanResult[${entity.id}]`, "duplicate entity identity in the scan result");
     }
@@ -1121,6 +1782,10 @@ export function buildEntities(scanResult, repositoryIdValue) {
     cicd: sortById(cicd),
     documentation: sortById(documentation),
     configuration: sortById(configuration),
+    dependencies: dependencySection.entries,
+    dependencySources: dependencySection.sources,
+    dependencyEdges: dependencySection.edges,
+    dependencyCoverage: dependencySection.coverage,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

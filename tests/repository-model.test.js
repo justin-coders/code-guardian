@@ -141,6 +141,49 @@ function candidate(path, extra = {}) {
 }
 
 /** A representative populated scan, used by many construction tests. */
+/**
+ * A scan that declares one dependency, one lockfile resolution and one edge.
+ *
+ * Kept separate from `populatedScan` on purpose: most construction tests assert the
+ * exact entity and relationship sets of that fixture, and dependency intelligence is
+ * exercised against a scan that actually carries it.
+ */
+function dependencyScan(overrides = {}) {
+  return populatedScan({
+    dependencies: {
+      inspected: true,
+      complete: true,
+      truncated: false,
+      manifests: [
+        {
+          path: "package.json",
+          ecosystem: "node",
+          kind: "manifest",
+          format: "json",
+          status: "parsed",
+          reason: null,
+          detail: null,
+          dependencies: [
+            {
+              name: "react",
+              spec: "^19.0.0",
+              specKind: "registry",
+              scope: "runtime",
+              direct: true,
+            },
+          ],
+          resolved: [],
+          edges: [],
+          truncated: false,
+          problems: [],
+        },
+      ],
+      limits: { maxDeclarations: 2000 },
+    },
+    ...overrides,
+  });
+}
+
 function populatedScan(overrides = {}) {
   return scanOf({
     files: entriesOf(
@@ -348,19 +391,45 @@ describe("model: construction", () => {
     assert.equal(RELATIONSHIP_TYPES.IMPORTS, undefined, "there is no import graph yet");
   });
 
-  it("keeps dependency, script and architecture intelligence deliberately empty", () => {
+  it("keeps script and architecture intelligence deliberately empty", () => {
     const model = buildRepositoryModel(populatedScan());
-    assert.deepEqual(model.dependencies, {});
+    // Phase 13 populates the dependency substrate; scripts and architecture remain
+    // the empty contracted skeleton, because neither has an acquisition path yet.
     assert.deepEqual(model.scripts, {});
     assert.deepEqual(model.architecture, {});
+    assert.equal(model.dependencies.detected, false);
+    assert.deepEqual(model.dependencies.entries, []);
+    assert.equal(
+      model.dependencies.coverage.complete,
+      false,
+      "a scan that declared nothing about dependencies must not claim completeness",
+    );
     for (const relationship of model.relationships) {
       assert.ok(
-        ["contains", "parent", "located_in", "signals", "declares", "ecosystem", "framework"].includes(
-          relationship.type,
-        ),
+        [
+          "contains",
+          "parent",
+          "located_in",
+          "signals",
+          "declares",
+          "ecosystem",
+          "framework",
+          "declares-dependency",
+          "depends-on",
+          "resolved-by",
+        ].includes(relationship.type),
         `unexpected relationship type "${relationship.type}"`,
       );
     }
+  });
+
+  it("never invents a dependency from manifest metadata", () => {
+    // The manifest records dependency *section counts*; only the dependency section
+    // may produce a dependency entity, so a scan without one yields none.
+    const model = buildRepositoryModel(populatedScan());
+    assert.equal(model.manifests.entries.length, 1);
+    assert.deepEqual(model.manifests.entries[0].parse.metadata.dependencySections ?? [], []);
+    assert.equal(listEntitiesByKind(model, ENTITY_KINDS.DEPENDENCY).length, 0);
   });
 });
 
@@ -549,9 +618,10 @@ describe("model: evidence", () => {
 
   it("emits the documented observation subjects", () => {
     // One candidate whose content was fully inspected, and one the inspection could
-    // not reach, so the content subject is exercised in both of its two shapes.
+    // not reach, so the content subject is exercised in both of its two shapes; the
+    // dependency scan supplies the acquisition subject the same way.
     const model = buildRepositoryModel(
-      populatedScan({
+      dependencyScan({
         content: {
           inspected: true,
           complete: false,
@@ -570,6 +640,39 @@ describe("model: evidence", () => {
     for (const subject of Object.values(EVIDENCE_SUBJECTS)) {
       assert.ok(subjects.has(subject), `expected an observation for subject "${subject}"`);
     }
+  });
+
+  it("provenances a dependency from the manifest that stated it", () => {
+    const model = buildRepositoryModel(dependencyScan());
+    const dependency = listEntitiesByKind(model, ENTITY_KINDS.DEPENDENCY)[0];
+
+    assert.equal(dependency.id, "dependency:node:react");
+    assert.equal(dependency.path, null, "a dependency is not a path-shaped entity");
+    assert.deepEqual(dependency.scopes, ["runtime"]);
+    assert.equal(dependency.direct, true);
+    assert.equal(dependency.resolved, false);
+    assert.equal(dependency.declarations.length, 1);
+    assert.equal(dependency.declarations[0].manifestId, "manifest:package.json");
+
+    const evidence = getEntityEvidence(model, dependency.id);
+    assert.ok(evidence.length > 0);
+    for (const record of evidence) {
+      assert.equal(record.provenance.deterministic, true);
+      assert.equal(record.location.path, "package.json");
+      assert.equal(record.type, "dependency");
+    }
+    assert.ok(
+      evidence.some((record) => record.data.signal === "dependency-declaration"),
+      "the declaration must cite its own observation",
+    );
+  });
+
+  it("connects a manifest to the dependency it declares", () => {
+    const model = buildRepositoryModel(dependencyScan());
+    assert.deepEqual(
+      relative(listRelationships(model, { from: "manifest:package.json", type: "declares-dependency" })),
+      ["manifest:package.json -declares-dependency-> dependency:node:react"],
+    );
   });
 });
 

@@ -27,6 +27,7 @@
  * prevent.
  */
 
+import { ENTITY_KINDS } from "./identity.js";
 import { isRepositoryRelativePath } from "./paths.js";
 
 /** Coverage classes reported by `coverageClass`. */
@@ -120,6 +121,37 @@ export function listManifestsByEcosystem(model, ecosystemId) {
   const ids = model.indexes.manifestsByEcosystem[`ecosystem:${ecosystemId}`];
   if (ids === undefined) return [];
   return ids.map((id) => getEntity(model, id)).filter((entity) => entity !== null);
+}
+
+/**
+ * Dependency entities in an ecosystem, in id order.
+ *
+ * @param {object} model
+ * @param {string} ecosystemId Ecosystem id (`node`, `python`, `go`).
+ * @returns {object[]}
+ */
+export function listDependenciesByEcosystem(model, ecosystemId) {
+  const ids = model.indexes.dependenciesByEcosystem?.[`ecosystem:${ecosystemId}`];
+  if (ids === undefined) return [];
+  return ids.map((id) => getEntity(model, id)).filter((entity) => entity !== null);
+}
+
+/**
+ * A dependency entity by `(ecosystem, name)` — its canonical identity, or `null`.
+ *
+ * The name must already be in its normalized form (see the acquisition layer's
+ * `normalizeDependencyName`); the index is keyed by identity, not by spelling, so
+ * `Flask` does not resolve to the `flask` entity.
+ */
+export function getDependencyByName(model, ecosystem, name) {
+  if (typeof ecosystem !== "string" || typeof name !== "string") return null;
+  const id = model.indexes.dependencyIdsByName?.[`${ecosystem}:${name}`];
+  return id === undefined ? null : getEntity(model, id);
+}
+
+/** Every dependency entity, in id order. */
+export function listDependencies(model) {
+  return listEntitiesByKind(model, ENTITY_KINDS.DEPENDENCY);
 }
 
 /**

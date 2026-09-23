@@ -45,10 +45,13 @@
 import {
   COVERAGE_GUARANTEES,
   coverageClass,
+  getDependencyByName as modelGetDependencyByName,
   getEntity as modelGetEntity,
   getEvidence as modelGetEvidence,
   inspectCompleteness,
   isKnownAbsent as modelIsKnownAbsent,
+  listDependencies as modelListDependencies,
+  listDependenciesByEcosystem,
   listEntitiesByKind,
   listFilesByLanguage,
   listManifestsByEcosystem,
@@ -74,6 +77,36 @@ import { QUERY_ERROR_KINDS, RepositoryQueryError, safeQueryToken } from "./query
 
 const ENTITY_KIND_VALUES = Object.values(ENTITY_KINDS);
 const CRITERIA_KEYS = Object.freeze(["kind", "path", "language", "ecosystem", "framework"]);
+
+/**
+ * Criteria `findDependencies` accepts.
+ *
+ * Deliberately narrow: every criterion is a fact the model recorded (which
+ * ecosystem, which name, which manifest stated it, which scope that manifest
+ * established, and whether it was declared or resolved), so a query can never ask a
+ * question the dependency substrate cannot answer.
+ */
+const DEPENDENCY_CRITERIA_KEYS = Object.freeze([
+  "ecosystem",
+  "name",
+  "manifest",
+  "scope",
+  "direct",
+  "resolved",
+  "declared",
+]);
+
+/**
+ * Relationship types that connect dependency entities.
+ *
+ * Used by `dependencyRelationships` so a consumer asking about a dependency's
+ * graph gets the dependency graph rather than every edge at that node.
+ */
+const DEPENDENCY_RELATIONSHIP_TYPES = Object.freeze([
+  "declares-dependency",
+  "depends-on",
+  "resolved-by",
+]);
 const RESOLUTION_FILTER_KEYS = Object.freeze(["from", "to", "type"]);
 const TRAVERSAL_OPTION_KEYS = Object.freeze([
   "direction",
@@ -89,6 +122,20 @@ function isPlainObject(value) {
 
 function compareById(a, b) {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+/** Whether a criterion value is a usable (non-empty) query token. */
+function isNonEmptyQueryString(value) {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+/** Deterministic comparator over records sharing a string field. */
+function compareByField(field) {
+  return (a, b) => {
+    const left = typeof a?.[field] === "string" ? a[field] : "";
+    const right = typeof b?.[field] === "string" ? b[field] : "";
+    return left < right ? -1 : left > right ? 1 : 0;
+  };
 }
 
 function compareRelationships(a, b) {
@@ -197,7 +244,18 @@ function matchesLanguage(entity, language) {
 function matchesEcosystem(entity, ecosystem) {
   const ecosystemEntityId = `${ENTITY_KINDS.ECOSYSTEM}:${ecosystem}`;
   if (entity.kind === ENTITY_KINDS.MANIFEST && entity.ecosystemId === ecosystemEntityId) return true;
+  if (entity.kind === ENTITY_KINDS.DEPENDENCY && entity.ecosystemId === ecosystemEntityId) {
+    return true;
+  }
   return entity.id === ecosystemEntityId;
+}
+
+/** The manifest paths a dependency's facts were stated in, sorted and unique. */
+function dependencyManifestIds(dependency) {
+  const ids = new Set();
+  for (const declaration of dependency.declarations ?? []) ids.add(declaration.manifestId);
+  for (const resolution of dependency.resolutions ?? []) ids.add(resolution.manifestId);
+  return [...ids].sort();
 }
 
 function matchesFramework(entity, framework) {
@@ -491,6 +549,229 @@ export function createRepositoryQuery(model) {
         records.push(record);
       }
       return evidenceResult(records);
+    },
+
+    // ── Dependency questions (Phase 13) ─────────────────────────────────────
+    /**
+     * Every dependency entity, sorted by id.
+     *
+     * A dependency is identified by `(ecosystem, name)`, so a package declared by
+     * three manifests is one entity carrying three declarations — the query surface
+     * never merges or picks between them.
+     */
+    listDependencies() {
+      return entityResult(modelListDependencies(model));
+    },
+
+    /** A dependency entity by id, or `null`. Unknown ids are ordinary misses. */
+    getDependency(id) {
+      return modelGetEntity(model, id);
+    },
+
+    /**
+     * The dependency entity for a package name in an ecosystem, or `null`.
+     * The name must be the normalized form (lower-case npm/PEP 503 identity).
+     */
+    getDependencyByName(ecosystem, name) {
+      return modelGetDependencyByName(model, ecosystem, name);
+    },
+
+    /** Dependencies in an ecosystem, sorted by id. */
+    dependenciesByEcosystem(ecosystemId) {
+      return entityResult(listDependenciesByEcosystem(model, ecosystemId));
+    },
+
+    /**
+     * Dependency entities matching every supplied criterion (AND).
+     *
+     *   ecosystem  the ecosystem id (`node`, `python`, `go`)
+     *   name       the normalized package name
+     *   manifest   a manifest **id** — dependencies that manifest declared or resolved
+     *   scope      a scope the dependency was declared with
+     *   direct     whether a manifest declared it directly
+     *   declared   whether any manifest declared it at all
+     *   resolved   whether any lockfile resolved it
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    findDependencies(criteria = {}) {
+      requireKeys(criteria, DEPENDENCY_CRITERIA_KEYS, "dependencyCriteria");
+      if ("ecosystem" in criteria && !isNonEmptyQueryString(criteria.ecosystem)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "dependencyCriteria.ecosystem",
+        });
+      }
+      if ("name" in criteria && !isNonEmptyQueryString(criteria.name)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "dependencyCriteria.name",
+        });
+      }
+      if ("manifest" in criteria && !isNonEmptyQueryString(criteria.manifest)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "dependencyCriteria.manifest",
+        });
+      }
+      if ("scope" in criteria && !isNonEmptyQueryString(criteria.scope)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "dependencyCriteria.scope",
+        });
+      }
+      for (const flag of ["direct", "declared", "resolved"]) {
+        if (flag in criteria && typeof criteria[flag] !== "boolean") {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `dependencyCriteria.${flag}`,
+          });
+        }
+      }
+
+      const matches = (dependency) => {
+        if (dependency.kind !== ENTITY_KINDS.DEPENDENCY) return false;
+        if ("ecosystem" in criteria && dependency.ecosystem !== criteria.ecosystem) return false;
+        if ("name" in criteria && dependency.name !== criteria.name) return false;
+        if ("manifest" in criteria && !dependencyManifestIds(dependency).includes(criteria.manifest)) {
+          return false;
+        }
+        if ("scope" in criteria && !(dependency.scopes ?? []).includes(criteria.scope)) {
+          return false;
+        }
+        for (const flag of ["direct", "declared", "resolved"]) {
+          if (flag in criteria && dependency[flag] !== criteria[flag]) return false;
+        }
+        return true;
+      };
+
+      return entityResult(modelListDependencies(model).filter(matches));
+    },
+
+    /** The dependency facts one manifest stated, in id order. */
+    dependenciesForManifest(manifestId) {
+      if (typeof manifestId !== "string") return entityResult([]);
+      return entityResult(
+        modelListDependencies(model).filter((dependency) =>
+          dependencyManifestIds(dependency).includes(manifestId),
+        ),
+      );
+    },
+
+    /** The manifests that declared or resolved a dependency, in id order. */
+    manifestsForDependency(dependencyId) {
+      const dependency = modelGetEntity(model, dependencyId);
+      if (dependency === null || dependency.kind !== ENTITY_KINDS.DEPENDENCY) {
+        return entityResult([]);
+      }
+      const manifests = dependencyManifestIds(dependency)
+        .map((id) => modelGetEntity(model, id))
+        .filter((entity) => entity !== null);
+      return entityResult(manifests);
+    },
+
+    /**
+     * The declaration records a dependency carries, one per manifest that declared
+     * it, each with its own scope, spec and evidence ids.
+     *
+     * Returned as `{ declarations, coverage, truncated }` so a consumer cannot read
+     * the list without also seeing whether the scan behind it was complete.
+     */
+    dependencyDeclarations(dependencyId) {
+      const dependency = modelGetEntity(model, dependencyId);
+      if (dependency === null || dependency.kind !== ENTITY_KINDS.DEPENDENCY) {
+        return Object.freeze({
+          declarations: Object.freeze([]),
+          ...coverageState(model),
+        });
+      }
+      const declarations = [...(dependency.declarations ?? [])].sort(
+        compareByField("manifestPath"),
+      );
+      Object.freeze(declarations);
+      return Object.freeze({ declarations, ...coverageState(model) });
+    },
+
+    /**
+     * The dependency relationships at a dependency: what declared it, what it
+     * depends on, and which lockfiles resolved it.
+     */
+    dependencyRelationships(dependencyId) {
+      if (typeof dependencyId !== "string") return relationshipResult([]);
+      const dependency = modelGetEntity(model, dependencyId);
+      if (dependency === null || dependency.kind !== ENTITY_KINDS.DEPENDENCY) {
+        return relationshipResult([]);
+      }
+      return relationshipResult(
+        edgesAt(dependencyId, QUERY_DIRECTIONS.BOTH, DEPENDENCY_RELATIONSHIP_TYPES),
+      );
+    },
+
+    /** Dependencies a manifest declared directly, sorted by id. */
+    directDependencies() {
+      return entityResult(
+        modelListDependencies(model).filter((dependency) => dependency.direct === true),
+      );
+    },
+
+    /**
+     * Dependencies a lockfile resolved, sorted by id.
+     *
+     * Resolution is a lockfile's fact, not a claim of directness: a resolved
+     * dependency may be one the repository declares or one it only reaches through
+     * the graph.
+     */
+    resolvedDependencies() {
+      return entityResult(
+        modelListDependencies(model).filter((dependency) => dependency.resolved === true),
+      );
+    },
+
+    /**
+     * Dependencies the model can only see through a lockfile.
+     *
+     * `resolved && !direct` is the honest form of "transitive": the repository's
+     * lockfile pins it, no manifest declares it. A dependency that a format itself
+     * marks indirect (Go's `// indirect`) is included, because the format states it
+     * is not a direct requirement.
+     */
+    transitiveDependencies() {
+      return entityResult(
+        modelListDependencies(model).filter(
+          (dependency) => dependency.resolved === true && dependency.direct !== true,
+        ),
+      );
+    },
+
+    /**
+     * What dependency acquisition established, and what it could not.
+     *
+     * `unestablishedSources` names every manifest whose dependency declarations were
+     * not fully interpreted (an unsupported format, an unreadable file, a rejected
+     * declaration), so a caller that wants to claim "this dependency does not
+     * exist" can see exactly which files would have to be read to support it.
+     */
+    dependencyCoverage() {
+      const coverage = model.dependencies.coverage ?? {};
+      const unestablished = (model.dependencies.sources ?? []) 
+        .filter((source) => source.status !== "parsed" || (source.problems ?? []).length > 0)
+        .map((source) =>
+          Object.freeze({
+            path: source.path,
+            ecosystem: source.ecosystem,
+            status: source.status,
+            reason: source.reason ?? null,
+            problems: Object.freeze([...(source.problems ?? [])]),
+            evidenceId: source.evidenceId ?? null,
+          }),
+        );
+
+      return Object.freeze({
+        detected: model.dependencies.detected === true,
+        count: (model.dependencies.entries ?? []).length,
+        inspected: coverage.inspected === true,
+        complete: coverage.complete === true,
+        truncated: coverage.truncated === true,
+        declarations: Number.isInteger(coverage.declarations) ? coverage.declarations : 0,
+        resolved: Number.isInteger(coverage.resolved) ? coverage.resolved : 0,
+        edges: Number.isInteger(coverage.edges) ? coverage.edges : 0,
+        unestablishedSources: Object.freeze(unestablished),
+      });
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

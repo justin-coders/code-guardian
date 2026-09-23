@@ -15,6 +15,11 @@
 export {
   CONTAINER_UNPARSED_REASONS,
   CONTENT_INSPECTION_REASONS,
+  DEPENDENCY_PROBLEM_REASONS,
+  DEPENDENCY_SCOPES,
+  DEPENDENCY_SOURCE_REASONS,
+  DEPENDENCY_SOURCE_STATUSES,
+  DEPENDENCY_SPEC_KINDS,
   MAX_EVIDENCE_PER_SIGNAL,
   SCAN_RESULT_VERSION,
   SCAN_SIGNALS,
@@ -73,6 +78,33 @@ export {
 } from "./policies/ignore.js";
 
 export { DEFAULT_SCANNER_LIMITS, resolveScanLimits } from "./policies/limits.js";
+
+// Phase 13 — dependency acquisition: the pure parser/vocabulary policy and the
+// detector that applies it to the manifest inventory.
+export {
+  DEPENDENCY_LIMITS,
+  DEPENDENCY_SOURCE_TABLE,
+  NODE_DEPENDENCY_SECTIONS,
+  classifySpecKind,
+  compareDeclarations,
+  compareEdges,
+  compareProblems,
+  compareResolved,
+  dependencySourceFor,
+  isDependencyName,
+  isDependencyProblemReason,
+  isDependencySourceReason,
+  isDependencySpec,
+  isDependencyVersion,
+  normalizeDependencyName,
+  parseGoMod,
+  parseNpmLockfile,
+  parsePackageJson,
+  parseRequirementsTxt,
+  runDependencyParser,
+} from "./policies/dependencies.js";
+
+export { detectDependencies } from "./detectors/dependencies.js";
 
 export {
   SCAN_OPTION_KEYS,

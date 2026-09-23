@@ -25,6 +25,7 @@ import {
   ValidationError,
 } from "../../core/index.js";
 
+import { DEPENDENCY_SCOPES, DEPENDENCY_SOURCE_STATUSES, DEPENDENCY_SPEC_KINDS } from "./entities.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -69,6 +70,11 @@ export const MODEL_ENTITY_COLLECTIONS = Object.freeze([
     select: (model) => model.manifests.ecosystems,
   },
   { label: "manifests.entries", kind: ENTITY_KINDS.MANIFEST, select: (model) => model.manifests.entries },
+  {
+    label: "dependencies.entries",
+    kind: ENTITY_KINDS.DEPENDENCY,
+    select: (model) => model.dependencies.entries,
+  },
   { label: "tests.entries", kind: ENTITY_KINDS.TEST, select: (model) => model.tests.entries },
   { label: "ci.entries", kind: ENTITY_KINDS.CICD, select: (model) => model.ci.entries },
   {
@@ -259,6 +265,106 @@ export function validateRepositoryModelGraph(model) {
       expected === null ? repositoryId : `${ENTITY_KINDS.DIRECTORY}:${expected}`;
     if (manifest.directoryId !== expectedId) {
       fail(`manifests[${manifest.path}].directoryId`, "must be the directory that contains the path");
+    }
+  }
+
+  // ── Dependency semantics ─────────────────────────────────────────────────
+  //
+  // A dependency is the one entity kind whose *content* is a graph: declarations
+  // point at manifests, resolutions point at lockfiles, and both must resolve to
+  // entities the model contains. Validating that here is what makes the dependency
+  // query layer's answers traceable — an unverifiable edge would let a rule cite
+  // provenance that does not exist.
+  const manifestIds = new Set(model.manifests.entries.map((manifest) => manifest.id));
+  const ecosystemIds = new Set(model.manifests.ecosystems.map((ecosystem) => ecosystem.id));
+  const scopes = Object.values(DEPENDENCY_SCOPES);
+  const specKinds = Object.values(DEPENDENCY_SPEC_KINDS);
+
+  for (const dependency of model.dependencies.entries ?? []) {
+    const at = `dependencies[${dependency?.id}]`;
+    if (!isNonEmptyString(dependency?.ecosystem)) {
+      fail(at, "must record the ecosystem it belongs to");
+      continue;
+    }
+    if (!ecosystemIds.has(dependency.ecosystemId)) {
+      fail(at, "must belong to an ecosystem the scan observed");
+    }
+    if (dependency.path !== null) {
+      fail(at, "must not carry a path: a dependency is identified by (ecosystem, name)");
+    }
+    if (dependency.id !== `${ENTITY_KINDS.DEPENDENCY}:${dependency.ecosystem}:${dependency.name}`) {
+      fail(at, "id must be derived from the ecosystem and the name");
+    }
+
+    let facts = 0;
+    for (const declaration of dependency.declarations ?? []) {
+      facts += 1;
+      if (!manifestIds.has(declaration.manifestId)) {
+        fail(at, "a declaration must cite a manifest the model contains");
+      }
+      if (!scopes.includes(declaration.scope)) {
+        fail(at, `declaration scope must be one of: ${scopes.join(", ")}`);
+      }
+      if (!specKinds.includes(declaration.specKind)) {
+        fail(at, `declaration specKind must be one of: ${specKinds.join(", ")}`);
+      }
+      if (typeof declaration.direct !== "boolean") {
+        fail(at, "declaration direct must be a boolean");
+      }
+    }
+    for (const resolution of dependency.resolutions ?? []) {
+      facts += 1;
+      if (!manifestIds.has(resolution.manifestId)) {
+        fail(at, "a resolution must cite a lockfile the model contains");
+      }
+    }
+    for (const path of dependency.referencedBy ?? []) {
+      facts += 1;
+      if (typeof path !== "string" || !manifestIds.has(`${ENTITY_KINDS.MANIFEST}:${path}`)) {
+        fail(at, "a referencing edge must name a manifest the model contains");
+      }
+    }
+    if (facts === 0) {
+      fail(at, "must be declared, resolved or named by an edge somewhere in the model");
+    }
+
+    const declared = (dependency.declarations ?? []).some((entry) => entry.direct === true);
+    if (dependency.direct !== declared) {
+      fail(at, "direct must agree with the declarations it carries");
+    }
+    const resolved = (dependency.resolutions ?? []).length > 0;
+    if (dependency.resolved !== resolved) {
+      fail(at, "resolved must agree with the resolutions it carries");
+    }
+  }
+
+  for (const source of model.dependencies.sources ?? []) {
+    if (!manifestIds.has(`${ENTITY_KINDS.MANIFEST}:${source.path}`)) {
+      fail(`dependencies.sources[${source.path}]`, "must name a manifest the model contains");
+    }
+    if (!DEPENDENCY_SOURCE_STATUSES.includes(source.status)) {
+      fail(`dependencies.sources[${source.path}].status`, "must be a documented source status");
+    }
+    if (!isNonEmptyString(source.evidenceId)) {
+      fail(`dependencies.sources[${source.path}]`, "must cite the observation it rests on");
+    }
+    if (typeof source.truncated !== "boolean") {
+      fail(`dependencies.sources[${source.path}].truncated`, "must be a boolean");
+    }
+  }
+
+  // The coverage statement may not claim more than the sources support: `complete`
+  // means every dependency source in the repository was read and interpreted, which
+  // is exactly what `scan.complete` plus a clean source list means.
+  if (model.dependencies.coverage?.complete === true) {
+    const clean = (model.dependencies.sources ?? []).every(
+      (source) => source.status === "parsed" && (source.problems ?? []).length === 0,
+    );
+    if (!clean) {
+      fail(
+        "dependencies.coverage.complete",
+        "cannot be true unless every dependency source was parsed without problems",
+      );
     }
   }
 

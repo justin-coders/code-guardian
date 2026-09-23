@@ -311,6 +311,7 @@ export async function scanRepository(root, options = {}) {
     ignored,
     languages: detection.languages,
     manifests: detection.manifests,
+    dependencies: detection.dependencies,
     tests: detection.tests,
     cicd: detection.cicd,
     documentation: detection.documentation,

@@ -591,7 +591,11 @@ describe("scanner: manifests", () => {
       { section: "devDependencies", count: 1 },
       { section: "peerDependencies", count: 1 },
     ]);
-    assert.ok(!JSON.stringify(result).includes("left"));
+    // The shallow manifest projection still never lists a dependency name; the
+    // names live in the dependency section the Phase 13 detector acquires, which is
+    // a different record with its own provenance (pinned in
+    // `tests/dependency-intelligence.test.js`).
+    assert.ok(!JSON.stringify(result.manifests[0].parse).includes("left"));
   });
 
   it("records a malformed manifest without failing the scan", async () => {

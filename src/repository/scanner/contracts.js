@@ -46,6 +46,15 @@
 
 import { ValidationError } from "../../core/index.js";
 
+import {
+  DEPENDENCY_PROBLEM_REASON_VALUES,
+  DEPENDENCY_SCOPE_VALUES,
+  DEPENDENCY_SOURCE_REASONS,
+  DEPENDENCY_SOURCE_STATUS_VALUES,
+  DEPENDENCY_SOURCE_STATUSES,
+  DEPENDENCY_SPEC_KIND_VALUES,
+} from "./policies/dependencies.js";
+
 /** Version of the scan result contract. */
 export const SCAN_RESULT_VERSION = "1";
 
@@ -89,6 +98,20 @@ export const CONTAINER_UNPARSED_REASONS = Object.freeze({
   BUDGET_EXHAUSTED: "budget-exhausted",
   AMBIGUOUS: "ambiguous",
 });
+
+/**
+ * Dependency source statuses, re-exported for consumers of the scan contract.
+ *
+ * The vocabulary lives in the acquisition policy (one place defines it) and is
+ * re-exported here because the contract is what a consumer validates against.
+ */
+export {
+  DEPENDENCY_PROBLEM_REASONS,
+  DEPENDENCY_SCOPES,
+  DEPENDENCY_SOURCE_REASONS,
+  DEPENDENCY_SOURCE_STATUSES,
+  DEPENDENCY_SPEC_KINDS,
+} from "./policies/dependencies.js";
 
 /** Stable signal ids used across detectors. */
 export const SCAN_SIGNALS = Object.freeze({
@@ -202,6 +225,7 @@ export function createScanResult(overrides = {}) {
   const git = overrides.git ?? {};
   const content = overrides.content ?? {};
   const containers = overrides.containers ?? {};
+  const dependencies = overrides.dependencies ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -258,6 +282,16 @@ export function createScanResult(overrides = {}) {
       declarations: containers.declarations ?? [],
       unparsed: containers.unparsed ?? [],
       limits: containers.limits ?? {},
+    },
+    // `inspected` and `complete` default to `false`: a draft that declares nothing
+    // about dependencies must not look like one whose manifests were read and found
+    // to declare nothing.
+    dependencies: {
+      inspected: dependencies.inspected ?? false,
+      complete: dependencies.complete ?? false,
+      truncated: dependencies.truncated ?? false,
+      manifests: dependencies.manifests ?? [],
+      limits: dependencies.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -524,6 +558,205 @@ function collectContainersIssues(section, ctx, path) {
   }
 }
 
+/**
+ * Validate the dependency acquisition section.
+ *
+ * A record is per manifest, so a consumer can always tell which file a declaration
+ * came from. What the section may *not* do is claim more than was established:
+ *
+ *   - `status: "parsed"` records must carry no `reason`;
+ *   - every other status must carry one, so an uninterpreted manifest is never
+ *     indistinguishable from a manifest that declares nothing;
+ *   - `complete` may only be `true` when every record was parsed, was not
+ *     truncated and reported no problem — the same "a bounded list is not a
+ *     complete list" invariant the evidence sections enforce.
+ */
+function collectDependenciesIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") {
+      ctx.fail(`${path}.${field}`, "must be a boolean");
+    }
+  }
+  if (!isPlainObject(section.limits)) {
+    ctx.fail(`${path}.limits`, "must be a plain object");
+  }
+
+  if (!Array.isArray(section.manifests)) {
+    ctx.fail(`${path}.manifests`, "must be an array");
+    return;
+  }
+
+  const problemReasons = DEPENDENCY_PROBLEM_REASON_VALUES;
+  const sourceReasons = Object.values(DEPENDENCY_SOURCE_REASONS);
+
+  section.manifests.forEach((record, index) => {
+    const at = `${path}.manifests[${index}]`;
+    if (!isPlainObject(record)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    for (const field of ["path", "ecosystem", "kind", "format"]) {
+      if (!isNonEmptyString(record[field])) {
+        ctx.fail(`${at}.${field}`, "must be a non-empty string");
+      }
+    }
+    if (isNonEmptyString(record.path) && isAbsolutePath(record.path)) {
+      ctx.fail(`${at}.path`, "must be a repository-relative path");
+    }
+    if (!DEPENDENCY_SOURCE_STATUS_VALUES.includes(record.status)) {
+      ctx.fail(`${at}.status`, `must be one of: ${DEPENDENCY_SOURCE_STATUS_VALUES.join(", ")}`);
+    }
+    if (record.reason !== null && record.reason !== undefined && !sourceReasons.includes(record.reason)) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${sourceReasons.join(", ")}`);
+    }
+    if (record.status === DEPENDENCY_SOURCE_STATUSES.PARSED && record.reason != null) {
+      ctx.fail(`${at}.reason`, "must be null for a parsed source");
+    }
+    if (record.status !== DEPENDENCY_SOURCE_STATUSES.PARSED && record.reason == null) {
+      ctx.fail(`${at}.reason`, "must record why the source is not a parsed dependency source");
+    }
+    if (record.detail !== null && record.detail !== undefined && !isNonEmptyString(record.detail)) {
+      ctx.fail(`${at}.detail`, "must be a bounded identifier or null");
+    }
+    if (typeof record.truncated !== "boolean") {
+      ctx.fail(`${at}.truncated`, "must be a boolean");
+    }
+
+    if (!Array.isArray(record.problems)) {
+      ctx.fail(`${at}.problems`, "must be an array");
+    } else {
+      record.problems.forEach((entry, problemIndex) => {
+        const problemAt = `${at}.problems[${problemIndex}]`;
+        if (!isPlainObject(entry)) {
+          ctx.fail(problemAt, "must be a plain object");
+          return;
+        }
+        if (!problemReasons.includes(entry.reason)) {
+          ctx.fail(`${problemAt}.reason`, `must be one of: ${problemReasons.join(", ")}`);
+        }
+        if (entry.detail !== null && entry.detail !== undefined && !isNonEmptyString(entry.detail)) {
+          ctx.fail(`${problemAt}.detail`, "must be a bounded identifier or null");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.dependencies)) {
+      ctx.fail(`${at}.dependencies`, "must be an array");
+    } else {
+      record.dependencies.forEach((declaration, declarationIndex) => {
+        const declarationAt = `${at}.dependencies[${declarationIndex}]`;
+        if (!isPlainObject(declaration)) {
+          ctx.fail(declarationAt, "must be a plain object");
+          return;
+        }
+        if (!isNonEmptyString(declaration.name)) {
+          ctx.fail(`${declarationAt}.name`, "must be a non-empty string");
+        }
+        if (declaration.spec !== null && declaration.spec !== undefined && !isNonEmptyString(declaration.spec)) {
+          ctx.fail(`${declarationAt}.spec`, "must be a version/spec string or null");
+        }
+        if (!DEPENDENCY_SPEC_KIND_VALUES.includes(declaration.specKind)) {
+          ctx.fail(
+            `${declarationAt}.specKind`,
+            `must be one of: ${DEPENDENCY_SPEC_KIND_VALUES.join(", ")}`,
+          );
+        }
+        if (!DEPENDENCY_SCOPE_VALUES.includes(declaration.scope)) {
+          ctx.fail(`${declarationAt}.scope`, `must be one of: ${DEPENDENCY_SCOPE_VALUES.join(", ")}`);
+        }
+        if (typeof declaration.direct !== "boolean") {
+          ctx.fail(`${declarationAt}.direct`, "must be a boolean");
+        }
+        if (declaration.conditional !== undefined && typeof declaration.conditional !== "boolean") {
+          ctx.fail(`${declarationAt}.conditional`, "must be a boolean when present");
+        }
+      });
+      for (let next = 1; next < record.dependencies.length; next += 1) {
+        const previous = record.dependencies[next - 1];
+        const current = record.dependencies[next];
+        const key = (entry) => `${entry.name}\u0000${entry.scope}`;
+        if (key(previous) >= key(current)) {
+          ctx.fail(`${at}.dependencies[${next}]`, "must be sorted by name then scope, and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.resolved)) {
+      ctx.fail(`${at}.resolved`, "must be an array");
+    } else {
+      record.resolved.forEach((entry, resolvedIndex) => {
+        const resolvedAt = `${at}.resolved[${resolvedIndex}]`;
+        if (
+          !isPlainObject(entry) ||
+          !isNonEmptyString(entry.name) ||
+          !isNonEmptyString(entry.version)
+        ) {
+          ctx.fail(resolvedAt, "must carry a name and a version");
+        }
+      });
+      for (let next = 1; next < record.resolved.length; next += 1) {
+        const previous = record.resolved[next - 1];
+        const current = record.resolved[next];
+        const key = (entry) => `${entry.name}\u0000${entry.version}`;
+        if (key(previous) >= key(current)) {
+          ctx.fail(`${at}.resolved[${next}]`, "must be sorted by name then version, and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.edges)) {
+      ctx.fail(`${at}.edges`, "must be an array");
+    } else {
+      record.edges.forEach((edge, edgeIndex) => {
+        const edgeAt = `${at}.edges[${edgeIndex}]`;
+        if (!isPlainObject(edge) || !isNonEmptyString(edge.from) || !isNonEmptyString(edge.to)) {
+          ctx.fail(edgeAt, "must carry a from and a to dependency name");
+        }
+      });
+      for (let next = 1; next < record.edges.length; next += 1) {
+        const previous = record.edges[next - 1];
+        const current = record.edges[next];
+        const key = (entry) => `${entry.from}\u0000${entry.to}`;
+        if (key(previous) >= key(current)) {
+          ctx.fail(`${at}.edges[${next}]`, "must be sorted and unique");
+          break;
+        }
+      }
+    }
+  });
+
+  for (let index = 1; index < section.manifests.length; index += 1) {
+    if (section.manifests[index - 1]?.path >= section.manifests[index]?.path) {
+      ctx.fail(`${path}.manifests[${index}].path`, "must be sorted by path and unique");
+      break;
+    }
+  }
+
+  const everySourceEstablished = section.manifests.every(
+    (record) =>
+      isPlainObject(record) &&
+      record.status === DEPENDENCY_SOURCE_STATUSES.PARSED &&
+      record.truncated !== true &&
+      Array.isArray(record.problems) &&
+      record.problems.length === 0,
+  );
+  // `complete` may be true with `inspected: false` only in the honest shape of that
+  // pair: a repository with no manifest at all has no unread dependency source. It
+  // can never be true while a source was unsupported, unreadable or truncated.
+  if (section.complete === true && !everySourceEstablished) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true unless every dependency source was parsed without truncation or problems",
+    );
+  }
+}
+
 function collectDetectionIssues(section, ctx, path) {
   if (!isPlainObject(section)) {
     ctx.fail(path, "must be a plain object");
@@ -619,6 +852,7 @@ export function validateScanResult(value) {
 
   collectContentIssues(value.content, ctx, "scanResult.content");
   collectContainersIssues(value.containers, ctx, "scanResult.containers");
+  collectDependenciesIssues(value.dependencies, ctx, "scanResult.dependencies");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {
