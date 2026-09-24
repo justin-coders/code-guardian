@@ -26,6 +26,16 @@ import {
 } from "../../core/index.js";
 
 import {
+  ARCHITECTURE_EDGE_TYPES,
+  ARCHITECTURE_EDGE_TYPE_VALUES,
+  ARCHITECTURE_GRAPH_LIMITS,
+  ARCHITECTURE_GRAPH_STATES,
+  ARCHITECTURE_GRAPH_STATE_VALUES,
+  ARCHITECTURE_NODE_KINDS,
+  isEstablishedState,
+  REPOSITORY_NODE_KIND,
+} from "./architecture-graph.js";
+import {
   DEPENDENCY_GRAPH_EDGE_TYPE_VALUES,
   DEPENDENCY_GRAPH_LIMITS,
   DEPENDENCY_GRAPH_STATES,
@@ -49,6 +59,14 @@ export const REPOSITORY_MODEL_BUILDER_VERSION = "1";
 
 /** The builder returns a deeply frozen model; recorded for consumers. */
 export const MODEL_IMMUTABILITY = "frozen";
+
+/**
+ * The signal a container build-context observation carries, re-declared here rather
+ * than imported from the scanner (the model must not depend on the acquisition
+ * layer). A test in `tests/architecture-graph.test.js` pins it against the model's
+ * own `CONTAINER_SIGNALS` vocabulary, so a rename on either side fails the suite.
+ */
+const BUILD_CONTEXT_SIGNAL = "compose-build-context";
 
 /**
  * Entity collections the validator inspects, in a fixed order.
@@ -191,6 +209,7 @@ export function validateRepositoryModelGraph(model) {
   // ── Entities ──────────────────────────────────────────────────────────────
   const descriptors = collectModelEntities(model);
   const entityIds = new Set();
+  const entityById = new Map();
   const seen = new Set();
   const repositoryId = model.identity?.repositoryId;
 
@@ -209,6 +228,7 @@ export function validateRepositoryModelGraph(model) {
     }
     seen.add(entity.id);
     entityIds.add(entity.id);
+    entityById.set(entity.id, entity);
 
     if (entity.kind !== kind) {
       fail(`${label}[${entity.id}]`, `entity kind must be "${kind}"`);
@@ -618,6 +638,331 @@ export function validateRepositoryModelGraph(model) {
           "dependencies.graph.coverage.versionInstances.packages",
           "must stay within the graph bound",
         );
+      }
+    }
+  }
+
+  // ── Architecture graph (Phase 15) ─────────────────────────────────────────
+  //
+  // Another projection of the same model, so it is validated the same way the
+  // dependency graph is: every node must be an entity the model contains (or the
+  // repository node), every edge must re-state a fact the model already established
+  // — a `contains`/`parent`/`located_in` containment, a `declares-dependency`, a
+  // `framework` relationship, or a container declaration observation — and every
+  // edge's provenance must resolve to real observations. An edge the model does not
+  // support is rejected here rather than becoming a finding.
+  const architectureGraph = model.architecture?.graph;
+  if (!isPlainObject(architectureGraph)) {
+    fail("architecture.graph", "must be a plain object");
+  } else {
+    if (!isNonEmptyString(architectureGraph.version)) {
+      fail("architecture.graph.version", "must be a non-empty string");
+    }
+    if (!ARCHITECTURE_GRAPH_STATE_VALUES.includes(architectureGraph.state)) {
+      fail(
+        "architecture.graph.state",
+        `must be one of: ${ARCHITECTURE_GRAPH_STATE_VALUES.join(", ")}`,
+      );
+    }
+    if (typeof architectureGraph.established !== "boolean") {
+      fail("architecture.graph.established", "must be a boolean");
+    } else if (architectureGraph.established !== isEstablishedState(architectureGraph.state)) {
+      fail("architecture.graph.established", "must agree with the state it reports");
+    }
+
+    const architectureNodeIds = new Set();
+    const architectureNodeById = new Map();
+    if (!Array.isArray(architectureGraph.nodes)) {
+      fail("architecture.graph.nodes", "must be an array");
+    } else if (architectureGraph.nodes.length > ARCHITECTURE_GRAPH_LIMITS.MAX_NODES) {
+      fail("architecture.graph.nodes", "must stay within the graph node bound");
+    } else {
+      architectureGraph.nodes.forEach((node, index) => {
+        const at = `architecture.graph.nodes[${index}]`;
+        if (!isPlainObject(node)) {
+          fail(at, "must be a plain object");
+          return;
+        }
+        if (typeof node.id !== "string" || node.id.trim() === "") {
+          fail(at, "must carry a non-empty id");
+          return;
+        }
+        if (architectureNodeIds.has(node.id)) fail(at, `duplicate graph node "${node.id}"`);
+        architectureNodeIds.add(node.id);
+        architectureNodeById.set(node.id, node);
+
+        if (node.id === repositoryId) {
+          if (node.kind !== REPOSITORY_NODE_KIND) {
+            fail(at, `the repository node must have kind "${REPOSITORY_NODE_KIND}"`);
+          }
+          if (node.path !== null) fail(at, "the repository node must not carry a path");
+          return;
+        }
+        if (!ARCHITECTURE_NODE_KINDS.includes(node.kind)) {
+          fail(at, `kind must be one of: ${ARCHITECTURE_NODE_KINDS.join(", ")}`);
+        }
+        const entity = entityById.get(node.id);
+        if (entity === undefined) {
+          fail(at, "must name an entity the model contains");
+          return;
+        }
+        if (entity.kind !== node.kind) {
+          fail(at, "kind must agree with the entity it names");
+        }
+        if (node.path !== null) {
+          try {
+            requireRepositoryRelativePath(node.path, `${at}.path`);
+          } catch (error) {
+            fail(`${at}.path`, "must be a canonical repository-relative path");
+          }
+          if (node.path !== entity.path) {
+            fail(at, "path must agree with the entity it names");
+          }
+        }
+      });
+      // Deterministic ordering is part of the contract, not a nicety: two builds of
+      // one repository state must produce byte-identical graphs.
+      for (let next = 1; next < architectureGraph.nodes.length; next += 1) {
+        const previous = architectureGraph.nodes[next - 1]?.id;
+        const current = architectureGraph.nodes[next]?.id;
+        if (typeof previous === "string" && typeof current === "string" && !(previous < current)) {
+          fail(`architecture.graph.nodes[${next}]`, "nodes must be sorted by id and unique");
+        }
+      }
+      for (const { label, entity } of descriptors) {
+        if (!ARCHITECTURE_NODE_KINDS.includes(entity.kind)) continue;
+        if (!architectureNodeIds.has(entity.id)) {
+          fail(
+            `architecture.graph.nodes`,
+            `${label}[${entity.id}] must project to a graph node`,
+          );
+        }
+      }
+    }
+
+    // The container declarations the model recorded, by observation id. Used to check
+    // that a container edge is the *same* declaration it cites: an edge whose
+    // endpoints disagree with the observation behind it (a different Dockerfile, a
+    // different Compose file, a different context) is provenance that does not exist.
+    const buildContextObservations = new Map();
+    for (const record of model.evidence) {
+      if (record?.data?.signal !== BUILD_CONTEXT_SIGNAL) continue;
+      buildContextObservations.set(record.id, {
+        path: record.location?.path ?? null,
+        source: record.data.source ?? null,
+        contextPath: record.data.contextPath ?? null,
+      });
+    }
+
+    const architectureEdgeKeys = new Set();
+    if (!Array.isArray(architectureGraph.edges)) {
+      fail("architecture.graph.edges", "must be an array");
+    } else if (architectureGraph.edges.length > ARCHITECTURE_GRAPH_LIMITS.MAX_EDGES) {
+      fail("architecture.graph.edges", "must stay within the graph edge bound");
+    } else {
+      const relationshipKeys = new Set(
+        (model.relationships ?? []).map(
+          (relationship) =>
+            `${relationship.from}\u0000${relationship.type}\u0000${relationship.to}`,
+        ),
+      );
+      architectureGraph.edges.forEach((edge, index) => {
+        const at = `architecture.graph.edges[${index}]`;
+        if (!isPlainObject(edge)) {
+          fail(at, "must be a plain object");
+          return;
+        }
+        if (!ARCHITECTURE_EDGE_TYPE_VALUES.includes(edge.type)) {
+          fail(at, `type must be one of: ${ARCHITECTURE_EDGE_TYPE_VALUES.join(", ")}`);
+        }
+        for (const endpoint of ["from", "to"]) {
+          if (!architectureNodeIds.has(edge[endpoint])) {
+            fail(at, `${endpoint} must name a graph node`);
+          }
+        }
+        const key = `${edge.from}\u0000${edge.to}\u0000${edge.type}`;
+        if (architectureEdgeKeys.has(key)) fail(at, "must not repeat an edge the graph already states");
+        architectureEdgeKeys.add(key);
+
+        if (!Array.isArray(edge.evidenceIds) || edge.evidenceIds.length === 0) {
+          fail(at, "must cite at least one observation");
+        } else {
+          for (const id of edge.evidenceIds) {
+            if (!evidenceIds.has(id)) fail(at, `references unknown observation "${String(id)}"`);
+          }
+        }
+        if (!Array.isArray(edge.sourcePaths) || edge.sourcePaths.length === 0) {
+          fail(at, "must name the path whose observation stated it");
+        } else {
+          for (const path of edge.sourcePaths) {
+            if (typeof path !== "string" || path.startsWith("/")) {
+              fail(at, "provenance paths must be repository-relative");
+            }
+          }
+        }
+        if (!Array.isArray(edge.services)) {
+          fail(at, "services must be an array (empty for a non-container edge)");
+        }
+
+        // Every edge must re-state a fact the model already established. The three
+        // containment forms are one fact stated in one direction here; the container
+        // forms are established by an observation, because the model has no
+        // relationship for build wiring.
+        switch (edge.type) {
+          case ARCHITECTURE_EDGE_TYPES.CONTAINS: {
+            const forms = [
+              `${edge.from}\u0000contains\u0000${edge.to}`,
+              `${edge.to}\u0000located_in\u0000${edge.from}`,
+              `${edge.to}\u0000parent\u0000${edge.from}`,
+            ];
+            if (!forms.some((form) => relationshipKeys.has(form))) {
+              fail(at, "a containment edge must be containment the model already states");
+            }
+            break;
+          }
+          case ARCHITECTURE_EDGE_TYPES.DECLARES_DEPENDENCY:
+          case ARCHITECTURE_EDGE_TYPES.FRAMEWORK: {
+            const form = `${edge.from}\u0000${edge.type}\u0000${edge.to}`;
+            if (!relationshipKeys.has(form)) {
+              fail(at, `a ${edge.type} edge must be a relationship the model already states`);
+            }
+            break;
+          }
+          case ARCHITECTURE_EDGE_TYPES.DECLARES_BUILD:
+          case ARCHITECTURE_EDGE_TYPES.BUILD_CONTEXT: {
+            const declares = edge.type === ARCHITECTURE_EDGE_TYPES.DECLARES_BUILD;
+            // The declaration's Dockerfile is the edge's `to` when a Compose file
+            // declares a build, and its `from` when the Dockerfile is placed in its
+            // context root.
+            const dockerfilePath = declares
+              ? (architectureNodeById.get(edge.to)?.path ?? null)
+              : (architectureNodeById.get(edge.from)?.path ?? null);
+            const sourcePath = declares ? (architectureNodeById.get(edge.from)?.path ?? null) : null;
+            const contextPath = declares
+              ? undefined
+              : edge.to === repositoryId
+                ? null
+                : (architectureNodeById.get(edge.to)?.path ?? undefined);
+
+            const matched = (edge.evidenceIds ?? []).some((id) => {
+              const observation = buildContextObservations.get(id);
+              if (observation === undefined) return false;
+              if (observation.path !== dockerfilePath) return false;
+              return declares
+                ? observation.source === sourcePath
+                : observation.contextPath === contextPath;
+            });
+            if (!matched) {
+              fail(at, "must cite the container declaration that established exactly it");
+            }
+            break;
+          }
+          default:
+            break;
+        }
+      });
+      for (let next = 1; next < architectureGraph.edges.length; next += 1) {
+        const previous = architectureGraph.edges[next - 1];
+        const current = architectureGraph.edges[next];
+        if (!isPlainObject(previous) || !isPlainObject(current)) continue;
+        const orderedBefore =
+          previous.from < current.from ||
+          (previous.from === current.from &&
+            (previous.to < current.to ||
+              (previous.to === current.to && previous.type < current.type)));
+        if (!orderedBefore) {
+          fail(`architecture.graph.edges[${next}]`, "edges must be sorted by endpoints, unique");
+        }
+      }
+    }
+
+    if (!Array.isArray(architectureGraph.buildContexts)) {
+      fail("architecture.graph.buildContexts", "must be an array");
+    } else if (
+      architectureGraph.buildContexts.length > ARCHITECTURE_GRAPH_LIMITS.MAX_BUILD_DECLARATIONS
+    ) {
+      fail("architecture.graph.buildContexts", "must stay within the graph bound");
+    } else {
+      architectureGraph.buildContexts.forEach((record, index) => {
+        const at = `architecture.graph.buildContexts[${index}]`;
+        if (!isPlainObject(record)) {
+          fail(at, "must be a plain object");
+          return;
+        }
+        for (const field of ["source", "service", "dockerfile"]) {
+          if (!isNonEmptyString(record[field])) fail(at, `${field} must be a non-empty string`);
+        }
+        for (const field of ["source", "dockerfile"]) {
+          if (typeof record[field] === "string" && record[field].startsWith("/")) {
+            fail(at, `${field} must be repository-relative`);
+          }
+        }
+        if (record.context !== null && !isNonEmptyString(record.context)) {
+          fail(at, "context must be null (the repository root) or a repository-relative path");
+        }
+        if (typeof record.context === "string" && record.context.startsWith("/")) {
+          fail(at, "context must be repository-relative");
+        }
+        if (!buildContextObservations.has(record.evidenceId)) {
+          fail(at, "must cite the observation it rests on");
+        }
+      });
+      for (let next = 1; next < architectureGraph.buildContexts.length; next += 1) {
+        const previous = architectureGraph.buildContexts[next - 1];
+        const current = architectureGraph.buildContexts[next];
+        if (!isPlainObject(previous) || !isPlainObject(current)) continue;
+        const previousKey = `${previous.source}\u0000${previous.service}\u0000${previous.dockerfile}`;
+        const currentKey = `${current.source}\u0000${current.service}\u0000${current.dockerfile}`;
+        if (!(previousKey < currentKey)) {
+          fail(
+            `architecture.graph.buildContexts[${next}]`,
+            "declarations must be sorted by source, service and Dockerfile",
+          );
+        }
+      }
+    }
+
+    const architectureCoverage = architectureGraph.coverage;
+    if (!isPlainObject(architectureCoverage)) {
+      fail("architecture.graph.coverage", "must be a plain object");
+    } else {
+      if (architectureCoverage.state !== architectureGraph.state) {
+        fail("architecture.graph.coverage.state", "must agree with the graph state");
+      }
+      if (architectureCoverage.established !== architectureGraph.established) {
+        fail("architecture.graph.coverage.established", "must agree with the graph state");
+      }
+      if (architectureCoverage.nodes !== architectureNodeIds.size) {
+        fail("architecture.graph.coverage.nodes", "must count the nodes the graph contains");
+      }
+      if (architectureCoverage.edges !== architectureEdgeKeys.size) {
+        fail("architecture.graph.coverage.edges", "must count the edges the graph contains");
+      }
+      if (!Array.isArray(architectureCoverage.unestablishedSources)) {
+        fail("architecture.graph.coverage.unestablishedSources", "must be an array");
+      } else if (
+        architectureCoverage.unestablishedSources.length >
+        ARCHITECTURE_GRAPH_LIMITS.MAX_UNESTABLISHED_SOURCES
+      ) {
+        fail(
+          "architecture.graph.coverage.unestablishedSources",
+          "must stay within the graph bound",
+        );
+      }
+      // The state may not claim more than the scan and the sources support.
+      if (architectureCoverage.state === ARCHITECTURE_GRAPH_STATES.COMPLETE) {
+        if (architectureCoverage.complete !== true || architectureCoverage.truncated === true) {
+          fail(
+            "architecture.graph.coverage.state",
+            "cannot be complete unless the scan covered the repository",
+          );
+        }
+        if ((architectureCoverage.unestablishedSources ?? []).length > 0) {
+          fail(
+            "architecture.graph.coverage.state",
+            "cannot be complete while an architecture source is unestablished",
+          );
+        }
       }
     }
   }

@@ -113,6 +113,35 @@ export {
   symlinkTargets,
 } from "./security/index.js";
 
+// Phase 15 — the architecture rule pack. The minimum integration that proves the
+// Phase 15 architecture graph is consumable through the accepted Rule Engine: one
+// informational inventory rule, its own registry and analyzer adapter. Purely
+// additive — the Rule Engine is unchanged, the other packs are untouched, and all
+// three are consumers of the same generic framework.
+export {
+  ARCHITECTURE_ANALYZER_ID,
+  ARCHITECTURE_ANALYZER_NAME,
+  ARCHITECTURE_ANALYZER_SCOPE,
+  ARCHITECTURE_BASIS,
+  ARCHITECTURE_CATEGORY,
+  ARCHITECTURE_CONFIDENCE,
+  ARCHITECTURE_DESCRIBED_EDGE_TYPES,
+  ARCHITECTURE_RULE_ID_PREFIX,
+  ARCHITECTURE_RULE_IDS,
+  ARCHITECTURE_RULE_PACK_VERSION,
+  ARCHITECTURE_RULE_VERSION,
+  EDGE_WORDING,
+  MAX_ARCHITECTURE_FINDINGS,
+  architectureAbsence,
+  architectureCoverage,
+  architectureInventoryRules,
+  architectureRelationships,
+  architectureRuleSetIssues,
+  architectureRules,
+  createArchitectureAnalyzer,
+  createArchitectureRuleRegistry,
+} from "./architecture/index.js";
+
 // Phase 13/14 — the dependency rule pack. The minimum integration that proves
 // dependency intelligence is consumable through the accepted Rule Engine: two
 // inventory rules (declarations and the Phase 14 dependency graph), their own registry

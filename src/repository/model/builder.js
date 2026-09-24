@@ -43,6 +43,7 @@ import {
   REPOSITORY_MODEL_BUILDER_VERSION,
   validateRepositoryModelGraph,
 } from "./contracts.js";
+import { buildArchitectureGraph } from "./architecture-graph.js";
 import { buildEntities } from "./entities.js";
 import { buildDependencyGraph } from "./dependency-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
@@ -153,6 +154,22 @@ export function buildRepositoryModel(scanResult) {
 
   const coverage = buildCoverage(scan, scan.statistics.truncatedBy);
 
+  // Phase 15 — the architecture graph. Another projection of the same facts: the
+  // containment tree the entity paths already establish, the declarations and test
+  // frameworks the model already records, and the container wiring the scanner already
+  // observed, with per-edge provenance and a coverage statement. It parses nothing, runs
+  // nothing and infers no import, call or tested-by relation — those need phases this
+  // architecture does not have.
+  const architectureGraph = buildArchitectureGraph({
+    repositoryId: repositoryIdValue,
+    collections,
+    evidence: collections.evidence,
+    coverage: {
+      scanComplete: scan.scan.complete === true,
+      scanTruncated: scan.scan.truncated === true,
+    },
+  });
+
   // The Core factory supplies the contracted skeleton (every required area,
   // contract-shaped defaults including the optional areas). The model is then
   // assembled explicitly from that skeleton, so an area can never be omitted and
@@ -196,8 +213,7 @@ export function buildRepositoryModel(scanResult) {
     // record per lockfile, so multi-manifest provenance and contradictory
     // declarations survive; `sources` states what each manifest turned out to be as
     // a dependency source, which is what makes `unknown` coverage expressible.
-    // Scripts and architecture remain the empty contracted skeleton: no script
-    // inventory and no architecture inference exist in this phase.
+    // Scripts remain the empty contracted skeleton: no script inventory exists yet.
     dependencies: {
       ...skeleton.dependencies,
       detected: collections.dependencies.length > 0,
@@ -211,7 +227,17 @@ export function buildRepositoryModel(scanResult) {
       graph: dependencyGraph,
     },
     scripts: skeleton.scripts,
-    architecture: skeleton.architecture,
+    // Phase 15 — the architecture substrate. `graph` is the deterministic projection
+    // (`nodes`, `edges` with per-edge provenance, the container build wiring, and the
+    // four-way coverage state); no judgment about layering, cohesion or quality is
+    // attached, and none can be: the model records what the repository establishes.
+    architecture: {
+      ...skeleton.architecture,
+      // Whether the graph has any node besides the repository node — the same
+      // "the scan observed something" statement `dependencies.detected` makes.
+      detected: architectureGraph.nodes.length > 1,
+      graph: architectureGraph,
+    },
     configuration: {
       detected: scan.configuration.detected,
       entries: collections.configuration,

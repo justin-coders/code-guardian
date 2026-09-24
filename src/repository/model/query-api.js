@@ -60,6 +60,12 @@ import {
 import { ENTITY_KINDS } from "./identity.js";
 import { GRAPH_RELATIONSHIP_TYPES } from "./graph.js";
 import {
+  ARCHITECTURE_EDGE_TYPES,
+  ARCHITECTURE_EDGE_TYPE_VALUES,
+  ARCHITECTURE_GRAPH_STATES,
+  REPOSITORY_NODE_KIND,
+} from "./architecture-graph.js";
+import {
   DEPENDENCY_GRAPH_EDGE_TYPE_VALUES,
   DEPENDENCY_GRAPH_STATES,
   isSourceEstablished,
@@ -70,20 +76,32 @@ import {
   QUERY_DIRECTIONS,
   QUERY_DIRECTION_VALUES,
   QUERY_LIMITS,
+  createArchitectureBuildQueryResult,
+  createArchitectureEdgeQueryResult,
+  createArchitectureGraphResult,
+  createArchitectureNodeQueryResult,
+  createArchitecturePathResult,
   createDependencyEdgeQueryResult,
   createDependencyGraphResult,
   createDependencyPathResult,
   createDependencyTraversalResult,
   createEntityQueryResult,
   createEvidenceQueryResult,
+  createFrameworkUsageQueryResult,
   createRelationshipQueryResult,
   createTraversalResult,
+  validateArchitectureBuildQueryResult,
+  validateArchitectureEdgeQueryResult,
+  validateArchitectureGraphResult,
+  validateArchitectureNodeQueryResult,
+  validateArchitecturePathResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
   validateDependencyPathResult,
   validateDependencyTraversalResult,
   validateEntityQueryResult,
   validateEvidenceQueryResult,
+  validateFrameworkUsageQueryResult,
   validateRelationshipQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";
@@ -141,6 +159,17 @@ const GRAPH_TRAVERSAL_OPTION_KEYS = Object.freeze(["maxDepth", "maxResults"]);
 
 /** Criteria a dependency edge list accepts. */
 const DEPENDENCY_EDGE_FILTER_KEYS = Object.freeze(["from", "to", "type", "maxResults"]);
+
+/** Criteria an architecture edge list accepts. */
+const ARCHITECTURE_EDGE_FILTER_KEYS = Object.freeze(["from", "to", "type", "maxResults"]);
+
+/** Criteria a container-declaration list accepts. */
+const BUILD_DECLARATION_FILTER_KEYS = Object.freeze([
+  "source",
+  "dockerfile",
+  "service",
+  "maxResults",
+]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -523,6 +552,151 @@ export function createRepositoryQuery(model) {
       [...collected.values()].sort(compareGraphEdges),
       limited,
     );
+  };
+
+  // ── Architecture graph (Phase 15) ─────────────────────────────────────────
+  //
+  // Read from `model.architecture.graph` — a projection the builder already built
+  // and validated — and never recomputed here, so a query answer cannot disagree
+  // with the model. Adjacency is indexed once per handle (the model is frozen, so the
+  // index cannot go stale) and every index keeps the graph's own edge order, which is
+  // the deterministic `(from, to, type)` order.
+  const architectureGraph =
+    model.architecture?.graph ??
+    Object.freeze({
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      buildContexts: Object.freeze([]),
+      state: ARCHITECTURE_GRAPH_STATES.UNKNOWN,
+      established: false,
+      coverage: Object.freeze({
+        state: ARCHITECTURE_GRAPH_STATES.UNKNOWN,
+        established: false,
+        complete: false,
+        truncated: false,
+        nodes: 0,
+        edges: 0,
+        buildContexts: 0,
+        unestablishedSources: Object.freeze([]),
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const architectureNodeById = new Map(architectureGraph.nodes.map((node) => [node.id, node]));
+  const architectureOutgoing = new Map();
+  const architectureIncoming = new Map();
+  const containmentParentByChild = new Map();
+  const containmentChildrenByParent = new Map();
+
+  for (const edge of architectureGraph.edges) {
+    const out = architectureOutgoing.get(edge.from);
+    if (out === undefined) architectureOutgoing.set(edge.from, [edge]);
+    else out.push(edge);
+
+    const incoming = architectureIncoming.get(edge.to);
+    if (incoming === undefined) architectureIncoming.set(edge.to, [edge]);
+    else incoming.push(edge);
+
+    if (edge.type !== ARCHITECTURE_EDGE_TYPES.CONTAINS) continue;
+    if (!containmentParentByChild.has(edge.to)) containmentParentByChild.set(edge.to, edge.from);
+    const children = containmentChildrenByParent.get(edge.from);
+    if (children === undefined) containmentChildrenByParent.set(edge.from, [edge]);
+    else children.push(edge);
+  }
+
+  /** Containers that directly hold an observed manifest — the graph's components. */
+  const containersHoldingManifests = new Set();
+  for (const edge of architectureGraph.edges) {
+    if (edge.type === ARCHITECTURE_EDGE_TYPES.CONTAINS && architectureNodeById.get(edge.to)?.kind === "manifest") {
+      containersHoldingManifests.add(edge.from);
+    }
+  }
+
+  const repositoryNode =
+    architectureGraph.nodes.find((node) => node.kind === REPOSITORY_NODE_KIND) ?? null;
+  const repositoryNodeIdOf = () => repositoryNode?.id ?? null;
+  const containmentParentOf = (id) => containmentParentByChild.get(id) ?? null;
+
+  /** The scan's guarantee plus this graph's own truncation. */
+  const architectureCoverageState = () => ({
+    coverage:
+      model.scan.complete === true && model.scan.truncated !== true
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || architectureGraph.coverage.truncated === true,
+  });
+
+  const compareArchitectureNodes = (a, b) => {
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  };
+
+  const compareArchitectureEdges = (a, b) => {
+    if (a.from !== b.from) return a.from < b.from ? -1 : 1;
+    if (a.to !== b.to) return a.to < b.to ? -1 : 1;
+    return a.type < b.type ? -1 : a.type > b.type ? 1 : 0;
+  };
+
+  /** Neighbours of a node in either direction, in the graph's own edge order. */
+  const architectureStepsAt = (id) => {
+    const steps = [];
+    for (const edge of architectureOutgoing.get(id) ?? []) steps.push({ to: edge.to, edge });
+    for (const edge of architectureIncoming.get(id) ?? []) steps.push({ to: edge.from, edge });
+    return steps;
+  };
+
+  /**
+   * Bounded, cycle-safe descent through `contains` edges.
+   *
+   * The start node is excluded from `nodes`, a node is entered at most once, and both
+   * the frontier and the collected edges are bounded by `maxResults` — so a subtree
+   * walk terminates on any input, including a hand-built graph with a containment cycle.
+   */
+  const descendArchitecture = (id, maxDepth, maxResults) => {
+    const start = typeof id === "string" && architectureNodeById.has(id) ? id : null;
+    const visited = new Set(start === null ? [] : [start]);
+    const nodes = [];
+    const edges = [];
+    const seenEdges = new Set();
+    let limited = false;
+    let frontier = start === null ? [] : [{ id: start, depth: 0 }];
+
+    while (frontier.length > 0) {
+      const next = [];
+      for (const current of frontier) {
+        if (current.depth >= maxDepth) continue;
+        for (const edge of containmentChildrenByParent.get(current.id) ?? []) {
+          const summary = architectureNodeById.get(edge.to);
+          if (summary === undefined) continue;
+
+          if (!visited.has(edge.to)) {
+            visited.add(edge.to);
+            if (nodes.length >= maxResults) {
+              limited = true;
+            } else {
+              nodes.push({ ...summary, depth: current.depth + 1 });
+              next.push({ id: edge.to, depth: current.depth + 1 });
+            }
+          }
+
+          const key = `${edge.from}\u0000${edge.to}\u0000${edge.type}`;
+          if (seenEdges.has(key)) continue;
+          if (edges.length >= maxResults) {
+            limited = true;
+            continue;
+          }
+          seenEdges.add(key);
+          edges.push(edge);
+        }
+      }
+      frontier = next;
+    }
+
+    return {
+      nodes: [...nodes].sort(compareArchitectureNodes),
+      edges: [...edges].sort(compareArchitectureEdges),
+      limited,
+    };
   };
 
   const query = {
@@ -1173,6 +1347,386 @@ export function createRepositoryQuery(model) {
         true,
         limited,
       );
+    },
+
+    // ── Architecture questions (Phase 15) ───────────────────────────────────
+    /**
+     * The whole architecture graph the repository establishes.
+     *
+     * `nodes` are existing entity ids (plus the repository node) with their kind and
+     * path; `edges` are the architectural relationships the model already states,
+     * each with the observations that established it and the repository-relative
+     * paths whose observations stated it. Nothing is derived from topology here: an
+     * edge means exactly what its type says and nothing more.
+     *
+     * **What is deliberately not in this graph.** There is no import edge, no call
+     * edge and no "file A is tested by file B" edge — establishing those needs an
+     * AST, a symbol table or a runner's own report, and this architecture has none of
+     * them. The same applies to CI workflows: the model records that a workflow
+     * exists and for which provider, never what it references, so a workflow cannot be
+     * connected to a file without inventing the connection.
+     *
+     * `state`/`established` are the graph's own coverage answer, which is why this is
+     * not `edges: []`: an architecture the repository establishes — including one with
+     * no container wiring — and an architecture that was never established are
+     * different facts.
+     */
+    architectureGraph() {
+      const result = createArchitectureGraphResult({
+        nodes: frozenEntries([...architectureGraph.nodes]),
+        edges: frozenEntries([...architectureGraph.edges]),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        established: architectureGraph.established,
+      });
+      validateArchitectureGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What the architecture graph does and does not establish.
+     *
+     * The graph's four-way state, the Compose files whose build declarations could
+     * not be established, and the container build wiring the model observed in one
+     * frozen statement.
+     */
+    architectureCoverage() {
+      return Object.freeze({ ...architectureGraph.coverage });
+    },
+
+    /**
+     * Architecture edges matching a `{ from, to, type }` filter, sorted and bounded.
+     *
+     * `type` accepts only the graph's own edge vocabulary, so a caller cannot ask the
+     * architecture graph for an import or call edge and receive a containment edge
+     * instead. `limited` is true when `maxResults` cut the list short.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` / `invalid-relationship-type`.
+     */
+    architectureEdges(criteria = {}) {
+      requireKeys(criteria, ARCHITECTURE_EDGE_FILTER_KEYS, "architectureEdgeCriteria");
+      if ("type" in criteria && !ARCHITECTURE_EDGE_TYPE_VALUES.includes(criteria.type)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_RELATIONSHIP_TYPE, {
+          received: safeQueryToken(criteria.type),
+        });
+      }
+      for (const endpoint of ["from", "to"]) {
+        if (endpoint in criteria && typeof criteria[endpoint] !== "string") {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `architectureEdgeCriteria.${endpoint}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = architectureGraph.edges.filter((edge) => {
+        if ("from" in criteria && edge.from !== criteria.from) return false;
+        if ("to" in criteria && edge.to !== criteria.to) return false;
+        if ("type" in criteria && edge.type !== criteria.type) return false;
+        return true;
+      });
+
+      const result = createArchitectureEdgeQueryResult({
+        edges: frozenEntries(matching.slice(0, maxResults)),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateArchitectureEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The architecture nodes a container directly or transitively contains.
+     *
+     * Containment is the graph's `contains` tree: the repository node at the root,
+     * directories and the entities they hold beneath it. `maxDepth` is in hops (depth
+     * `1` is a direct child) and defaults to a single hop, so a caller who wants the
+     * *whole* subtree has to ask for a depth rather than accidentally receive one. The
+     * start node is not returned unless a cycle reaches it, and a node is entered at
+     * most once, so the walk terminates on any input.
+     *
+     * An unknown id is an ordinary miss (an empty result, not an error).
+     */
+    containedEntities(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      const walk = descendArchitecture(id, maxDepth, maxResults);
+      const result = createArchitectureNodeQueryResult({
+        nodes: frozenEntries(walk.nodes),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        limited: walk.limited,
+      });
+      validateArchitectureNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The architecture node that directly contains an entity, or `null`.
+     *
+     * For a root-level entity that is the repository node, which is why this returns a
+     * node record rather than a directory: the repository has no directory entity, and
+     * pretending otherwise would lose the difference between "at the root" and
+     * "unknown". A non-string id, a node the graph does not contain, or the
+     * repository node itself is `null`.
+     */
+    containerOf(id) {
+      if (typeof id !== "string") return null;
+      const parentId = containmentParentOf(id);
+      if (parentId === null) return null;
+      return architectureNodeById.get(parentId) ?? null;
+    },
+
+    /**
+     * A bounded path between two architecture nodes, following the graph's edges in
+     * either direction.
+     *
+     * Undirected on purpose: "how are these two related" is the architectural
+     * question, and a Compose file and the Dockerfile it builds are joined upward
+     * through `declares-build` as much as downward through `contains`. Breadth-first,
+     * so the path returned is a shortest one, and `found: false` with `limited: true`
+     * means the search stopped at a bound rather than proving the two are unconnected.
+     * `nodes` are in path order (each carrying its `depth`) and `edges` are the
+     * traversed edges in path order — deliberately not sorted, because a path's order
+     * is its meaning.
+     */
+    architecturePath(fromId, toId, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+
+      const pathResult = (nodes, edges, found, limited) => {
+        const result = createArchitecturePathResult({
+          nodes: frozenEntries(nodes),
+          edges: frozenEntries(edges),
+          found,
+          ...graphCoverageState(),
+          state: architectureGraph.state,
+          limited,
+        });
+        validateArchitecturePathResult(result);
+        return Object.freeze(result);
+      };
+
+      const startNode = typeof fromId === "string" ? architectureNodeById.get(fromId) : undefined;
+      const targetNode = typeof toId === "string" ? architectureNodeById.get(toId) : undefined;
+      if (startNode === undefined || targetNode === undefined) {
+        return pathResult([], [], false, false);
+      }
+      if (fromId === toId) {
+        // A node is trivially reachable from itself; reporting that as a path with
+        // edges would invent a relationship the repository never stated.
+        return pathResult([{ ...startNode, depth: 0 }], [], true, false);
+      }
+
+      const predecessor = new Map([[fromId, null]]);
+      let frontier = [fromId];
+      let found = false;
+      let limited = false;
+      let depth = 0;
+
+      while (frontier.length > 0 && !found && depth < maxDepth) {
+        const next = [];
+        for (const id of frontier) {
+          for (const step of architectureStepsAt(id)) {
+            if (predecessor.has(step.to)) continue;
+            if (predecessor.size >= maxResults) {
+              limited = true;
+              continue;
+            }
+            predecessor.set(step.to, { via: id, edge: step.edge, reversed: step.reversed });
+            if (step.to === toId) {
+              found = true;
+              break;
+            }
+            next.push(step.to);
+          }
+          if (found) break;
+        }
+        frontier = found ? [] : next;
+        depth += 1;
+      }
+
+      if (!found) return pathResult([], [], false, limited);
+
+      const nodeChain = [];
+      const edgeChain = [];
+      let cursor = toId;
+      while (typeof cursor === "string") {
+        nodeChain.push(cursor);
+        const step = predecessor.get(cursor);
+        if (step === undefined || step === null) break;
+        edgeChain.push(step.edge);
+        cursor = step.via;
+      }
+      nodeChain.reverse();
+      edgeChain.reverse();
+
+      return pathResult(
+        nodeChain.map((id, index) => ({ ...architectureNodeById.get(id), depth: index })),
+        edgeChain,
+        true,
+        limited,
+      );
+    },
+
+    /**
+     * The container build wiring the model observed: which Compose service builds
+     * which Dockerfile from which context root.
+     *
+     * Read from the graph's `buildContexts`, which is the declaration **in full** (a
+     * Compose file, a service, a Dockerfile and a context are four facts, not two
+     * binary edges) and the same fact the graph's `declares-build`/`build-context`
+     * edges project. `context` is `null` for the repository root, and `contextId` /
+     * `dockerfileId` are the graph nodes when they exist — `null` when the declaration
+     * names an artifact the graph has no node for, which is exactly the difference
+     * between "built from the root" and "context not established".
+     *
+     * A declaration is not an inference: the scanner read it from the Compose file and
+     * the model preserved it, and each record cites the observation that recorded it.
+     */
+    containerBuildDeclarations(criteria = {}) {
+      requireKeys(criteria, BUILD_DECLARATION_FILTER_KEYS, "buildDeclarationCriteria");
+      for (const field of ["source", "dockerfile", "service"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `buildDeclarationCriteria.${field}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = architectureGraph.buildContexts.filter((record) => {
+        if ("source" in criteria && record.source !== criteria.source) return false;
+        if ("dockerfile" in criteria && record.dockerfile !== criteria.dockerfile) return false;
+        if ("service" in criteria && record.service !== criteria.service) return false;
+        return true;
+      });
+
+      const declarations = matching.slice(0, maxResults).map((record) =>
+        Object.freeze({
+          source: record.source,
+          service: record.service,
+          dockerfile: record.dockerfile,
+          context: record.context,
+          dockerfileId: architectureNodeById.has(`file:${record.dockerfile}`)
+            ? `file:${record.dockerfile}`
+            : null,
+          contextId:
+            record.context === null
+              ? repositoryNodeIdOf()
+              : architectureNodeById.has(`directory:${record.context}`)
+                ? `directory:${record.context}`
+                : null,
+          evidenceIds: Object.freeze([record.evidenceId]),
+        }),
+      );
+
+      const result = createArchitectureBuildQueryResult({
+        declarations: frozenEntries(declarations),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateArchitectureBuildQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The test artifacts within a container, by containment.
+     *
+     * Deliberately **not** named `testsForEntity`: this answers "which test artifacts
+     * sit inside this container", which the observed paths establish, and not "which
+     * files these tests cover", which nothing in the model establishes. A caller that
+     * needs coverage has to acquire it in a phase that can read the code.
+     *
+     * `maxDepth` defaults to the traversal ceiling, unlike `containedEntities`: the
+     * question is *which tests are in here*, so the bounded whole subtree is the
+     * useful answer, and `limited` says when the bound cut it short.
+     */
+    testsWithin(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+      const walk = descendArchitecture(id, maxDepth, maxResults);
+      const tests = walk.nodes.filter((node) => node.kind === "test");
+      const result = createArchitectureNodeQueryResult({
+        nodes: frozenEntries(tests),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        // A truncated walk may have stopped before a test was reached, so the bound
+        // travels with the answer.
+        limited: walk.limited || tests.length > maxResults,
+      });
+      validateArchitectureNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Every framework the model observed, with the test artifacts that reported it.
+     *
+     * Each entry is a `framework` entity id and the ids of the `test` entities whose
+     * `framework` edge points at it, so "this framework is used" is traceable to the
+     * artifacts that said so rather than to a package name that happens to look like a
+     * framework.
+     */
+    frameworkUsage() {
+      const frameworks = [];
+      for (const node of architectureGraph.nodes) {
+        if (node.kind !== "framework") continue;
+        const tests = architectureGraph.edges
+          .filter((edge) => edge.type === ARCHITECTURE_EDGE_TYPES.FRAMEWORK && edge.to === node.id)
+          .map((edge) => edge.from)
+          .sort();
+        frameworks.push({ id: node.id, name: node.name, tests: Object.freeze(tests) });
+      }
+      frameworks.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+      const result = createFrameworkUsageQueryResult({
+        frameworks: frozenEntries(frameworks),
+        ...architectureCoverageState(),
+        state: architectureGraph.state,
+        limited: false,
+      });
+      validateFrameworkUsageQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The innermost observed component an entity belongs to, or `null`.
+     *
+     * A **component** is defined narrowly and observably: the innermost container at or
+     * above the entity that directly holds an observed manifest. Nothing about
+     * cohesion, ownership, layering or domain is implied — a directory holding a
+     * `package.json` is a component because a manifest was observed there, and a
+     * repository with no manifest at all has exactly one component: the repository.
+     *
+     * A dependency or framework node has no path, so it has no component and this is
+     * `null` (not the repository, which would claim it belongs somewhere).
+     */
+    componentOf(id) {
+      if (typeof id !== "string") return null;
+      const node = architectureNodeById.get(id);
+      if (node === undefined) return null;
+      if (node.kind === "dependency" || node.kind === "framework") return null;
+
+      const visited = new Set();
+      let current = node.id;
+      while (typeof current === "string" && !visited.has(current)) {
+        visited.add(current);
+        if (containersHoldingManifests.has(current)) {
+          return architectureNodeById.get(current) ?? null;
+        }
+        current = containmentParentOf(current);
+      }
+      return architectureNodeById.get(repositoryNodeIdOf()) ?? null;
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

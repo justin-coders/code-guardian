@@ -29,6 +29,7 @@
 
 import { ValidationError } from "../../core/index.js";
 
+import { ARCHITECTURE_GRAPH_STATE_VALUES } from "./architecture-graph.js";
 import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
@@ -124,6 +125,70 @@ export const DEPENDENCY_PATH_RESULT_FIELDS = Object.freeze([
   "nodes",
   "edges",
   "found",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * Fields a whole-architecture-graph result declares.
+ *
+ * Same two-coverage split as the dependency graph: `coverage`/`truncated` are the
+ * scan's guarantee (how much of the repository was inventoried), while
+ * `state`/`established` are the graph's own answer (was an architecture established
+ * at all, and how completely).
+ */
+export const ARCHITECTURE_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded architecture-node result declares. */
+export const ARCHITECTURE_NODE_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded architecture edge-list result declares. */
+export const ARCHITECTURE_EDGE_RESULT_FIELDS = Object.freeze([
+  "edges",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded architecture-path result declares. */
+export const ARCHITECTURE_PATH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "found",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded container-declaration result declares. */
+export const ARCHITECTURE_BUILD_RESULT_FIELDS = Object.freeze([
+  "declarations",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded framework-usage result declares. */
+export const FRAMEWORK_USAGE_RESULT_FIELDS = Object.freeze([
+  "frameworks",
   "coverage",
   "state",
   "truncated",
@@ -232,6 +297,75 @@ export function createDependencyPathResult(input = {}) {
   });
 }
 
+/** Build a whole-architecture-graph result draft. */
+export function createArchitectureGraphResult(input = {}) {
+  return createEnvelope(ARCHITECTURE_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded architecture-node result draft. */
+export function createArchitectureNodeQueryResult(input = {}) {
+  return createEnvelope(ARCHITECTURE_NODE_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded architecture edge-list result draft. */
+export function createArchitectureEdgeQueryResult(input = {}) {
+  return createEnvelope(ARCHITECTURE_EDGE_RESULT_FIELDS, {
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded architecture-path result draft. */
+export function createArchitecturePathResult(input = {}) {
+  return createEnvelope(ARCHITECTURE_PATH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    found: input.found === true,
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded container-declaration result draft. */
+export function createArchitectureBuildQueryResult(input = {}) {
+  return createEnvelope(ARCHITECTURE_BUILD_RESULT_FIELDS, {
+    declarations: input.declarations ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded framework-usage result draft. */
+export function createFrameworkUsageQueryResult(input = {}) {
+  return createEnvelope(FRAMEWORK_USAGE_RESULT_FIELDS, {
+    frameworks: input.frameworks ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
 function validateEnvelope(value, fields, arrayFields, contract) {
   const issues = [];
   const fail = (path, message) => issues.push(`${path}: ${message}`);
@@ -312,14 +446,19 @@ export function validateTraversalResult(value) {
  * boolean, so a consumer can branch on them without defensively guessing. The
  * graph-specific booleans are checked per contract below.
  */
-function validateGraphEnvelope(value, fields, arrayFields, contract, booleanFields) {
+function validateGraphEnvelope(
+  value,
+  fields,
+  arrayFields,
+  contract,
+  booleanFields,
+  stateValues = DEPENDENCY_GRAPH_STATE_VALUES,
+) {
   validateEnvelope(value, fields, arrayFields, contract);
 
   const issues = [];
-  if (!DEPENDENCY_GRAPH_STATE_VALUES.includes(value.state)) {
-    issues.push(
-      `${contract}.state: must be one of: ${DEPENDENCY_GRAPH_STATE_VALUES.join(", ")}`,
-    );
+  if (!stateValues.includes(value.state)) {
+    issues.push(`${contract}.state: must be one of: ${stateValues.join(", ")}`);
   }
   for (const field of booleanFields) {
     if (typeof value[field] !== "boolean") {
@@ -374,5 +513,77 @@ export function validateDependencyPathResult(value) {
     ["nodes", "edges"],
     "DependencyPathResult",
     ["found", "truncated", "limited"],
+  );
+}
+
+/** Validate a whole-architecture-graph result. */
+export function validateArchitectureGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    ARCHITECTURE_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ArchitectureGraphResult",
+    ["established", "truncated"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded architecture-node result. */
+export function validateArchitectureNodeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    ARCHITECTURE_NODE_RESULT_FIELDS,
+    ["nodes"],
+    "ArchitectureNodeQueryResult",
+    ["truncated", "limited"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded architecture edge-list result. */
+export function validateArchitectureEdgeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    ARCHITECTURE_EDGE_RESULT_FIELDS,
+    ["edges"],
+    "ArchitectureEdgeQueryResult",
+    ["truncated", "limited"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded architecture-path result. */
+export function validateArchitecturePathResult(value) {
+  return validateGraphEnvelope(
+    value,
+    ARCHITECTURE_PATH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ArchitecturePathResult",
+    ["found", "truncated", "limited"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded container-declaration result. */
+export function validateArchitectureBuildQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    ARCHITECTURE_BUILD_RESULT_FIELDS,
+    ["declarations"],
+    "ArchitectureBuildQueryResult",
+    ["truncated", "limited"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded framework-usage result. */
+export function validateFrameworkUsageQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    FRAMEWORK_USAGE_RESULT_FIELDS,
+    ["frameworks"],
+    "FrameworkUsageQueryResult",
+    ["truncated", "limited"],
+    ARCHITECTURE_GRAPH_STATE_VALUES,
   );
 }

@@ -33,6 +33,8 @@ import {
 import { createScanResult, scanRepository } from "../src/repository/scanner/index.js";
 
 import {
+  ARCHITECTURE_GRAPH_STATES,
+  ARCHITECTURE_GRAPH_STATE_VALUES,
   COVERAGE_CLASSES,
   COVERAGE_GUARANTEES,
   ENTITY_KINDS,
@@ -41,6 +43,7 @@ import {
   GRAPH_ENTITY_KINDS,
   MODEL_IMMUTABILITY,
   RELATIONSHIP_TYPES,
+  REPOSITORY_NODE_KIND,
   TEST_KINDS,
   buildRepositoryModel,
   coverageClass,
@@ -391,12 +394,35 @@ describe("model: construction", () => {
     assert.equal(RELATIONSHIP_TYPES.IMPORTS, undefined, "there is no import graph yet");
   });
 
-  it("keeps script and architecture intelligence deliberately empty", () => {
+  it("keeps script intelligence empty and projects the architecture graph", () => {
     const model = buildRepositoryModel(populatedScan());
-    // Phase 13 populates the dependency substrate; scripts and architecture remain
-    // the empty contracted skeleton, because neither has an acquisition path yet.
+    // Phase 13 populates the dependency substrate and Phase 15 the architecture
+    // graph; scripts remain the empty contracted skeleton, because no script
+    // inventory has an acquisition path yet.
     assert.deepEqual(model.scripts, {});
-    assert.deepEqual(model.architecture, {});
+    // Phase 15: the architecture area is populated with a *projection*, not a second
+    // model — every node is an entity id the model already contains (or the
+    // repository node), and every edge re-states a fact the model already holds.
+    assert.equal(model.architecture.detected, true);
+    assert.ok(
+      ARCHITECTURE_GRAPH_STATE_VALUES.includes(model.architecture.graph.state),
+      `undocumented architecture state "${model.architecture.graph.state}"`,
+    );
+    assert.equal(
+      model.architecture.graph.established,
+      model.architecture.graph.state === ARCHITECTURE_GRAPH_STATES.COMPLETE ||
+        model.architecture.graph.state === ARCHITECTURE_GRAPH_STATES.PARTIAL,
+    );
+    for (const node of model.architecture.graph.nodes) {
+      if (node.id === model.identity.repositoryId) {
+        assert.equal(node.kind, REPOSITORY_NODE_KIND);
+        continue;
+      }
+      assert.ok(
+        model.indexes.entitiesById[node.id] !== undefined,
+        `architecture node "${node.id}" is not an entity the model contains`,
+      );
+    }
     assert.equal(model.dependencies.detected, false);
     assert.deepEqual(model.dependencies.entries, []);
     assert.equal(

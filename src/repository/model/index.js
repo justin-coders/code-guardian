@@ -107,6 +107,24 @@ export {
   unestablishedSourceRecord,
 } from "./dependency-graph.js";
 
+// Phase 15 — the architecture graph: its closed vocabularies, its bounds, and the
+// projection the builder materializes into `model.architecture.graph`.
+export {
+  ARCHITECTURE_EDGE_TYPES,
+  ARCHITECTURE_EDGE_TYPE_VALUES,
+  ARCHITECTURE_GRAPH_LIMITS,
+  ARCHITECTURE_GRAPH_STATES,
+  ARCHITECTURE_GRAPH_STATE_VALUES,
+  ARCHITECTURE_GRAPH_VERSION,
+  ARCHITECTURE_NODE_KINDS,
+  REPOSITORY_NODE_KIND,
+  architectureGraphState,
+  buildArchitectureGraph,
+  collectArchitecturalEntities,
+  isArchitecturalEntity,
+  isEstablishedState,
+} from "./architecture-graph.js";
+
 export {
   COVERAGE_CLASSES,
   COVERAGE_GUARANTEES,
