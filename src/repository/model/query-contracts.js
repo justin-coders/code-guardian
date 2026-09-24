@@ -31,6 +31,7 @@ import { ValidationError } from "../../core/index.js";
 
 import { ARCHITECTURE_GRAPH_STATE_VALUES } from "./architecture-graph.js";
 import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
+import { IMPORT_GRAPH_STATE_VALUES } from "./import-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -189,6 +190,73 @@ export const ARCHITECTURE_BUILD_RESULT_FIELDS = Object.freeze([
 /** Fields a bounded framework-usage result declares. */
 export const FRAMEWORK_USAGE_RESULT_FIELDS = Object.freeze([
   "frameworks",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * Fields the import graph's results declare.
+ *
+ * Same two-coverage split as the other graph results, and the same reason for it:
+ * `coverage`/`truncated` are the scan's guarantee (how much of the repository was
+ * inventoried), while `state`/`established` are the import graph's own answer (was a
+ * graph established at all, and how completely). `state` carries the import graph's
+ * five values, so a caller can tell *the graph is complete*, *a bound was reached*
+ * and *nothing was established* apart without inferring them from counts.
+ */
+export const IMPORT_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded import traversal result declares. */
+export const IMPORT_TRAVERSAL_RESULT_FIELDS = Object.freeze([
+  ...IMPORT_GRAPH_RESULT_FIELDS,
+  "limited",
+]);
+
+export const IMPORT_NODE_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+export const IMPORT_EDGE_RESULT_FIELDS = Object.freeze([
+  "edges",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * Fields a bounded unresolved-reference result declares.
+ *
+ * `unresolved` is deliberately not named `edges`: these records are references the
+ * repository does *not* establish a target for, and a caller that received them as
+ * edges would be reading a non-fact as a fact.
+ */
+export const IMPORT_UNRESOLVED_RESULT_FIELDS = Object.freeze([
+  "unresolved",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded import-path result declares. */
+export const IMPORT_PATH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "found",
   "coverage",
   "state",
   "truncated",
@@ -359,6 +427,77 @@ export function createArchitectureBuildQueryResult(input = {}) {
 export function createFrameworkUsageQueryResult(input = {}) {
   return createEnvelope(FRAMEWORK_USAGE_RESULT_FIELDS, {
     frameworks: input.frameworks ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a whole-import-graph result draft. */
+export function createImportGraphResult(input = {}) {
+  return createEnvelope(IMPORT_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded import-traversal result draft. */
+export function createImportTraversalResult(input = {}) {
+  return createEnvelope(IMPORT_TRAVERSAL_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded import-node result draft. */
+export function createImportNodeQueryResult(input = {}) {
+  return createEnvelope(IMPORT_NODE_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded import edge-list result draft. */
+export function createImportEdgeQueryResult(input = {}) {
+  return createEnvelope(IMPORT_EDGE_RESULT_FIELDS, {
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded unresolved-reference result draft. */
+export function createImportUnresolvedQueryResult(input = {}) {
+  return createEnvelope(IMPORT_UNRESOLVED_RESULT_FIELDS, {
+    unresolved: input.unresolved ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded import-path result draft. */
+export function createImportPathResult(input = {}) {
+  return createEnvelope(IMPORT_PATH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    found: input.found === true,
     coverage: input.coverage,
     state: input.state,
     truncated: input.truncated === true,
@@ -585,5 +724,77 @@ export function validateFrameworkUsageQueryResult(value) {
     "FrameworkUsageQueryResult",
     ["truncated", "limited"],
     ARCHITECTURE_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a whole-import-graph result. */
+export function validateImportGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ImportGraphResult",
+    ["established", "truncated"],
+    IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded import-traversal result. */
+export function validateImportTraversalResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_TRAVERSAL_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ImportTraversalResult",
+    ["established", "truncated", "limited"],
+    IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded import-node result. */
+export function validateImportNodeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_NODE_RESULT_FIELDS,
+    ["nodes"],
+    "ImportNodeQueryResult",
+    ["truncated", "limited"],
+    IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded import edge-list result. */
+export function validateImportEdgeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_EDGE_RESULT_FIELDS,
+    ["edges"],
+    "ImportEdgeQueryResult",
+    ["truncated", "limited"],
+    IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded unresolved-reference result. */
+export function validateImportUnresolvedQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_UNRESOLVED_RESULT_FIELDS,
+    ["unresolved"],
+    "ImportUnresolvedQueryResult",
+    ["truncated", "limited"],
+    IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded import-path result. */
+export function validateImportPathResult(value) {
+  return validateGraphEnvelope(
+    value,
+    IMPORT_PATH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ImportPathResult",
+    ["found", "truncated", "limited"],
+    IMPORT_GRAPH_STATE_VALUES,
   );
 }

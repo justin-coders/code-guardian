@@ -41,7 +41,26 @@ import {
   DEPENDENCY_GRAPH_STATES,
   DEPENDENCY_GRAPH_STATE_VALUES,
 } from "./dependency-graph.js";
-import { DEPENDENCY_SCOPES, DEPENDENCY_SOURCE_STATUSES, DEPENDENCY_SPEC_KINDS } from "./entities.js";
+import {
+  DEPENDENCY_SCOPES,
+  DEPENDENCY_SOURCE_STATUSES,
+  DEPENDENCY_SPEC_KINDS,
+  IMPORT_MODULE_EXTENSIONS,
+  IMPORT_PROBLEM_REASONS,
+  IMPORT_SOURCE_REASONS,
+  IMPORT_SOURCE_STATUSES as IMPORT_SOURCE_STATUS_VALUES,
+  IMPORT_SPECIFIER_KINDS,
+  projectModuleSpecifier,
+} from "./entities.js";
+import {
+  IMPORT_GRAPH_EDGE_TYPE_VALUES,
+  IMPORT_GRAPH_LIMITS,
+  IMPORT_GRAPH_STATES,
+  IMPORT_GRAPH_STATE_VALUES,
+  INTERPRETED_LANGUAGE_IDS,
+  UNRESOLVED_REFERENCE_REASON_VALUES,
+  isEstablishedState as isImportGraphEstablished,
+} from "./import-graph.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -962,6 +981,504 @@ export function validateRepositoryModelGraph(model) {
             "architecture.graph.coverage.state",
             "cannot be complete while an architecture source is unestablished",
           );
+        }
+      }
+    }
+  }
+
+  // ── Import graph (Phase 16) ───────────────────────────────────────────────
+  //
+  // The graph's nodes must be files the model contains, its edges must join two of
+  // those nodes and cite the *importing* file's own observation, and an unresolved
+  // reference must be a reference that produced no edge. That last check is what
+  // keeps the two halves of the projection from contradicting each other: a
+  // specifier cannot be both "we established where this points" and "we could not
+  // establish where this points".
+  {
+    const importsArea = model.imports;
+    if (!isPlainObject(importsArea)) {
+      fail("imports", "must be a plain object");
+    } else {
+      const fileIds = new Set(model.files.entries.map((file) => file.id));
+      const evidenceById = new Map(
+        (Array.isArray(model.evidence) ? model.evidence : []).map((record) => [record?.id, record]),
+      );
+      const sourceByPath = new Map();
+      const entries = importsArea.entries;
+
+      if (typeof importsArea.detected !== "boolean") {
+        fail("imports.detected", "must be a boolean");
+      }
+      if (!Array.isArray(entries)) {
+        fail("imports.entries", "must be an array");
+      } else {
+        for (const source of entries) {
+          const at = `imports.entries[${source?.path}]`;
+          if (!isPlainObject(source)) {
+            fail("imports.entries", "every module source must be a plain object");
+            continue;
+          }
+          if (!fileIds.has(`${ENTITY_KINDS.FILE}:${source.path}`)) {
+            fail(at, "must name a file the model contains");
+            continue;
+          }
+          if (sourceByPath.has(source.path)) fail(at, "must describe each module source once");
+          sourceByPath.set(source.path, source);
+
+          if (!IMPORT_MODULE_EXTENSIONS.includes(source.extension)) {
+            fail(at, "must carry a module source extension");
+          }
+          if (!entityIds.has(source.languageId)) {
+            fail(at, "language must name a language the model contains");
+          }
+          if (!IMPORT_SOURCE_STATUS_VALUES.includes(source.status)) {
+            fail(at, `status must be one of: ${IMPORT_SOURCE_STATUS_VALUES.join(", ")}`);
+          }
+          if (source.reason !== null && !IMPORT_SOURCE_REASONS.includes(source.reason)) {
+            fail(at, `reason must be null or one of: ${IMPORT_SOURCE_REASONS.join(", ")}`);
+          }
+          if (source.status === "parsed" && source.reason !== null) {
+            fail(at, "a parsed module source must not carry an acquisition reason");
+          }
+          if (source.status !== "parsed" && source.reason === null) {
+            fail(at, "a module source that was not parsed must record why");
+          }
+          for (const problem of source.problems ?? []) {
+            if (!IMPORT_PROBLEM_REASONS.includes(problem)) {
+              fail(at, `unknown import problem "${String(problem)}"`);
+            }
+          }
+          if (!Array.isArray(source.references)) {
+            fail(at, "must carry a references array");
+          } else {
+            for (const reference of source.references) {
+              if (!isPlainObject(reference) || !IMPORT_SPECIFIER_KINDS.includes(reference.kind)) {
+                fail(at, "references must carry a documented module reference kind");
+                continue;
+              }
+              // Bounded, printable, non-empty text: the same projection the model
+              // applies at build time, enforced here as a contract so a tampered
+              // model cannot smuggle a control character or an unbounded string into
+              // a path candidate or a consumer's output.
+              if (projectModuleSpecifier(reference.specifier) === null) {
+                fail(at, "references must carry bounded, printable specifier text");
+              }
+            }
+            if (source.status !== "parsed" && source.references.length > 0) {
+              fail(at, "a module source that was not parsed states no reference");
+            }
+          }
+          if (!evidenceIds.has(source.evidenceId)) {
+            fail(at, "must cite the observation that recorded it");
+          }
+        }
+        for (let next = 1; next < entries.length; next += 1) {
+          if (entries[next - 1]?.path >= entries[next]?.path) {
+            fail(`imports.entries[${next}]`, "must be sorted by path and unique");
+            break;
+          }
+        }
+      }
+      if (importsArea.count !== (Array.isArray(entries) ? entries.length : 0)) {
+        fail("imports.count", "must count the module sources the area carries");
+      }
+
+      const graph = importsArea.graph;
+      if (!isPlainObject(graph)) {
+        fail("imports.graph", "must be a plain object");
+      } else {
+        const nodeIds = new Set();
+        if (!isNonEmptyString(graph.version)) {
+          fail("imports.graph.version", "must be a non-empty string");
+        }
+        if (!IMPORT_GRAPH_STATE_VALUES.includes(graph.state)) {
+          fail("imports.graph.state", `must be one of: ${IMPORT_GRAPH_STATE_VALUES.join(", ")}`);
+        }
+        if (typeof graph.established !== "boolean") {
+          fail("imports.graph.established", "must be a boolean");
+        } else if (graph.established !== isImportGraphEstablished(graph.state)) {
+          fail("imports.graph.established", "must agree with the state it reports");
+        }
+
+        if (!Array.isArray(graph.nodes)) {
+          fail("imports.graph.nodes", "must be an array");
+        } else if (graph.nodes.length > IMPORT_GRAPH_LIMITS.MAX_NODES) {
+          fail("imports.graph.nodes", "must stay within the graph node bound");
+        } else {
+          graph.nodes.forEach((node, index) => {
+            const at = `imports.graph.nodes[${index}]`;
+            if (!isPlainObject(node)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (typeof node.id !== "string" || !fileIds.has(node.id)) {
+              fail(at, "must name a file entity the model contains");
+              return;
+            }
+            if (nodeIds.has(node.id)) fail(at, `duplicate graph node "${node.id}"`);
+            nodeIds.add(node.id);
+            const file = entityById.get(node.id);
+            if (node.path !== file.path) fail(at, "path must agree with the file it names");
+            if (node.module !== IMPORT_MODULE_EXTENSIONS.includes(file.extension)) {
+              fail(at, "module must agree with the file's extension");
+            }
+            const expectedStatus = sourceByPath.get(node.path)?.status ?? null;
+            if (node.status !== expectedStatus) {
+              fail(at, "status must agree with the module source record it names");
+            }
+          });
+          for (let next = 1; next < graph.nodes.length; next += 1) {
+            const previous = graph.nodes[next - 1]?.id;
+            const current = graph.nodes[next]?.id;
+            if (typeof previous === "string" && typeof current === "string" && !(previous < current)) {
+              fail(`imports.graph.nodes[${next}]`, "nodes must be sorted by id and unique");
+            }
+          }
+          // Every module source the acquisition read is a node of this graph: a source
+          // that vanished from the node set would silently remove a file from the
+          // graph while its references stayed in the edge or unresolved list.
+          for (const source of sourceByPath.values()) {
+            if (!nodeIds.has(`${ENTITY_KINDS.FILE}:${source.path}`)) {
+              fail(`imports.graph.nodes`, `must contain the module source "${source.path}"`);
+              break;
+            }
+          }
+        }
+
+        const edgeKeys = new Set();
+        const statedSpecifiers = new Set();
+        if (!Array.isArray(graph.edges)) {
+          fail("imports.graph.edges", "must be an array");
+        } else if (graph.edges.length > IMPORT_GRAPH_LIMITS.MAX_EDGES) {
+          fail("imports.graph.edges", "must stay within the graph edge bound");
+        } else {
+          graph.edges.forEach((edge, index) => {
+            const at = `imports.graph.edges[${index}]`;
+            if (!isPlainObject(edge)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!IMPORT_GRAPH_EDGE_TYPE_VALUES.includes(edge.type)) {
+              fail(at, `type must be one of: ${IMPORT_GRAPH_EDGE_TYPE_VALUES.join(", ")}`);
+            }
+            for (const endpoint of ["from", "to"]) {
+              if (!nodeIds.has(edge[endpoint])) {
+                fail(at, `${endpoint} must name a graph node`);
+              }
+            }
+            const key = `${edge.from}\u0000${edge.type}\u0000${edge.to}`;
+            if (edgeKeys.has(key)) fail(at, "must not repeat an edge the graph already states");
+            edgeKeys.add(key);
+
+            if (!Array.isArray(edge.specifiers) || edge.specifiers.length === 0) {
+              fail(at, "must record the specifier(s) that established it");
+            } else {
+              for (const specifier of edge.specifiers) {
+                if (typeof specifier !== "string" || specifier === "") {
+                  fail(at, "specifiers must be non-empty text");
+                }
+                if (nodeIds.has(edge.from)) {
+                  statedSpecifiers.add(`${edge.from}\u0000${specifier}`);
+                }
+              }
+              for (let next = 1; next < edge.specifiers.length; next += 1) {
+                if (edge.specifiers[next - 1] >= edge.specifiers[next]) {
+                  fail(at, "specifiers must be sorted and unique");
+                  break;
+                }
+              }
+            }
+            if (!Array.isArray(edge.kinds) || edge.kinds.length === 0) {
+              fail(at, "must record how the reference was declared");
+            } else {
+              for (const kind of edge.kinds) {
+                if (!IMPORT_SPECIFIER_KINDS.includes(kind)) {
+                  fail(at, `unknown module reference kind "${String(kind)}"`);
+                }
+              }
+            }
+            if (!Array.isArray(edge.evidenceIds) || edge.evidenceIds.length === 0) {
+              fail(at, "must cite at least one observation");
+            } else {
+              const ownerPath = entityById.get(edge.from)?.path;
+              for (const id of edge.evidenceIds) {
+                if (!evidenceIds.has(id)) {
+                  fail(at, `references unknown observation "${String(id)}"`);
+                  continue;
+                }
+                // Provenance must be the *importing* file's own observation. Any
+                // other file's observation would attribute a reference to the wrong
+                // source — a finding that points at a file that never stated it.
+                if (evidenceById.get(id)?.location?.path !== ownerPath) {
+                  fail(at, "must cite the importing file's own observation");
+                }
+              }
+            }
+            // Provenance must be the importing file itself. An edge citing another
+            // file's observation would be provenance that does not exist.
+            if (!Array.isArray(edge.sourcePaths) || edge.sourcePaths.length === 0) {
+              fail(at, "must name the file whose observation stated it");
+            } else {
+              for (const path of edge.sourcePaths) {
+                if (path !== entityById.get(edge.from)?.path) {
+                  fail(at, "provenance must be the importing file");
+                }
+                if (!fileIds.has(`${ENTITY_KINDS.FILE}:${path}`)) {
+                  fail(at, "provenance must name a file the model contains");
+                }
+              }
+            }
+          });
+          for (let next = 1; next < graph.edges.length; next += 1) {
+            const previous = graph.edges[next - 1];
+            const current = graph.edges[next];
+            if (
+              isPlainObject(previous) &&
+              isPlainObject(current) &&
+              !(
+                previous.from < current.from ||
+                (previous.from === current.from &&
+                  (previous.to < current.to ||
+                    (previous.to === current.to && previous.type < current.type)))
+              )
+            ) {
+              fail(`imports.graph.edges[${next}]`, "edges must be sorted by (from, to, type)");
+            }
+          }
+        }
+
+        if (!Array.isArray(graph.unresolved)) {
+          fail("imports.graph.unresolved", "must be an array");
+        } else if (graph.unresolved.length > IMPORT_GRAPH_LIMITS.MAX_UNRESOLVED) {
+          fail("imports.graph.unresolved", "must stay within the unresolved bound");
+        } else {
+          graph.unresolved.forEach((record, index) => {
+            const at = `imports.graph.unresolved[${index}]`;
+            if (!isPlainObject(record)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!nodeIds.has(`${ENTITY_KINDS.FILE}:${record.path}`)) {
+              fail(at, "must name a graph node");
+            }
+            if (sourceByPath.get(record.path)?.status !== "parsed") {
+              fail(at, "must belong to a module source that was parsed");
+            }
+            if (typeof record.specifier !== "string" || record.specifier === "") {
+              fail(at, "must carry the specifier that was written");
+            }
+            if (!IMPORT_SPECIFIER_KINDS.includes(record.kind)) {
+              fail(at, "kind must be a documented module reference kind");
+            }
+            if (!UNRESOLVED_REFERENCE_REASON_VALUES.includes(record.reason)) {
+              fail(at, `reason must be one of: ${UNRESOLVED_REFERENCE_REASON_VALUES.join(", ")}`);
+            }
+            if (!evidenceIds.has(record.evidenceId)) {
+              fail(at, "must cite the observation that recorded it");
+            }
+            // A specifier cannot be both resolved and unresolved for one file.
+            if (statedSpecifiers.has(`${ENTITY_KINDS.FILE}:${record.path}\u0000${record.specifier}`)) {
+              fail(at, "must not state a reference the graph established as an edge");
+            }
+          });
+          for (let next = 1; next < graph.unresolved.length; next += 1) {
+            const previous = graph.unresolved[next - 1];
+            const current = graph.unresolved[next];
+            if (isPlainObject(previous) && isPlainObject(current)) {
+              const key = (record) => `${record.path}\u0000${record.specifier}\u0000${record.kind}`;
+              if (key(previous) > key(current)) {
+                fail(`imports.graph.unresolved[${next}]`, "must be sorted deterministically");
+              }
+            }
+          }
+        }
+
+        const graphCoverage = graph.coverage;
+        if (!isPlainObject(graphCoverage)) {
+          fail("imports.graph.coverage", "must be a plain object");
+        } else {
+          if (graphCoverage.state !== graph.state) {
+            fail("imports.graph.coverage.state", "must agree with the graph state");
+          }
+          if (graphCoverage.established !== graph.established) {
+            fail("imports.graph.coverage.established", "must agree with the graph state");
+          }
+          if (graphCoverage.nodes !== nodeIds.size) {
+            fail("imports.graph.coverage.nodes", "must count the nodes the graph contains");
+          }
+          if (graphCoverage.edges !== edgeKeys.size) {
+            fail("imports.graph.coverage.edges", "must count the edges the graph contains");
+          }
+          if (graphCoverage.sources !== (Array.isArray(entries) ? entries.length : 0)) {
+            fail("imports.graph.coverage.sources", "must count the module sources acquired");
+          }
+          if (graphCoverage.truncated !== (graph.state === IMPORT_GRAPH_STATES.TRUNCATED)) {
+            fail("imports.graph.coverage.truncated", "must agree with the graph state");
+          }
+          if (graphCoverage.complete !== (graph.state === IMPORT_GRAPH_STATES.COMPLETE)) {
+            fail("imports.graph.coverage.complete", "must agree with the graph state");
+          }
+          if (Array.isArray(graph.unresolved)) {
+            if (graphCoverage.unresolvedReported !== graph.unresolved.length) {
+              fail(
+                "imports.graph.coverage.unresolvedReported",
+                "must count the unresolved references the graph carries",
+              );
+            }
+            if (
+              graphCoverage.unresolvedTruncated !== true &&
+              graphCoverage.unresolved !== graph.unresolved.length
+            ) {
+              fail(
+                "imports.graph.coverage.unresolved",
+                "must count every unresolved reference when none were dropped",
+              );
+            }
+          }
+          if (Array.isArray(graph.edges)) {
+            if (graphCoverage.edgesTruncated !== true && graphCoverage.edges !== graph.edges.length) {
+              fail("imports.graph.coverage.edges", "must count every edge when none were dropped");
+            }
+          }
+          if (!Array.isArray(graphCoverage.unestablishedSources)) {
+            fail("imports.graph.coverage.unestablishedSources", "must be an array");
+          } else if (
+            graphCoverage.unestablishedSources.length >
+            IMPORT_GRAPH_LIMITS.MAX_UNESTABLISHED_SOURCES
+          ) {
+            fail("imports.graph.coverage.unestablishedSources", "must stay within the graph bound");
+          }
+          // The other half of the coverage statement: source files in languages this
+          // build does not read. The count is checked against the file entities the
+          // model contains, so a graph cannot claim to have read every source file
+          // while the inventory holds files no part of this phase reads.
+          const uninterpreted = graphCoverage.uninterpretedSources;
+          const uninterpretedObserved = [...entityById.values()].filter(
+            (entity) =>
+              entity?.kind === ENTITY_KINDS.FILE &&
+              typeof entity.languageId === "string" &&
+              !INTERPRETED_LANGUAGE_IDS.includes(entity.languageId),
+          ).length;
+          if (!Number.isInteger(uninterpreted) || uninterpreted < 0) {
+            fail(
+              "imports.graph.coverage.uninterpretedSources",
+              "must be a non-negative integer count of source files",
+            );
+          } else if (uninterpreted !== uninterpretedObserved) {
+            fail(
+              "imports.graph.coverage.uninterpretedSources",
+              "must count the source files in languages this build does not read",
+            );
+          }
+          if (!Array.isArray(graphCoverage.uninterpretedExtensions)) {
+            fail("imports.graph.coverage.uninterpretedExtensions", "must be an array");
+          } else if (
+            graphCoverage.uninterpretedExtensions.length >
+            IMPORT_GRAPH_LIMITS.MAX_UNINTERPRETED_EXTENSIONS
+          ) {
+            fail(
+              "imports.graph.coverage.uninterpretedExtensions",
+              "must stay within the graph bound",
+            );
+          } else if (
+            graphCoverage.uninterpretedExtensions.some(
+              (extension) => typeof extension !== "string" || !/^\.[a-z0-9]+$/.test(extension),
+            )
+          ) {
+            fail(
+              "imports.graph.coverage.uninterpretedExtensions",
+              "must be lower-case, dot-prefixed extensions",
+            );
+          }
+          // The state may not claim more than the sources support.
+          if (graph.state === IMPORT_GRAPH_STATES.COMPLETE) {
+            if (graphCoverage.truncated === true) {
+              fail("imports.graph.state", "cannot be complete and truncated at once");
+            }
+            if (graphCoverage.unestablishedSources.length > 0) {
+              fail(
+                "imports.graph.state",
+                "cannot be complete while a module source is unestablished",
+              );
+            }
+            for (const source of sourceByPath.values()) {
+              if (source.status !== "parsed" || (source.problems ?? []).length > 0) {
+                fail("imports.graph.state", "cannot be complete while a source has a problem");
+                break;
+              }
+            }
+          }
+          if (graph.state === IMPORT_GRAPH_STATES.UNSUPPORTED) {
+            // Two ways to establish nothing: every module source is a format this
+            // build does not parse, or there is no module source at all because every
+            // source file is in a language it does not read.
+            if (sourceByPath.size > 0) {
+              for (const source of sourceByPath.values()) {
+                if (source.status !== "unsupported") {
+                  fail(
+                    "imports.graph.state",
+                    "cannot be unsupported unless every module source is an unparsed format",
+                  );
+                  break;
+                }
+              }
+            } else if (!(uninterpreted > 0)) {
+              fail(
+                "imports.graph.state",
+                "cannot be unsupported without an unparsed format or an unread language",
+              );
+            }
+          }
+          if (
+            graph.state === IMPORT_GRAPH_STATES.COMPLETE &&
+            uninterpreted > 0 &&
+            (Array.isArray(entries) ? entries.length : 0) === 0
+          ) {
+            fail(
+              "imports.graph.state",
+              "cannot be complete when every source file is in a language this build does not read",
+            );
+          }
+        }
+      }
+
+      if (isPlainObject(importsArea.coverage) && isPlainObject(importsArea.graph?.coverage)) {
+        if (importsArea.coverage.unresolved !== importsArea.graph.coverage.unresolved) {
+          fail("imports.coverage.unresolved", "must agree with the graph it summarises");
+        }
+      }
+
+      // The two views of one fact must agree exactly: every graph edge is an
+      // `imports` relationship and every `imports` relationship is a graph edge. A
+      // projection that dropped an edge (or a relationship list that invented one)
+      // would make a generic graph query and an import query answer differently.
+      const relationshipEdges = new Set(
+        (model.relationships ?? [])
+          .filter((relationship) => relationship?.type === RELATIONSHIP_TYPES.IMPORTS)
+          .map(
+            (relationship) =>
+              `${relationship.from}\u0000${relationship.type}\u0000${relationship.to}`,
+          ),
+      );
+      const graphEdgeKeys = new Set(
+        (Array.isArray(importsArea.graph?.edges) ? importsArea.graph.edges : []).map(
+          (graphEdge) => `${graphEdge?.from}\u0000${graphEdge?.type}\u0000${graphEdge?.to}`,
+        ),
+      );
+      if (relationshipEdges.size !== graphEdgeKeys.size) {
+        fail(
+          "imports.graph.edges",
+          "must state exactly the `imports` relationships the model records",
+        );
+      } else {
+        for (const key of graphEdgeKeys) {
+          if (!relationshipEdges.has(key)) {
+            fail(
+              "imports.graph.edges",
+              "must state exactly the `imports` relationships the model records",
+            );
+            break;
+          }
         }
       }
     }

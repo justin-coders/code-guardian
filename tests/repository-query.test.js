@@ -396,7 +396,9 @@ describe("repository query: relationships", () => {
 
   it("rejects an unknown relationship type, direction or malformed filter", () => {
     const query = queryOf();
-    assert.throws(() => query.getRelationshipsForEntity("file:src/app.js", { type: "imports" }), RepositoryQueryError);
+    // `imports` became a documented relationship type in Phase 16, so the unknown
+    // type this test needs is one no phase declares.
+    assert.throws(() => query.getRelationshipsForEntity("file:src/app.js", { type: "calls" }), RepositoryQueryError);
     assert.throws(() => query.getRelationshipsForEntity("file:src/app.js", { direction: "sideways" }), RepositoryQueryError);
     assert.throws(() => query.listRelationships({ from: 42 }), RepositoryQueryError);
     assert.throws(() => query.listRelationships({ nope: true }), RepositoryQueryError);

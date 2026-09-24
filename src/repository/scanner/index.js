@@ -106,6 +106,29 @@ export {
 
 export { detectDependencies } from "./detectors/dependencies.js";
 
+// Phase 16 — import acquisition: the deterministic tokenizer/module scanner and its
+// closed vocabularies, plus the detector that applies it to the module sources in
+// the inventory.
+export {
+  IMPORT_ACQUISITION_LIMITS,
+  IMPORT_NON_STATIC_REASONS,
+  IMPORT_PROBLEM_REASONS,
+  IMPORT_SOURCE_REASONS,
+  IMPORT_SOURCE_STATUSES,
+  IMPORT_SPECIFIER_KINDS,
+  MODULE_FILE_EXTENSIONS,
+  PARSED_MODULE_EXTENSIONS,
+  UNSUPPORTED_MODULE_EXTENSIONS,
+  isModuleFileExtension,
+  isParsedModuleExtension,
+  isUsableSpecifier,
+  moduleLanguageOf,
+  parseModuleReferences,
+  tokenizeModule,
+} from "./policies/imports.js";
+
+export { detectImports } from "./detectors/imports.js";
+
 export {
   SCAN_OPTION_KEYS,
   TRUNCATION_REASONS,

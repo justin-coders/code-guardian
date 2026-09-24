@@ -7,8 +7,9 @@
  * language signals (a Python project may declare itself with `pyproject.toml`
  * before it has any `.py` file in scope).
  *
- * Every detector is a pure function of the view except the four that read file
- * content through the Phase 8A boundary (manifests, git, content and containers). None
+ * Every detector is a pure function of the view except the five that read file
+ * content through the Phase 8A boundary (manifests, git, content, containers and
+ * imports). None
  * of them spawn a process, touch the network, or write to the repository. `content`
  * and `containers` read files the scan did not have to read, so both budget
  * themselves and record what they could not interpret.
@@ -21,12 +22,14 @@ import { detectContent } from "./content.js";
 import { detectDependencies } from "./dependencies.js";
 import { detectDocumentation } from "./documentation.js";
 import { detectGit } from "./git.js";
+import { detectImports } from "./imports.js";
 import { detectLanguages } from "./languages.js";
 import { detectManifests } from "./manifests.js";
 import { detectTesting } from "./testing.js";
 
 export { detectCicd, detectConfiguration, detectContainers, detectContent, detectDependencies };
-export { detectDocumentation, detectGit, detectLanguages, detectManifests, detectTesting };
+export { detectDocumentation, detectGit, detectImports, detectLanguages, detectManifests };
+export { detectTesting };
 
 /**
  * Run all detectors.
@@ -50,5 +53,10 @@ export async function runDetectors(view) {
     git: await detectGit(view),
     content: await detectContent(view),
     containers: await detectContainers(view),
+    // Phase 16 — module acquisition. It reads the source files the inventory
+    // observed, so it can never read a file the walk did not see, and it resolves
+    // nothing: specifiers are recorded as written and the model decides what they
+    // point at.
+    imports: await detectImports(view),
   };
 }

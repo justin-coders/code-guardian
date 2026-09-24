@@ -42,6 +42,7 @@ import {
   GIT_HEAD_KINDS,
   GRAPH_ENTITY_KINDS,
   MODEL_IMMUTABILITY,
+  GRAPH_RELATIONSHIP_TYPES,
   RELATIONSHIP_TYPES,
   REPOSITORY_NODE_KIND,
   TEST_KINDS,
@@ -151,6 +152,54 @@ function candidate(path, extra = {}) {
  * exact entity and relationship sets of that fixture, and dependency intelligence is
  * exercised against a scan that actually carries it.
  */
+/**
+ * An import-acquisition section for the `populatedScan` inventory.
+ *
+ * Phase 16's subject is one record per module source, so this describes the two
+ * TypeScript files that fixture contains: one parsed with a reference, one that the
+ * acquisition could not read. Kept as a helper so the tests that exercise import
+ * projection do not have to spell out the section each time.
+ */
+function importsSection(overrides = {}) {
+  return {
+    inspected: true,
+    complete: false,
+    truncated: false,
+    files: [
+      {
+        path: "src/app.ts",
+        extension: ".ts",
+        language: "typescript",
+        status: "parsed",
+        reason: null,
+        detail: null,
+        bytesInspected: 120,
+        truncated: false,
+        nonStatic: 0,
+        nonStaticReasons: [],
+        problems: [],
+        references: [{ kind: "static-import", specifier: "./util" }],
+      },
+      {
+        path: "src/util.ts",
+        extension: ".ts",
+        language: "typescript",
+        status: "failed",
+        reason: "module-could-not-be-read",
+        detail: "permission-denied",
+        bytesInspected: 0,
+        truncated: false,
+        nonStatic: 0,
+        nonStaticReasons: [],
+        problems: [],
+        references: [],
+      },
+    ],
+    limits: { maxFiles: 2000, maxFileBytes: 262144, maxTotalBytes: 33554432 },
+    ...overrides,
+  };
+}
+
 function dependencyScan(overrides = {}) {
   return populatedScan({
     dependencies: {
@@ -391,7 +440,17 @@ describe("model: construction", () => {
       assert.ok(Object.values(TEST_KINDS).includes(test.testKind));
     }
     assert.ok(Object.values(GIT_HEAD_KINDS).includes(model.git.entity.head.kind));
-    assert.equal(RELATIONSHIP_TYPES.IMPORTS, undefined, "there is no import graph yet");
+    // Phase 16 retired this assertion's subject: `imports` used to be deliberately
+    // absent from the vocabulary, and it is now a documented relationship the model
+    // records. What the check is for — "no relationship leaves the closed
+    // vocabulary" — is asserted directly instead of through that absence.
+    assert.ok(GRAPH_RELATIONSHIP_TYPES.includes(RELATIONSHIP_TYPES.IMPORTS));
+    for (const relationship of model.relationships) {
+      assert.ok(
+        GRAPH_RELATIONSHIP_TYPES.includes(relationship.type),
+        `undocumented relationship type "${relationship.type}"`,
+      );
+    }
   });
 
   it("keeps script intelligence empty and projects the architecture graph", () => {
@@ -648,6 +707,7 @@ describe("model: evidence", () => {
     // dependency scan supplies the acquisition subject the same way.
     const model = buildRepositoryModel(
       dependencyScan({
+        imports: importsSection(),
         content: {
           inspected: true,
           complete: false,

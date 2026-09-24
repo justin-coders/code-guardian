@@ -39,6 +39,7 @@ import {
   createDependencyDeclarationObservation,
   createDependencyResolutionObservation,
   createDependencySourceObservation,
+  createImportSourceObservation,
   createInventoryObservation,
   createObservation,
   createSignalObservation,
@@ -1122,6 +1123,356 @@ function projectDependenciesSection(section, manifests, observedFilePaths, issue
 }
 
 /**
+ * Import vocabularies and bounds.
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like
+ * the dependency vocabularies above: the model must not depend on the scanner, and
+ * a test in `tests/import-graph.test.js` pins every one of these lists against the
+ * scanner's own, so a rename on either side fails the suite instead of silently
+ * retiring a value.
+ *
+ * What the model re-derives is the safety property, not the acquisition rules: a
+ * specifier is projected only when it is bounded, printable, non-empty text, because
+ * a specifier is about to become a path the resolver looks up and a string a
+ * consumer reads. Whether a bundler would resolve `./x?raw` is the acquisition
+ * layer's question; whether it may enter the model as a path candidate is this
+ * layer's.
+ */
+export const IMPORT_SOURCE_STATUSES = Object.freeze([
+  "parsed",
+  "unsupported",
+  "failed",
+  "not-inspected",
+]);
+
+export const IMPORT_SOURCE_REASONS = Object.freeze([
+  "format-not-interpreted",
+  "module-could-not-be-read",
+  "not-text",
+  "budget-exhausted",
+]);
+
+export const IMPORT_SPECIFIER_KINDS = Object.freeze([
+  "static-import",
+  "export-from",
+  "require",
+  "dynamic-import",
+]);
+
+export const IMPORT_PROBLEM_REASONS = Object.freeze([
+  "unterminated-import-declaration",
+  "unterminated-string",
+  "unterminated-template",
+  "unterminated-comment",
+  "unterminated-regex",
+  "unlexable-character",
+  "token-limit",
+  "reference-limit",
+  "non-static-specifier",
+]);
+
+/** Extensions that make a file a module source for the import graph. */
+export const IMPORT_MODULE_EXTENSIONS = Object.freeze([
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".mts",
+  ".cts",
+  ".jsx",
+  ".tsx",
+]);
+
+/** Maximum import source records a scan result may carry. */
+const MAX_IMPORT_SOURCES = 20000;
+
+/** Maximum module references one source record may carry. */
+const MAX_IMPORT_REFERENCES = 512;
+
+/** Longest specifier text the model will keep. */
+const MAX_SPECIFIER_LENGTH = 512;
+
+/**
+ * Project a module specifier that is about to become a resolvable path.
+ *
+ * Bounded, printable, non-empty text only. Unlike a dependency name, a specifier is
+ * not an identity — it is looked up against the observed inventory — so `./x` and
+ * `../x` are legitimate here, and it is the *resolver* that refuses a path leaving
+ * the repository. A control character or an over-long string is refused because it
+ * cannot be a path and must not reach a consumer or an error message.
+ *
+ * @param {unknown} value
+ * @returns {string|null} The specifier, or `null` when it cannot be kept.
+ */
+export function projectModuleSpecifier(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_SPECIFIER_LENGTH) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(value)) return null;
+  return value;
+}
+
+/**
+ * Project the scan's import acquisition into per-source import records.
+ *
+ * One record per module source, never per reference: the record is what makes the
+ * file's own coverage answerable (was it read, was it truncated, were there
+ * module-shaped expressions that could not be established), and its own observation
+ * is the provenance every import edge from that file cites.
+ *
+ * Four properties are load-bearing:
+ *
+ *   1. **A module source must be a file the inventory observed.** A record about an
+ *      unobserved path would let a malformed ScanResult invent an import edge into a
+ *      file that does not exist.
+ *   2. **A reference's kind and a problem's reason come from closed vocabularies,**
+ *      and a specifier must be bounded, printable text. Hostile text therefore
+ *      cannot enter the import graph at all.
+ *   3. **Resolution is not attempted here.** The record keeps the specifier as
+ *      written; what it points at is decided by `import-graph.js` against the file
+ *      entities, so this layer never guesses a target.
+ *   4. **Everything is bounded and fail-closed.** An incoherent section (an
+ *      unobserved path, an unknown status or kind, an unbounded problem, more
+ *      sources or references than a scan may state) fails the build rather than
+ *      producing a model whose import facts are quietly partial.
+ *
+ * @param {object|undefined} section The scan result's `imports` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {{sources: object[], coverage: object}}
+ */
+function projectImportsSection(section, observedFilePaths, issues, record) {
+  const empty = {
+    sources: [],
+    coverage: {
+      inspected: false,
+      complete: false,
+      truncated: false,
+      sources: 0,
+      references: 0,
+      unresolved: 0,
+      nonStatic: 0,
+    },
+  };
+
+  if (section === undefined || section === null) return empty;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.imports", "must be a plain object");
+    return empty;
+  }
+  if (!Array.isArray(section.files)) {
+    fail(issues, "scanResult.imports.files", "must be an array");
+    return empty;
+  }
+  if (section.files.length > MAX_IMPORT_SOURCES) {
+    fail(issues, "scanResult.imports.files", "carries more module sources than a scan can report");
+    return empty;
+  }
+
+  const sources = [];
+  let referenceCount = 0;
+  let nonStaticCount = 0;
+
+  for (const source of section.files) {
+    if (!isPlainObject(source)) {
+      fail(issues, "scanResult.imports.files[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(source.path, "scanResult.imports.files[].path");
+    if (!observedFilePaths.has(path)) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}]`,
+        "a module source must be a file the inventory observed",
+      );
+      continue;
+    }
+
+    const extension = identifier(source.extension);
+    if (extension === null || !IMPORT_MODULE_EXTENSIONS.includes(extension)) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].extension`,
+        "must be a module source extension this graph covers",
+      );
+      continue;
+    }
+    const language = identifier(source.language);
+    if (language === null) {
+      fail(issues, `scanResult.imports.files[${path}].language`, "must be a bounded language id");
+      continue;
+    }
+
+    const status = source.status;
+    if (!IMPORT_SOURCE_STATUSES.includes(status)) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].status`,
+        "must be a documented module source status",
+      );
+      continue;
+    }
+
+    const reason =
+      source.reason === null || source.reason === undefined
+        ? null
+        : identifier(source.reason);
+    if (reason !== null && !IMPORT_SOURCE_REASONS.includes(reason)) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].reason`,
+        "must be a documented acquisition reason",
+      );
+      continue;
+    }
+    // `parsed` and a reason are mutually exclusive, and every other status requires
+    // one: an unread module must never be indistinguishable from one that imports
+    // nothing.
+    if (status === "parsed" && reason !== null) {
+      fail(issues, `scanResult.imports.files[${path}].reason`, "must be null for a parsed source");
+      continue;
+    }
+    if (status !== "parsed" && reason === null) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].reason`,
+        "must record why the module source was not parsed",
+      );
+      continue;
+    }
+
+    const detail =
+      source.detail === null || source.detail === undefined ? null : identifier(source.detail);
+    if (source.detail !== null && source.detail !== undefined && detail === null) {
+      fail(issues, `scanResult.imports.files[${path}].detail`, "must be a bounded identifier");
+      continue;
+    }
+
+    const bytesInspected =
+      Number.isInteger(source.bytesInspected) && source.bytesInspected >= 0
+        ? source.bytesInspected
+        : 0;
+
+    const problems = [];
+    for (const problem of Array.isArray(source.problems) ? source.problems : []) {
+      const problemReason = identifier(problem);
+      if (problemReason === null || !IMPORT_PROBLEM_REASONS.includes(problemReason)) {
+        fail(
+          issues,
+          `scanResult.imports.files[${path}].problems`,
+          "must carry documented import problem reasons",
+        );
+        continue;
+      }
+      problems.push(problemReason);
+    }
+    problems.sort();
+
+    const references = [];
+    const rawReferences = Array.isArray(source.references) ? source.references : [];
+    if (rawReferences.length > MAX_IMPORT_REFERENCES) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].references`,
+        "carries more references than a module source may state",
+      );
+      continue;
+    }
+    for (const reference of rawReferences) {
+      if (!isPlainObject(reference)) {
+        fail(
+          issues,
+          `scanResult.imports.files[${path}].references[]`,
+          "must be a plain object",
+        );
+        continue;
+      }
+      if (!IMPORT_SPECIFIER_KINDS.includes(reference.kind)) {
+        fail(
+          issues,
+          `scanResult.imports.files[${path}].references[].kind`,
+          "must be a documented module reference kind",
+        );
+        continue;
+      }
+      const specifier = projectModuleSpecifier(reference.specifier);
+      if (specifier === null) {
+        fail(
+          issues,
+          `scanResult.imports.files[${path}].references[].specifier`,
+          "must be bounded, printable specifier text",
+        );
+        continue;
+      }
+      references.push({ kind: reference.kind, specifier });
+    }
+
+    if (status !== "parsed" && references.length > 0) {
+      fail(
+        issues,
+        `scanResult.imports.files[${path}].references`,
+        "a module source that was not parsed states no reference",
+      );
+      continue;
+    }
+
+    const nonStatic =
+      Number.isInteger(source.nonStatic) && source.nonStatic >= 0 ? source.nonStatic : 0;
+
+    const evidenceId = record(
+      createImportSourceObservation({
+        path,
+        language,
+        status,
+        reason,
+        detail,
+        references: references.length,
+        nonStatic,
+        problems,
+        truncated: source.truncated === true,
+      }),
+    );
+
+    referenceCount += references.length;
+    nonStaticCount += nonStatic;
+
+    sources.push({
+      path,
+      extension,
+      languageId: entityId(ENTITY_KINDS.LANGUAGE, language),
+      status,
+      reason,
+      detail,
+      bytesInspected,
+      // Whether the source was cut short by a byte or token budget, or never read
+      // because the file budget was spent. Kept on the record so a consumer can tell
+      // a file that states six thousand references apart because it had exactly that
+      // many from one whose six thousand is the cap.
+      truncated: source.truncated === true || status === "not-inspected",
+      nonStatic,
+      problems,
+      references,
+      evidenceId,
+    });
+  }
+
+  return {
+    sources: sources.sort(compareByKeys(["path"])),
+    coverage: {
+      inspected: section.inspected === true,
+      complete: section.complete === true,
+      truncated: section.truncated === true,
+      sources: sources.length,
+      references: referenceCount,
+      // Filled by the graph projection, which is where resolution happens; the
+      // section itself can only count what it acquired.
+      unresolved: 0,
+      nonStatic: nonStaticCount,
+    },
+  };
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -1500,6 +1851,19 @@ export function buildEntities(scanResult, repositoryIdValue) {
     record,
   );
 
+  // Phase 16 — module acquisition. Built after the files, because a module source
+  // *is* a file: a record about a path the inventory never observed fails the build
+  // rather than inventing an import edge into a file that does not exist. Resolution
+  // is deliberately not attempted here — the specifier is kept as written and the
+  // graph projection decides what it points at, against the file entities.
+
+  const importSection = projectImportsSection(
+    scanResult.imports,
+    observedFilePaths,
+    issues,
+    record,
+  );
+
   // ── Testing, frameworks, CI/CD, documentation, configuration ──────────────
 
   const tests = [];
@@ -1726,6 +2090,22 @@ export function buildEntities(scanResult, repositoryIdValue) {
       }
     }
   }
+  {
+    const languageIds = new Set(languages.map((language) => language.id));
+    for (const source of importSection.sources) {
+      if (!languageIds.has(source.languageId)) {
+        fail(
+          issues,
+          `scanResult.imports.files[${source.path}].language`,
+          "a module source's language was not observed",
+        );
+      }
+    }
+    const sourcePaths = new Set(importSection.sources.map((source) => source.path));
+    if (sourcePaths.size !== importSection.sources.length) {
+      fail(issues, "scanResult.imports.files", "must describe each module source once");
+    }
+  }
 
   // ── Provenance assignment ─────────────────────────────────────────────────
   //
@@ -1810,6 +2190,8 @@ export function buildEntities(scanResult, repositoryIdValue) {
     dependencySources: dependencySection.sources,
     dependencyEdges: dependencySection.edges,
     dependencyCoverage: dependencySection.coverage,
+    importSources: importSection.sources,
+    importCoverage: importSection.coverage,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

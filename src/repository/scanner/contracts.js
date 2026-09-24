@@ -54,6 +54,15 @@ import {
   DEPENDENCY_SOURCE_STATUSES,
   DEPENDENCY_SPEC_KIND_VALUES,
 } from "./policies/dependencies.js";
+import {
+  IMPORT_NON_STATIC_REASON_VALUES,
+  IMPORT_PROBLEM_REASON_VALUES,
+  IMPORT_SOURCE_REASON_VALUES,
+  IMPORT_SOURCE_STATUSES,
+  IMPORT_SOURCE_STATUS_VALUES,
+  IMPORT_SPECIFIER_KIND_VALUES,
+  isUsableSpecifier,
+} from "./policies/imports.js";
 
 /** Version of the scan result contract. */
 export const SCAN_RESULT_VERSION = "1";
@@ -112,6 +121,25 @@ export {
   DEPENDENCY_SOURCE_STATUSES,
   DEPENDENCY_SPEC_KINDS,
 } from "./policies/dependencies.js";
+
+/**
+ * Import acquisition vocabulary and bounds, re-exported for the same reason.
+ *
+ * The tokenizer, its closed vocabularies and its limits live in the acquisition
+ * policy; the contract re-exports them so a consumer validates against one source.
+ */
+export {
+  IMPORT_ACQUISITION_LIMITS,
+  IMPORT_NON_STATIC_REASONS,
+  IMPORT_PROBLEM_REASONS,
+  IMPORT_SOURCE_REASONS,
+  IMPORT_SOURCE_STATUSES,
+  IMPORT_SPECIFIER_KINDS,
+  MODULE_FILE_EXTENSIONS,
+  PARSED_MODULE_EXTENSIONS,
+  UNSUPPORTED_MODULE_EXTENSIONS,
+  moduleLanguageOf,
+} from "./policies/imports.js";
 
 /** Stable signal ids used across detectors. */
 export const SCAN_SIGNALS = Object.freeze({
@@ -226,6 +254,7 @@ export function createScanResult(overrides = {}) {
   const content = overrides.content ?? {};
   const containers = overrides.containers ?? {};
   const dependencies = overrides.dependencies ?? {};
+  const imports = overrides.imports ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -292,6 +321,16 @@ export function createScanResult(overrides = {}) {
       truncated: dependencies.truncated ?? false,
       manifests: dependencies.manifests ?? [],
       limits: dependencies.limits ?? {},
+    },
+    // Same three-state discipline for imports: a draft that declares nothing about
+    // module sources must not look like one whose sources were read and found to
+    // import nothing.
+    imports: {
+      inspected: imports.inspected ?? false,
+      complete: imports.complete ?? false,
+      truncated: imports.truncated ?? false,
+      files: imports.files ?? [],
+      limits: imports.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -757,8 +796,174 @@ function collectDependenciesIssues(section, ctx, path) {
   }
 }
 
-function collectDetectionIssues(section, ctx, path) {
+/**
+ * Validate the import acquisition section.
+ *
+ * A record is per module source, so a consumer can always tell which file a
+ * reference came from and which files could not be read. The invariants are the
+ * dependency section's, applied to a different question:
+ *
+ *   - `parsed` records carry no `reason`; every other status carries one, so an
+ *     unread module is never indistinguishable from one that imports nothing;
+ *   - every reference kind, status, reason and problem is drawn from a closed
+ *     vocabulary, so no free text (and therefore no hostile text) can travel
+ *     through this section;
+ *   - a specifier is bounded, non-empty, printable text;
+ *   - `complete` may only be `true` when every module source was parsed without
+ *     truncation or problems — the same "a bounded list is not a complete list"
+ *     rule the other sections enforce, and the reason a file whose references were
+ *     only partly established can never be reported as a complete parse.
+ */
+function collectImportsIssues(section, ctx, path) {
   if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") {
+      ctx.fail(`${path}.${field}`, "must be a boolean");
+    }
+  }
+  if (!isPlainObject(section.limits)) {
+    ctx.fail(`${path}.limits`, "must be a plain object");
+  }
+
+  if (!Array.isArray(section.files)) {
+    ctx.fail(`${path}.files`, "must be an array");
+    return;
+  }
+
+  section.files.forEach((record, index) => {
+    const at = `${path}.files[${index}]`;
+    if (!isPlainObject(record)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    for (const field of ["path", "extension", "language"]) {
+      if (!isNonEmptyString(record[field])) {
+        ctx.fail(`${at}.${field}`, "must be a non-empty string");
+      }
+    }
+    if (isNonEmptyString(record.path) && isAbsolutePath(record.path)) {
+      ctx.fail(`${at}.path`, "must be a repository-relative path");
+    }
+    if (!IMPORT_SOURCE_STATUS_VALUES.includes(record.status)) {
+      ctx.fail(`${at}.status`, `must be one of: ${IMPORT_SOURCE_STATUS_VALUES.join(", ")}`);
+    }
+    if (
+      record.reason !== null &&
+      record.reason !== undefined &&
+      !IMPORT_SOURCE_REASON_VALUES.includes(record.reason)
+    ) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${IMPORT_SOURCE_REASON_VALUES.join(", ")}`);
+    }
+    if (record.status === IMPORT_SOURCE_STATUSES.PARSED && record.reason != null) {
+      ctx.fail(`${at}.reason`, "must be null for a parsed module source");
+    }
+    if (record.status !== IMPORT_SOURCE_STATUSES.PARSED && record.reason == null) {
+      ctx.fail(`${at}.reason`, "must record why the module source was not parsed");
+    }
+    if (record.detail !== null && record.detail !== undefined && !isNonEmptyString(record.detail)) {
+      ctx.fail(`${at}.detail`, "must be a bounded identifier or null");
+    }
+    if (!isNonNegativeInteger(record.bytesInspected)) {
+      ctx.fail(`${at}.bytesInspected`, "must be a non-negative integer");
+    }
+    if (typeof record.truncated !== "boolean") {
+      ctx.fail(`${at}.truncated`, "must be a boolean");
+    }
+    if (!isNonNegativeInteger(record.nonStatic)) {
+      ctx.fail(`${at}.nonStatic`, "must be a non-negative integer");
+    }
+
+    if (!Array.isArray(record.nonStaticReasons)) {
+      ctx.fail(`${at}.nonStaticReasons`, "must be an array");
+    } else {
+      record.nonStaticReasons.forEach((reason, reasonIndex) => {
+        if (!IMPORT_NON_STATIC_REASON_VALUES.includes(reason)) {
+          ctx.fail(
+            `${at}.nonStaticReasons[${reasonIndex}]`,
+            `must be one of: ${IMPORT_NON_STATIC_REASON_VALUES.join(", ")}`,
+          );
+        }
+      });
+      for (let next = 1; next < record.nonStaticReasons.length; next += 1) {
+        if (record.nonStaticReasons[next - 1] >= record.nonStaticReasons[next]) {
+          ctx.fail(`${at}.nonStaticReasons`, "must be sorted and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.problems)) {
+      ctx.fail(`${at}.problems`, "must be an array");
+    } else {
+      record.problems.forEach((problem, problemIndex) => {
+        if (!IMPORT_PROBLEM_REASON_VALUES.includes(problem)) {
+          ctx.fail(
+            `${at}.problems[${problemIndex}]`,
+            `must be one of: ${IMPORT_PROBLEM_REASON_VALUES.join(", ")}`,
+          );
+        }
+      });
+      for (let next = 1; next < record.problems.length; next += 1) {
+        if (record.problems[next - 1] >= record.problems[next]) {
+          ctx.fail(`${at}.problems`, "must be sorted and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.references)) {
+      ctx.fail(`${at}.references`, "must be an array");
+    } else {
+      record.references.forEach((reference, referenceIndex) => {
+        const referenceAt = `${at}.references[${referenceIndex}]`;
+        if (!isPlainObject(reference)) {
+          ctx.fail(referenceAt, "must be a plain object");
+          return;
+        }
+        if (!IMPORT_SPECIFIER_KIND_VALUES.includes(reference.kind)) {
+          ctx.fail(`${referenceAt}.kind`, `must be one of: ${IMPORT_SPECIFIER_KIND_VALUES.join(", ")}`);
+        }
+        if (!isUsableSpecifier(reference.specifier)) {
+          ctx.fail(
+            `${referenceAt}.specifier`,
+            "must be bounded, printable, non-empty specifier text",
+          );
+        }
+      });
+      if (record.status !== IMPORT_SOURCE_STATUSES.PARSED && record.references.length > 0) {
+        ctx.fail(`${at}.references`, "must be empty for a module source that was not parsed");
+      }
+    }
+  });
+
+  assertSortedByPath(section.files, ctx, `${path}.files`);
+  for (let index = 1; index < section.files.length; index += 1) {
+    if (section.files[index - 1]?.path >= section.files[index]?.path) {
+      ctx.fail(`${path}.files[${index}].path`, "must be sorted by path and unique");
+      break;
+    }
+  }
+
+  const everySourceEstablished = section.files.every(
+    (record) =>
+      isPlainObject(record) &&
+      record.status === IMPORT_SOURCE_STATUSES.PARSED &&
+      record.truncated !== true &&
+      Array.isArray(record.problems) &&
+      record.problems.length === 0,
+  );
+  if (section.complete === true && !everySourceEstablished) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true unless every module source was parsed without truncation or problems",
+    );
+  }
+}
+
+function collectDetectionIssues(section, ctx, path) {  if (!isPlainObject(section)) {
     ctx.fail(path, "must be a plain object");
     return;
   }
@@ -853,6 +1058,7 @@ export function validateScanResult(value) {
   collectContentIssues(value.content, ctx, "scanResult.content");
   collectContainersIssues(value.containers, ctx, "scanResult.containers");
   collectDependenciesIssues(value.dependencies, ctx, "scanResult.dependencies");
+  collectImportsIssues(value.imports, ctx, "scanResult.imports");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

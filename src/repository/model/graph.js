@@ -15,10 +15,13 @@
  *
  * ### Deliberately absent relationships
  *
- * There is no import graph, no call graph, no dependency graph, no API graph and
- * no architecture graph. Those require parsing and resolution phases that have not
- * run; inventing them here would turn an inventory into a guess. The relationship
- * vocabulary below is closed for exactly that reason.
+ * There is no call graph and no API graph. Those require a symbol table and an
+ * execution model that no accepted phase provides; inventing them here would turn an
+ * inventory into a guess. The relationship vocabulary below is closed for exactly
+ * that reason, and every value in it is produced only from a fact an acquisition
+ * phase actually established — the Phase 16 `imports` edge included, which exists
+ * only because a supported source file stated a specifier that resolved to an
+ * observed file.
  */
 
 import { ENTITY_KINDS } from "./identity.js";
@@ -45,6 +48,14 @@ export const RELATIONSHIP_TYPES = Object.freeze({
   DEPENDS_ON: "depends-on",
   /** Dependency → the lockfile that resolved it (Phase 13). */
   RESOLVED_BY: "resolved-by",
+  /**
+   * File → a file it statically references (Phase 16).
+   *
+   * Means exactly one thing: the source file states a module specifier that the
+   * repository's own inventory establishes as that file. It is not a call, not an
+   * execution order, not a runtime dependency and not a symbol or type relation.
+   */
+  IMPORTS: "imports",
 });
 
 function compareRelationships(a, b) {
@@ -97,6 +108,7 @@ export function buildRelationships(collections, repositoryIdValue) {
     manifests,
     dependencies,
     dependencyEdges,
+    importEdges,
     tests,
     cicd,
     documentation,
@@ -161,6 +173,20 @@ export function buildRelationships(collections, repositoryIdValue) {
     relationships.push(
       edge(dependencyEdge.from, RELATIONSHIP_TYPES.DEPENDS_ON, dependencyEdge.to),
     );
+  }
+
+  // Phase 16 — `imports` relationships. The endpoints are file entities and the
+  // edges were resolved against the *observed* inventory by the import projection
+  // (never by a resolver that could invent a target), so this loop only re-states
+  // that projection in the model's canonical edge list: the graph keeps the
+  // provenance and the coverage, and this list is what every generic graph query
+  // (`relationshipsFrom`, `relationshipsTo`, `relationships()`) already understands.
+  // An endpoint that is not a file the model contains is skipped, exactly as the
+  // dependency loop above skips an endpoint that is not a dependency entity.
+  const fileIds = new Set(files.map((file) => file.id));
+  for (const importEdge of importEdges ?? []) {
+    if (!fileIds.has(importEdge.from) || !fileIds.has(importEdge.to)) continue;
+    relationships.push(edge(importEdge.from, RELATIONSHIP_TYPES.IMPORTS, importEdge.to));
   }
 
   return relationships.sort(compareRelationships);

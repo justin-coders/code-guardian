@@ -71,6 +71,11 @@ import {
   isSourceEstablished,
   unestablishedSourceRecord,
 } from "./dependency-graph.js";
+import {
+  IMPORT_GRAPH_EDGE_TYPE_VALUES,
+  IMPORT_GRAPH_STATES,
+  UNRESOLVED_REFERENCE_REASON_VALUES,
+} from "./import-graph.js";
 import { isRepositoryRelativePath } from "./paths.js";
 import {
   QUERY_DIRECTIONS,
@@ -88,6 +93,12 @@ import {
   createEntityQueryResult,
   createEvidenceQueryResult,
   createFrameworkUsageQueryResult,
+  createImportEdgeQueryResult,
+  createImportGraphResult,
+  createImportNodeQueryResult,
+  createImportPathResult,
+  createImportTraversalResult,
+  createImportUnresolvedQueryResult,
   createRelationshipQueryResult,
   createTraversalResult,
   validateArchitectureBuildQueryResult,
@@ -102,6 +113,12 @@ import {
   validateEntityQueryResult,
   validateEvidenceQueryResult,
   validateFrameworkUsageQueryResult,
+  validateImportEdgeQueryResult,
+  validateImportGraphResult,
+  validateImportNodeQueryResult,
+  validateImportPathResult,
+  validateImportTraversalResult,
+  validateImportUnresolvedQueryResult,
   validateRelationshipQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";
@@ -170,6 +187,15 @@ const BUILD_DECLARATION_FILTER_KEYS = Object.freeze([
   "service",
   "maxResults",
 ]);
+
+/** Criteria an import edge list accepts. */
+const IMPORT_EDGE_FILTER_KEYS = Object.freeze(["from", "to", "type", "maxResults"]);
+
+/** Criteria an unresolved-reference list accepts. */
+const IMPORT_UNRESOLVED_FILTER_KEYS = Object.freeze(["path", "reason", "maxResults"]);
+
+/** Options a topology candidate list accepts (the bound, and nothing else). */
+const IMPORT_CANDIDATE_OPTION_KEYS = Object.freeze(["maxResults"]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -695,6 +721,134 @@ export function createRepositoryQuery(model) {
     return {
       nodes: [...nodes].sort(compareArchitectureNodes),
       edges: [...edges].sort(compareArchitectureEdges),
+      limited,
+    };
+  };
+
+  // ── Import graph (Phase 16) ───────────────────────────────────────────────
+  //
+  // Read from `model.imports.graph` — a projection the builder already built and
+  // validated — and never recomputed here, so an answer cannot disagree with the
+  // model. Adjacency is indexed once per handle (the model is frozen, so the index
+  // cannot go stale) and both indexes keep the graph's own `(from, to, type)` order.
+  const importGraph =
+    model.imports?.graph ??
+    Object.freeze({
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      unresolved: Object.freeze([]),
+      state: IMPORT_GRAPH_STATES.UNKNOWN,
+      established: false,
+      coverage: Object.freeze({
+        state: IMPORT_GRAPH_STATES.UNKNOWN,
+        established: false,
+        complete: false,
+        truncated: false,
+        inspected: false,
+        nodes: 0,
+        edges: 0,
+        sources: 0,
+        moduleFiles: 0,
+        parsed: 0,
+        unsupported: 0,
+        failed: 0,
+        notInspected: 0,
+        references: 0,
+        resolved: 0,
+        unresolved: 0,
+        unresolvedReported: 0,
+        unresolvedByReason: Object.freeze({}),
+        nonStatic: 0,
+        unestablishedSources: Object.freeze([]),
+        edgesTruncated: false,
+        unresolvedTruncated: false,
+        specifiersTruncated: false,
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const importNodeById = new Map(importGraph.nodes.map((node) => [node.id, node]));
+  const importOutgoing = new Map();
+  const importIncoming = new Map();
+  for (const edge of importGraph.edges) {
+    const out = importOutgoing.get(edge.from);
+    if (out === undefined) importOutgoing.set(edge.from, [edge]);
+    else out.push(edge);
+
+    const incoming = importIncoming.get(edge.to);
+    if (incoming === undefined) importIncoming.set(edge.to, [edge]);
+    else incoming.push(edge);
+  }
+
+  /** The scan's guarantee plus the import graph's own truncation. */
+  const importCoverageState = () => ({
+    coverage:
+      model.scan.complete === true && model.scan.truncated !== true
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || importGraph.coverage.truncated === true,
+  });
+
+  const compareImportNodes = (a, b) => {
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  };
+
+  /**
+   * Bounded, cycle-safe traversal over `imports` edges in one direction.
+   *
+   * Only `imports` edges are traversed — the graph states no other relation, and a
+   * walk that invented one would answer a question the repository never asked. A
+   * node is entered at most once, both the frontier and the collected edges are
+   * bounded by `maxResults`, and the start node is excluded from `nodes` unless a
+   * cycle reaches it, so a cyclic import graph terminates on any input.
+   */
+  const traverseImports = (id, direction, maxDepth, maxResults) => {
+    const start = typeof id === "string" && importNodeById.has(id) ? id : null;
+    const visited = new Set(start === null ? [] : [start]);
+    const reached = [];
+    const collected = new Map();
+    let limited = false;
+    let frontier = start === null ? [] : [{ id: start, depth: 0 }];
+
+    while (frontier.length > 0) {
+      const next = [];
+      for (const node of frontier) {
+        if (node.depth >= maxDepth) continue;
+        const edges =
+          direction === QUERY_DIRECTIONS.IN
+            ? (importIncoming.get(node.id) ?? [])
+            : (importOutgoing.get(node.id) ?? []);
+        for (const edge of edges) {
+          const targetId = direction === QUERY_DIRECTIONS.IN ? edge.from : edge.to;
+          const summary = importNodeById.get(targetId);
+          if (summary === undefined) continue;
+
+          if (!visited.has(targetId)) {
+            visited.add(targetId);
+            if (reached.length >= maxResults) {
+              limited = true;
+            } else {
+              reached.push({ ...summary, depth: node.depth + 1 });
+              next.push({ id: targetId, depth: node.depth + 1 });
+            }
+          }
+
+          const key = edgeKey(edge);
+          if (collected.has(key)) continue;
+          if (collected.size >= maxResults) {
+            limited = true;
+            continue;
+          }
+          collected.set(key, edge);
+        }
+      }
+      frontier = next;
+    }
+
+    return {
+      nodes: [...reached].sort(compareImportNodes),
+      edges: [...collected.values()].sort(compareGraphEdges),
       limited,
     };
   };
@@ -1727,6 +1881,341 @@ export function createRepositoryQuery(model) {
         current = containmentParentOf(current);
       }
       return architectureNodeById.get(repositoryNodeIdOf()) ?? null;
+    },
+
+    // ── Import graph (Phase 16) ─────────────────────────────────────────────
+    /**
+     * The whole import graph: the module nodes and the established `imports` edges.
+     *
+     * `state` distinguishes an established-but-empty graph from one that was never
+     * established, so `edges: []` is never mistaken for an all-clear on its own.
+     */
+    importGraph() {
+      const result = createImportGraphResult({
+        nodes: frozenEntries([...importGraph.nodes]),
+        edges: frozenEntries([...importGraph.edges]),
+        ...importCoverageState(),
+        state: importGraph.state,
+        established: importGraph.established,
+      });
+      validateImportGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What the import graph does and does not establish.
+     *
+     * The five-way state, the per-reason count of unresolved references, the module
+     * sources whose references could not be fully established, and every bound that
+     * bit — one frozen statement a caller can branch on without reading the graph.
+     */
+    importCoverage() {
+      return Object.freeze({ ...importGraph.coverage });
+    },
+
+    /**
+     * Import edges matching a `{ from, to, type }` filter, sorted and bounded.
+     *
+     * `type` accepts only the graph's own edge vocabulary, so a caller cannot ask the
+     * import graph for a call or dependency edge and receive an import edge instead.
+     * `limited` is true when `maxResults` cut the list short.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` / `invalid-relationship-type`.
+     */
+    importEdges(criteria = {}) {
+      requireKeys(criteria, IMPORT_EDGE_FILTER_KEYS, "importEdgeCriteria");
+      if ("type" in criteria && !IMPORT_GRAPH_EDGE_TYPE_VALUES.includes(criteria.type)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_RELATIONSHIP_TYPE, {
+          received: safeQueryToken(criteria.type),
+        });
+      }
+      for (const endpoint of ["from", "to"]) {
+        if (endpoint in criteria && typeof criteria[endpoint] !== "string") {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `importEdgeCriteria.${endpoint}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = importGraph.edges.filter((edge) => {
+        if ("from" in criteria && edge.from !== criteria.from) return false;
+        if ("to" in criteria && edge.to !== criteria.to) return false;
+        if ("type" in criteria && edge.type !== criteria.type) return false;
+        return true;
+      });
+
+      const result = createImportEdgeQueryResult({
+        edges: frozenEntries(matching.slice(0, maxResults)),
+        ...importCoverageState(),
+        state: importGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateImportEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What a file imports: bounded descent through `imports` edges it states.
+     *
+     * `maxDepth` is in hops (depth `1` is a direct import) and defaults to a single
+     * hop, so a caller who wants the whole transitive closure has to ask for a depth
+     * rather than accidentally receive one. An unknown id is an ordinary miss (an
+     * empty result, not an error), and a cyclic graph terminates because a node is
+     * entered at most once.
+     */
+    importsOf(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      const walk = traverseImports(id, QUERY_DIRECTIONS.OUT, maxDepth, maxResults);
+      const result = createImportTraversalResult({
+        nodes: frozenEntries(walk.nodes),
+        edges: frozenEntries(walk.edges),
+        ...importCoverageState(),
+        state: importGraph.state,
+        established: importGraph.established,
+        limited: walk.limited,
+      });
+      validateImportTraversalResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What imports a file: bounded descent through `imports` edges that point at it.
+     *
+     * The reverse direction on purpose and never a second edge: an import edge is
+     * stated once, and `importedBy` reads it backward, so the two answers cannot
+     * disagree.
+     */
+    importedBy(id, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      const walk = traverseImports(id, QUERY_DIRECTIONS.IN, maxDepth, maxResults);
+      const result = createImportTraversalResult({
+        nodes: frozenEntries(walk.nodes),
+        edges: frozenEntries(walk.edges),
+        ...importCoverageState(),
+        state: importGraph.state,
+        established: importGraph.established,
+        limited: walk.limited,
+      });
+      validateImportTraversalResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * References that are not edges: the specifiers a file states whose target the
+     * repository does not establish.
+     *
+     * Kept in their own result rather than mixed into `importEdges`, because
+     * "this file said `./missing`" and "this file imports that one" are different
+     * facts and a caller that received them together would read a non-fact as a
+     * fact. Each record carries a closed `reason`, so *a bare package specifier* is
+     * distinguishable from *a path leaving the repository* from *a path the scan did
+     * not observe*.
+     */
+    unresolvedImports(criteria = {}) {
+      requireKeys(criteria, IMPORT_UNRESOLVED_FILTER_KEYS, "unresolvedImportCriteria");
+      if ("path" in criteria && !isNonEmptyQueryString(criteria.path)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "unresolvedImportCriteria.path",
+        });
+      }
+      if ("reason" in criteria && !UNRESOLVED_REFERENCE_REASON_VALUES.includes(criteria.reason)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "unresolvedImportCriteria.reason",
+        });
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = importGraph.unresolved.filter((record) => {
+        if ("path" in criteria && record.path !== criteria.path) return false;
+        if ("reason" in criteria && record.reason !== criteria.reason) return false;
+        return true;
+      });
+
+      const result = createImportUnresolvedQueryResult({
+        unresolved: frozenEntries(matching.slice(0, maxResults)),
+        ...importCoverageState(),
+        state: importGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateImportUnresolvedQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * A bounded path from one file to another, following `imports` edges forward.
+     *
+     * Directed on purpose: an import is a one-way static reference, and a path that
+     * walked edges backward would answer "these two files are in the same connected
+     * component", which is not the question. Breadth-first, so the path returned is
+     * a shortest one, and `found: false` with `limited: true` means the search
+     * stopped at a bound rather than proving the target unreachable. `nodes` are in
+     * path order (each carrying its `depth`) and `edges` are the traversed edges in
+     * path order — deliberately not sorted, because a path's order is its meaning.
+     */
+    importPath(fromId, toId, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(options, QUERY_LIMITS.MAX_DEPTH);
+
+      const pathResult = (nodes, edges, found, limited) => {
+        const result = createImportPathResult({
+          nodes: frozenEntries(nodes),
+          edges: frozenEntries(edges),
+          found,
+          ...importCoverageState(),
+          state: importGraph.state,
+          limited,
+        });
+        validateImportPathResult(result);
+        return Object.freeze(result);
+      };
+
+      const startNode = typeof fromId === "string" ? importNodeById.get(fromId) : undefined;
+      const targetNode = typeof toId === "string" ? importNodeById.get(toId) : undefined;
+      if (startNode === undefined || targetNode === undefined) {
+        return pathResult([], [], false, false);
+      }
+      if (fromId === toId) {
+        // A file is trivially reachable from itself; reporting that as a path with
+        // edges would invent a relationship the repository never stated (unless it
+        // literally imports itself, which is a one-edge path the search finds).
+        return pathResult([{ ...startNode, depth: 0 }], [], true, false);
+      }
+
+      const predecessor = new Map([[fromId, null]]);
+      let frontier = [fromId];
+      let found = false;
+      let limited = false;
+      let depth = 0;
+
+      while (frontier.length > 0 && !found && depth < maxDepth) {
+        const next = [];
+        for (const id of frontier) {
+          for (const edge of importOutgoing.get(id) ?? []) {
+            if (predecessor.has(edge.to)) continue;
+            if (predecessor.size >= maxResults) {
+              limited = true;
+              continue;
+            }
+            predecessor.set(edge.to, { via: id, edge });
+            if (edge.to === toId) {
+              found = true;
+              break;
+            }
+            next.push(edge.to);
+          }
+          if (found) break;
+        }
+        frontier = found ? [] : next;
+        depth += 1;
+      }
+
+      if (!found) return pathResult([], [], false, limited);
+
+      const nodeChain = [];
+      const edgeChain = [];
+      let cursor = toId;
+      while (typeof cursor === "string") {
+        nodeChain.push(cursor);
+        const step = predecessor.get(cursor);
+        if (step === undefined || step === null) break;
+        edgeChain.push(step.edge);
+        cursor = step.via;
+      }
+      nodeChain.reverse();
+      edgeChain.reverse();
+
+      return pathResult(
+        nodeChain.map((id, index) => ({ ...importNodeById.get(id), depth: index })),
+        edgeChain,
+        true,
+        limited,
+      );
+    },
+
+    /**
+     * Module files no established edge points at — *candidates*, not verdicts.
+     *
+     * An entry point in the ordinary sense (`src/index.js`, a CLI entry, a server
+     * bootstrap) is exactly a file nothing imports, so this is the same evidence; but
+     * the same evidence is produced by a file whose only importer was not analysed,
+     * and by one reached only through a dynamic or aliased reference. That is why the
+     * result carries the graph's `state`: over a `partial` or `truncated` graph this
+     * is a candidate list, and only over a `complete` one is it a statement about the
+     * repository. Nothing about reachability, liveness or dead code follows, and no
+     * traversal is performed — a node with no incoming edge would be a candidate even
+     * if it were imported dynamically.
+     */
+    entryPointCandidates(options = {}) {
+      requireKeys(options, IMPORT_CANDIDATE_OPTION_KEYS, "importCandidateOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const candidates = importGraph.nodes.filter(
+        (node) => node.module === true && !importIncoming.has(node.id),
+      );
+      const result = createImportNodeQueryResult({
+        nodes: frozenEntries(
+          candidates.slice(0, maxResults).map((node) => ({ ...node, depth: 0 })),
+        ),
+        ...importCoverageState(),
+        state: importGraph.state,
+        limited: candidates.length > maxResults,
+      });
+      validateImportNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Module files that neither import nor are imported — again **candidates**.
+     *
+     * The strictest topological statement this graph can make: no established edge
+     * touches the file in either direction. It is not a dead-code claim. A file can
+     * be an executable script, a dynamically loaded plugin, a build entry, or simply
+     * a file whose importer could not be parsed — and on a graph whose `state` is not
+     * `complete`, the last of those is the likeliest reading. Non-module nodes (a
+     * JSON file a `require` reached, for instance) are never reported here.
+     */
+    orphanModules(options = {}) {
+      requireKeys(options, IMPORT_CANDIDATE_OPTION_KEYS, "importCandidateOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const candidates = importGraph.nodes.filter(
+        (node) =>
+          node.module === true &&
+          !importIncoming.has(node.id) &&
+          !importOutgoing.has(node.id),
+      );
+      const result = createImportNodeQueryResult({
+        nodes: frozenEntries(
+          candidates.slice(0, maxResults).map((node) => ({ ...node, depth: 0 })),
+        ),
+        ...importCoverageState(),
+        state: importGraph.state,
+        limited: candidates.length > maxResults,
+      });
+      validateImportNodeQueryResult(result);
+      return Object.freeze(result);
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

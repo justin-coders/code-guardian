@@ -25,6 +25,12 @@
  * a deterministic projection of the dependency entities and `depends-on`
  * relationships, with per-edge provenance and an explicit coverage state, and it
  * imports nothing at all — no filesystem, no parser, no resolver, no clock.
+ *
+ * The Phase 16 import graph (`import-graph.js`) follows the same rule with one
+ * addition worth naming: it *does* resolve module specifiers, but only against the
+ * file paths the scan already observed. It reads no file, consults no package
+ * resolver, and refuses any path that leaves the repository root instead of asking
+ * the filesystem about it.
  */
 
 export {
@@ -58,6 +64,7 @@ export {
   EVIDENCE_SOURCE,
   EVIDENCE_SUBJECTS,
   EVIDENCE_TYPE_BY_SUBJECT,
+  IMPORT_SIGNALS,
   INVENTORY_KINDS,
   contentObservationKind,
   createBuildContextObservation,
@@ -66,6 +73,7 @@ export {
   createDependencyDeclarationObservation,
   createDependencyResolutionObservation,
   createDependencySourceObservation,
+  createImportSourceObservation,
   createInventoryObservation,
   createObservation,
   createSignalObservation,
@@ -78,13 +86,43 @@ export {
   DEPENDENCY_SOURCE_STATUSES,
   DEPENDENCY_SPEC_KINDS,
   GIT_HEAD_KINDS,
+  IMPORT_MODULE_EXTENSIONS,
+  IMPORT_PROBLEM_REASONS,
+  IMPORT_SOURCE_REASONS,
+  IMPORT_SOURCE_STATUSES,
+  IMPORT_SPECIFIER_KINDS,
   SYMLINK_TARGET_KINDS,
   SYMLINK_TARGET_REASONS,
   TEST_KINDS,
   projectDependencyName,
   projectGitHead,
+  projectModuleSpecifier,
   projectSymlinkTarget,
 } from "./entities.js";
+
+// Phase 16 — the import graph: its closed vocabularies, its resolution policy and
+// its bounds, plus the projection the builder materializes into
+// `model.imports.graph`.
+export {
+  IMPORT_GRAPH_EDGE_TYPES,
+  IMPORT_GRAPH_EDGE_TYPE_VALUES,
+  IMPORT_GRAPH_LIMITS,
+  IMPORT_GRAPH_STATES,
+  IMPORT_GRAPH_STATE_VALUES,
+  IMPORT_GRAPH_VERSION,
+  INDEX_BASENAME,
+  MODULE_EXTENSIONS,
+  RESOLUTION_EXTENSIONS,
+  UNRESOLVED_REFERENCE_REASONS,
+  UNRESOLVED_REFERENCE_REASON_VALUES,
+  buildImportGraph,
+  classifySpecifier,
+  importGraphState,
+  isEstablishedState as isImportGraphEstablishedState,
+  isSourceEstablished as isImportSourceEstablished,
+  joinRelativePath,
+  resolveModuleReference,
+} from "./import-graph.js";
 
 export {
   GRAPH_ENTITY_KINDS,
@@ -159,6 +197,13 @@ export {
   DEPENDENCY_TRAVERSAL_RESULT_FIELDS,
   ENTITY_QUERY_RESULT_FIELDS,
   EVIDENCE_QUERY_RESULT_FIELDS,
+  FRAMEWORK_USAGE_RESULT_FIELDS,
+  IMPORT_EDGE_RESULT_FIELDS,
+  IMPORT_GRAPH_RESULT_FIELDS,
+  IMPORT_NODE_RESULT_FIELDS,
+  IMPORT_PATH_RESULT_FIELDS,
+  IMPORT_TRAVERSAL_RESULT_FIELDS,
+  IMPORT_UNRESOLVED_RESULT_FIELDS,
   QUERY_DIRECTIONS,
   QUERY_DIRECTION_VALUES,
   QUERY_LIMITS,
@@ -170,6 +215,12 @@ export {
   createDependencyTraversalResult,
   createEntityQueryResult,
   createEvidenceQueryResult,
+  createImportEdgeQueryResult,
+  createImportGraphResult,
+  createImportNodeQueryResult,
+  createImportPathResult,
+  createImportTraversalResult,
+  createImportUnresolvedQueryResult,
   createRelationshipQueryResult,
   createTraversalResult,
   validateDependencyEdgeQueryResult,
@@ -178,6 +229,12 @@ export {
   validateDependencyTraversalResult,
   validateEntityQueryResult,
   validateEvidenceQueryResult,
+  validateImportEdgeQueryResult,
+  validateImportGraphResult,
+  validateImportNodeQueryResult,
+  validateImportPathResult,
+  validateImportTraversalResult,
+  validateImportUnresolvedQueryResult,
   validateRelationshipQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";

@@ -46,6 +46,7 @@ import {
 import { buildArchitectureGraph } from "./architecture-graph.js";
 import { buildEntities } from "./entities.js";
 import { buildDependencyGraph } from "./dependency-graph.js";
+import { buildImportGraph, isInterpretedLanguage } from "./import-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
@@ -149,7 +150,40 @@ export function buildRepositoryModel(scanResult) {
     sources: collections.dependencySources,
   });
 
-  const relationships = buildRelationships(collections, repositoryIdValue);
+  // Phase 16 — the import graph, built before the relationship list because its
+  // edges are the one new relationship type this phase adds. Resolution happens
+  // here, against the *observed* inventory only: never the filesystem, never a
+  // package resolver, never a configured alias. Each edge states one file-to-file
+  // reference with the observation behind it, references that resolve to nothing are
+  // kept apart from the edges, and a five-way coverage state says how complete the
+  // answer is. It parses nothing and runs nothing.
+  //
+  // The second half of that statement: the source files this graph does not read at
+  // all. Their languages were already observed by the scan, so the projection needs
+  // no language table of its own — a file whose `languageId` is neither JavaScript nor
+  // TypeScript is read by nothing in this phase, and a repository made only of such
+  // files is `unsupported` rather than a complete, empty import graph.
+  const uninterpretedFiles = collections.files.filter(
+    (file) => typeof file.languageId === "string" && !isInterpretedLanguage(file.languageId),
+  );
+
+  const importGraph = buildImportGraph({
+    files: collections.files,
+    sources: collections.importSources,
+    coverage: {
+      scanComplete: scan.scan.complete === true,
+      scanTruncated: scan.scan.truncated === true,
+    },
+    uninterpreted: {
+      sources: uninterpretedFiles.length,
+      extensions: uninterpretedFiles.map((file) => file.extension),
+    },
+  });
+
+  const relationships = buildRelationships(
+    { ...collections, importEdges: importGraph.edges },
+    repositoryIdValue,
+  );
   const indexes = buildIndexes(collections, relationships, collections.evidence);
 
   const coverage = buildCoverage(scan, scan.statistics.truncatedBy);
@@ -237,6 +271,28 @@ export function buildRepositoryModel(scanResult) {
       // "the scan observed something" statement `dependencies.detected` makes.
       detected: architectureGraph.nodes.length > 1,
       graph: architectureGraph,
+    },
+    // Phase 16 — the import substrate. `entries` is one record per module source
+    // (what the file was, why it could not be parsed, how many references were
+    // established and how many module-shaped expressions could not be), and `graph`
+    // is the resolved projection over the observed file entities: nodes, `imports`
+    // edges with provenance, the references that are not edges, and the coverage
+    // state. No reachability, coupling or dead-code judgment is attached, and none
+    // can be: the model records what the repository establishes.
+    imports: {
+      ...skeleton.imports,
+      // Whether any module source was observed — the same "the scan saw something to
+      // interpret" statement `dependencies.detected` makes.
+      detected: collections.importSources.length > 0,
+      entries: collections.importSources,
+      count: collections.importSources.length,
+      coverage: {
+        ...collections.importCoverage,
+        // Resolution is the graph's answer, so its total lives with the graph; the
+        // summary repeats it here so the two views of one fact cannot disagree.
+        unresolved: importGraph.coverage.unresolved,
+      },
+      graph: importGraph,
     },
     configuration: {
       detected: scan.configuration.detected,

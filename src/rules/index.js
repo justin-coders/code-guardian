@@ -142,6 +142,37 @@ export {
   createArchitectureRuleRegistry,
 } from "./architecture/index.js";
 
+// Phase 16 — the import rule pack. The minimum integration that proves the Phase 16
+// import graph is consumable through the accepted Rule Engine: one informational
+// inventory rule, its own registry and analyzer adapter. Purely additive — the Rule
+// Engine is unchanged, the other packs are untouched, and all four are consumers of
+// the same generic framework.
+export {
+  IMPORT_ANALYZER_ID,
+  IMPORT_ANALYZER_NAME,
+  IMPORT_ANALYZER_SCOPE,
+  IMPORT_BASIS,
+  IMPORT_CATEGORY,
+  IMPORT_CONFIDENCE,
+  IMPORT_DESCRIBED_UNRESOLVED_REASONS,
+  IMPORT_RULE_ID_PREFIX,
+  IMPORT_RULE_IDS,
+  IMPORT_RULE_PACK_VERSION,
+  IMPORT_RULE_VERSION,
+  KIND_WORDING,
+  MAX_IMPORT_FINDINGS,
+  UNRESOLVED_REASON_WORDING,
+  createImportAnalyzer,
+  createImportRuleRegistry,
+  importCoverage,
+  importInventoryRules,
+  importRelationships,
+  importRuleSetIssues,
+  importRules,
+  importUnresolved,
+  importsAbsence,
+} from "./imports/index.js";
+
 // Phase 13/14 — the dependency rule pack. The minimum integration that proves
 // dependency intelligence is consumable through the accepted Rule Engine: two
 // inventory rules (declarations and the Phase 14 dependency graph), their own registry

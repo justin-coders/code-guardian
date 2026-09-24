@@ -44,6 +44,7 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   GIT: "git",
   CONTENT: "content",
   DEPENDENCY: "dependency",
+  IMPORT: "import",
 });
 
 /**
@@ -69,6 +70,10 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // Core has a `dependency` evidence type (Phase 7), so a dependency observation
   // needs no borrowed vocabulary.
   [EVIDENCE_SUBJECTS.DEPENDENCY]: "dependency",
+  // Core has a `graph` evidence type (Phase 7), which is exactly what a module
+  // reference is: a connection the repository establishes between two files. Using
+  // it keeps the Phase 7 vocabulary closed rather than inventing an "import" type.
+  [EVIDENCE_SUBJECTS.IMPORT]: "graph",
 });
 
 /**
@@ -262,11 +267,71 @@ export function createDependencyResolutionObservation({ path, ecosystem, resolve
   });
 }
 
+/**
+ * Signals recorded on import observations.
+ *
+ * One record per module source, deliberately: the model's per-file record already
+ * carries the references, their resolution and the problems, and duplicating every
+ * specifier into the evidence list would multiply the model's size without adding a
+ * fact. The record states what the file was as a module source (status, language,
+ * why it could not be parsed, how many references were established and how many
+ * module-shaped expressions could not be) and is the provenance every edge from
+ * that file cites.
+ */
+export const IMPORT_SIGNALS = Object.freeze({
+  SOURCE: "import-source",
+});
+
 export function contentObservationKind(record) {
   const signal = record?.data?.signal;
   if (signal === CONTENT_SIGNALS.INSPECTION) return CONTENT_SIGNALS.INSPECTION;
   if (signal === CONTENT_SIGNALS.PATTERN) return CONTENT_SIGNALS.PATTERN;
   return null;
+}
+
+/**
+ * Build the observation for one module source's import declaration scan.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.language Module language id (`javascript` / `typescript`).
+ * @param {string} input.status Parsed / unsupported / failed / not-inspected.
+ * @param {string|null} input.reason Bounded reason when not parsed.
+ * @param {string|null} input.detail Bounded detail token (a failure kind, an extension).
+ * @param {number} input.references References established from this file.
+ * @param {number} input.nonStatic Module-shaped expressions that could not be established.
+ * @param {string[]} input.problems Bounded problem reason ids.
+ * @param {boolean} input.truncated Whether a byte or token budget cut the file short.
+ * @returns {object} A Core Evidence object.
+ */
+export function createImportSourceObservation({
+  path,
+  language,
+  status,
+  reason,
+  detail,
+  references,
+  nonStatic,
+  problems,
+  truncated,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.IMPORT,
+    key: `${IMPORT_SIGNALS.SOURCE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.IMPORT],
+    path,
+    data: {
+      signal: IMPORT_SIGNALS.SOURCE,
+      language,
+      status,
+      reason,
+      detail,
+      references,
+      nonStatic,
+      problems: [...problems],
+      truncated,
+    },
+  });
 }
 
 /** Producer recorded on every observation. */

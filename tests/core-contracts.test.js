@@ -122,6 +122,9 @@ function validRepository(overrides = {}) {
     tests: {},
     ci: {},
     architecture: {},
+    // Phase 16 added the required `imports` area; this literal spells out every
+    // required area, so it carries it too.
+    imports: {},
     scan: {
       complete: true,
       truncated: false,
