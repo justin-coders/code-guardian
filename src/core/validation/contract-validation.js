@@ -205,6 +205,7 @@ function collectRepositoryModelIssues(value, ctx, path = "repositoryModel") {
     "ci",
     "architecture",
     "imports",
+    "symbols",
     "metadata",
   ]) {
     if (field in value && !isPlainObject(value[field])) {

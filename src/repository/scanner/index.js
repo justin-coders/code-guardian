@@ -129,6 +129,29 @@ export {
 
 export { detectImports } from "./detectors/imports.js";
 
+// Phase 17 — semantic acquisition: the structural scanner that records module-scope
+// declarations, import bindings, exports, reference counts and call sites, with its
+// closed vocabularies and bounds, plus the detector that applies it.
+export {
+  SEMANTIC_ACQUISITION_LIMITS,
+  SEMANTIC_LEXICAL_PROBLEMS,
+  SEMANTIC_MODULE_EXTENSIONS,
+  SEMANTIC_PARSED_EXTENSIONS,
+  SEMANTIC_PROBLEMS,
+  SEMANTIC_SOURCE_REASONS,
+  SEMANTIC_SOURCE_STATUSES,
+  SEMANTIC_UNSUPPORTED_EXTENSIONS,
+  SYMBOL_BINDING_KINDS,
+  SYMBOL_EXPORT_FORMS,
+  SYMBOL_KINDS,
+  SYMBOL_OCCURRENCE_FORMS,
+  isSemanticModuleExtension,
+  isUsableSymbolName,
+  scanModuleSemantics,
+} from "./policies/semantics.js";
+
+export { detectSemantics } from "./detectors/semantics.js";
+
 export {
   SCAN_OPTION_KEYS,
   TRUNCATION_REASONS,

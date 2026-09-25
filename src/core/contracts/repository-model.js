@@ -42,6 +42,12 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // consumer must be able to tell "this repository establishes no import" from "this
   // model says nothing about imports at all".
   "imports",
+  // Phase 17 — the semantic substrate: which names each module declares at its top
+  // level, what it exports, what its references and calls establish, and what an
+  // import binding points at. A required area like every other one (the factory
+  // always emits it, empty by default) because a consumer must be able to tell "this
+  // repository establishes no symbol" from "this model says nothing about symbols".
+  "symbols",
   "scan",
   "metadata",
 ]);
@@ -85,9 +91,9 @@ export const REPOSITORY_MODEL_JUDGMENT_AREAS = Object.freeze([
  * `createRepositoryModel` always emits them (empty by default) so the shape is
  * stable, and the validator only inspects them when they are present.
  *
- * Note that `architecture` and `imports` are *required* areas even though they were
- * populated by later phases: the distinction is not "early" versus "late" but
- * "any scanner can produce it" versus "only a model builder does".
+ * Note that `architecture`, `imports` and `symbols` are *required* areas even though
+ * they were populated by later phases: the distinction is not "early" versus "late"
+ * but "any scanner can produce it" versus "only a model builder does".
  *
  *   documentation  the documentation artifacts the scan observed.
  *   relationships  `{ from, type, to }` deterministic entity connections.
@@ -137,6 +143,7 @@ export function createRepositoryModel(overrides = {}) {
     ci: overrides.ci ?? {},
     architecture: overrides.architecture ?? {},
     imports: overrides.imports ?? {},
+    symbols: overrides.symbols ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

@@ -32,6 +32,11 @@ import { ValidationError } from "../../core/index.js";
 import { ARCHITECTURE_GRAPH_STATE_VALUES } from "./architecture-graph.js";
 import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
 import { IMPORT_GRAPH_STATE_VALUES } from "./import-graph.js";
+import {
+  SYMBOL_GRAPH_STATE_VALUES,
+  SYMBOL_UNRESOLVED_KINDS,
+  SYMBOL_UNRESOLVED_REASON_VALUES,
+} from "./symbol-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -251,6 +256,90 @@ export const IMPORT_UNRESOLVED_RESULT_FIELDS = Object.freeze([
   "truncated",
   "limited",
 ]);
+
+/** Fields a whole-symbol-graph result declares. */
+export const SYMBOL_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded symbol traversal declares. */
+export const SYMBOL_TRAVERSAL_RESULT_FIELDS = Object.freeze([
+  ...SYMBOL_GRAPH_RESULT_FIELDS,
+  "limited",
+]);
+
+/** Fields a bounded symbol-node list declares. */
+export const SYMBOL_NODE_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded symbol-edge list declares. */
+export const SYMBOL_EDGE_RESULT_FIELDS = Object.freeze([
+  "edges",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded symbol-reference result declares. */
+export const SYMBOL_REFERENCE_RESULT_FIELDS = Object.freeze([
+  "symbol",
+  "references",
+  "calls",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded unresolved-occurrence list declares. */
+export const SYMBOL_UNRESOLVED_RESULT_FIELDS = Object.freeze([
+  "unresolved",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded import-binding list declares. */
+export const SYMBOL_BINDING_RESULT_FIELDS = Object.freeze([
+  "bindings",
+  "unresolved",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded symbol-path result declares. */
+export const SYMBOL_PATH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "found",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * The vocabularies a symbol query validates its criteria against.
+ *
+ * Re-exported here so a consumer (or a test) can ask the query layer what it accepts
+ * without importing the projection module.
+ */
+export const SYMBOL_UNRESOLVED_KIND_VALUES = SYMBOL_UNRESOLVED_KINDS;
+export const SYMBOL_UNRESOLVED_REASONS = SYMBOL_UNRESOLVED_REASON_VALUES;
 
 /** Fields a bounded import-path result declares. */
 export const IMPORT_PATH_RESULT_FIELDS = Object.freeze([
@@ -727,6 +816,102 @@ export function validateFrameworkUsageQueryResult(value) {
   );
 }
 
+/** Build a whole-symbol-graph result draft. */
+export function createSymbolGraphResult(input = {}) {
+  return createEnvelope(SYMBOL_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded symbol-traversal result draft. */
+export function createSymbolTraversalResult(input = {}) {
+  return createEnvelope(SYMBOL_TRAVERSAL_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded symbol-node result draft. */
+export function createSymbolNodeQueryResult(input = {}) {
+  return createEnvelope(SYMBOL_NODE_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded symbol-edge result draft. */
+export function createSymbolEdgeQueryResult(input = {}) {
+  return createEnvelope(SYMBOL_EDGE_RESULT_FIELDS, {
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded symbol-reference result draft. */
+export function createSymbolReferenceResult(input = {}) {
+  return createEnvelope(SYMBOL_REFERENCE_RESULT_FIELDS, {
+    symbol: input.symbol ?? null,
+    references: input.references ?? [],
+    calls: input.calls ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded unresolved-occurrence result draft. */
+export function createSymbolUnresolvedQueryResult(input = {}) {
+  return createEnvelope(SYMBOL_UNRESOLVED_RESULT_FIELDS, {
+    unresolved: input.unresolved ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded import-binding result draft. */
+export function createSymbolBindingQueryResult(input = {}) {
+  return createEnvelope(SYMBOL_BINDING_RESULT_FIELDS, {
+    bindings: input.bindings ?? [],
+    unresolved: input.unresolved ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded symbol-path result draft. */
+export function createSymbolPathResult(input = {}) {
+  return createEnvelope(SYMBOL_PATH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    found: input.found === true,
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
 /** Validate a whole-import-graph result. */
 export function validateImportGraphResult(value) {
   return validateGraphEnvelope(
@@ -760,6 +945,102 @@ export function validateImportNodeQueryResult(value) {
     "ImportNodeQueryResult",
     ["truncated", "limited"],
     IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a whole-symbol-graph result. */
+export function validateSymbolGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "SymbolGraphResult",
+    ["established", "truncated"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded symbol-traversal result. */
+export function validateSymbolTraversalResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_TRAVERSAL_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "SymbolTraversalResult",
+    ["established", "truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded symbol-node result. */
+export function validateSymbolNodeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_NODE_RESULT_FIELDS,
+    ["nodes"],
+    "SymbolNodeQueryResult",
+    ["truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded symbol-edge result. */
+export function validateSymbolEdgeQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_EDGE_RESULT_FIELDS,
+    ["edges"],
+    "SymbolEdgeQueryResult",
+    ["truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded symbol-reference result. */
+export function validateSymbolReferenceResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_REFERENCE_RESULT_FIELDS,
+    ["references", "calls"],
+    "SymbolReferenceResult",
+    ["truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded unresolved-occurrence result. */
+export function validateSymbolUnresolvedQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_UNRESOLVED_RESULT_FIELDS,
+    ["unresolved"],
+    "SymbolUnresolvedQueryResult",
+    ["truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded import-binding result. */
+export function validateSymbolBindingQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_BINDING_RESULT_FIELDS,
+    ["bindings", "unresolved"],
+    "SymbolBindingQueryResult",
+    ["truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded symbol-path result. */
+export function validateSymbolPathResult(value) {
+  return validateGraphEnvelope(
+    value,
+    SYMBOL_PATH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "SymbolPathResult",
+    ["found", "truncated", "limited"],
+    SYMBOL_GRAPH_STATE_VALUES,
   );
 }
 

@@ -200,6 +200,64 @@ function importsSection(overrides = {}) {
   };
 }
 
+/**
+ * A `semantics` section for a hand-built scan.
+ *
+ * Phase 17 added the `symbol` observation subject, so a scan that exercises every
+ * documented subject has to carry a semantic source too. The record is a complete one
+ * (declarations, resolution and exports all established) with a declaration and a call,
+ * which is what an observation of the semantic graph is made of.
+ */
+function semanticsSection(overrides = {}) {
+  return {
+    inspected: true,
+    complete: false,
+    truncated: false,
+    files: [
+      {
+        path: "src/app.ts",
+        extension: ".ts",
+        language: "typescript",
+        status: "parsed",
+        reason: null,
+        detail: null,
+        bytesInspected: 120,
+        truncated: false,
+        established: { declarations: true, resolution: true, exports: true },
+        counts: {
+          declarations: 1,
+          exports: 1,
+          names: 1,
+          references: 0,
+          calls: 1,
+          constructs: 0,
+          tokens: 24,
+        },
+        problems: [],
+        declarations: [
+          {
+            name: "run",
+            kinds: ["function"],
+            keywords: ["function"],
+            exported: true,
+            exportNames: ["run"],
+            callable: true,
+            constructable: true,
+            shadowed: false,
+            reassigned: false,
+            binding: null,
+          },
+        ],
+        exports: [],
+        starExports: [],
+        references: [{ name: "run", form: "call", count: 1 }],
+      },
+    ],
+    limits: { maxFiles: 2000, maxFileBytes: 262144, maxTotalBytes: 33554432 },
+    ...overrides,
+  };
+}
+
 function dependencyScan(overrides = {}) {
   return populatedScan({
     dependencies: {
@@ -708,6 +766,7 @@ describe("model: evidence", () => {
     const model = buildRepositoryModel(
       dependencyScan({
         imports: importsSection(),
+        semantics: semanticsSection(),
         content: {
           inspected: true,
           complete: false,

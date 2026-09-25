@@ -45,6 +45,8 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   CONTENT: "content",
   DEPENDENCY: "dependency",
   IMPORT: "import",
+  /** Phase 17 — a module-scope declaration, export, reference or call observation. */
+  SYMBOL: "symbol",
 });
 
 /**
@@ -74,6 +76,10 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // reference is: a connection the repository establishes between two files. Using
   // it keeps the Phase 7 vocabulary closed rather than inventing an "import" type.
   [EVIDENCE_SUBJECTS.IMPORT]: "graph",
+  // Core has a `symbol` evidence type (Phase 7), so a semantic observation needs no
+  // borrowed vocabulary — and using it keeps the mapping honest: an observation of
+  // this subject is *about* names the source declares, not about a graph.
+  [EVIDENCE_SUBJECTS.SYMBOL]: "symbol",
 });
 
 /**
@@ -329,6 +335,81 @@ export function createImportSourceObservation({
       references,
       nonStatic,
       problems: [...problems],
+      truncated,
+    },
+  });
+}
+
+/**
+ * Signals recorded on semantic observations (Phase 17).
+ *
+ * One record per module source, deliberately: the model's per-file record already
+ * carries the declarations, the exports, the reference counts and the problems, and
+ * duplicating every occurrence into the evidence list would multiply the model's size
+ * without adding a fact. The record states what the file was as a semantic source —
+ * how many bindings, exports and call sites it established, and which classes of
+ * claim it could not establish — and it is the provenance every symbol, reference and
+ * call edge from that file cites.
+ */
+export const SYMBOL_SIGNALS = Object.freeze({
+  SOURCE: "symbol-source",
+});
+
+/**
+ * Build the observation for one module source's semantic scan.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.language Module language id (`javascript` / `typescript`).
+ * @param {string} input.status Parsed / unsupported / failed / not-inspected.
+ * @param {string|null} input.reason Bounded reason when not scanned.
+ * @param {string|null} input.detail Bounded detail token (a failure kind, an extension).
+ * @param {number} input.declarations Module-scope bindings established.
+ * @param {number} input.exports Exports established.
+ * @param {number} input.references Reference occurrences recorded.
+ * @param {number} input.calls Call sites recorded.
+ * @param {string[]} input.problems Bounded problem reason ids.
+ * @param {boolean} input.declarationsEstablished Whether the declaration set is trustworthy.
+ * @param {boolean} input.resolutionEstablished Whether resolution may be claimed.
+ * @param {boolean} input.exportsEstablished Whether the export set is complete.
+ * @param {boolean} input.truncated Whether a byte or token budget cut the file short.
+ * @returns {object} A Core Evidence object.
+ */
+export function createSymbolSourceObservation({
+  path,
+  language,
+  status,
+  reason,
+  detail,
+  declarations,
+  exports,
+  references,
+  calls,
+  problems,
+  declarationsEstablished,
+  resolutionEstablished,
+  exportsEstablished,
+  truncated,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.SYMBOL,
+    key: `${SYMBOL_SIGNALS.SOURCE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.SYMBOL],
+    path,
+    data: {
+      signal: SYMBOL_SIGNALS.SOURCE,
+      language,
+      status,
+      reason,
+      detail,
+      declarations,
+      exports,
+      references,
+      calls,
+      problems: [...problems],
+      declarationsEstablished,
+      resolutionEstablished,
+      exportsEstablished,
       truncated,
     },
   });

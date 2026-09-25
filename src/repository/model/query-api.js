@@ -76,6 +76,14 @@ import {
   IMPORT_GRAPH_STATES,
   UNRESOLVED_REFERENCE_REASON_VALUES,
 } from "./import-graph.js";
+import {
+  SYMBOL_GRAPH_EDGE_TYPES,
+  SYMBOL_GRAPH_EDGE_TYPE_VALUES,
+  SYMBOL_GRAPH_STATES,
+  SYMBOL_UNRESOLVED_KINDS,
+  SYMBOL_UNRESOLVED_REASON_VALUES,
+} from "./symbol-graph.js";
+import { SYMBOL_KINDS } from "./entities.js";
 import { isRepositoryRelativePath } from "./paths.js";
 import {
   QUERY_DIRECTIONS,
@@ -100,6 +108,14 @@ import {
   createImportTraversalResult,
   createImportUnresolvedQueryResult,
   createRelationshipQueryResult,
+  createSymbolBindingQueryResult,
+  createSymbolEdgeQueryResult,
+  createSymbolGraphResult,
+  createSymbolNodeQueryResult,
+  createSymbolPathResult,
+  createSymbolReferenceResult,
+  createSymbolTraversalResult,
+  createSymbolUnresolvedQueryResult,
   createTraversalResult,
   validateArchitectureBuildQueryResult,
   validateArchitectureEdgeQueryResult,
@@ -120,6 +136,14 @@ import {
   validateImportTraversalResult,
   validateImportUnresolvedQueryResult,
   validateRelationshipQueryResult,
+  validateSymbolBindingQueryResult,
+  validateSymbolEdgeQueryResult,
+  validateSymbolGraphResult,
+  validateSymbolNodeQueryResult,
+  validateSymbolPathResult,
+  validateSymbolReferenceResult,
+  validateSymbolTraversalResult,
+  validateSymbolUnresolvedQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";
 import { QUERY_ERROR_KINDS, RepositoryQueryError, safeQueryToken } from "./query-errors.js";
@@ -196,6 +220,39 @@ const IMPORT_UNRESOLVED_FILTER_KEYS = Object.freeze(["path", "reason", "maxResul
 
 /** Options a topology candidate list accepts (the bound, and nothing else). */
 const IMPORT_CANDIDATE_OPTION_KEYS = Object.freeze(["maxResults"]);
+
+/**
+ * Criteria a symbol node list accepts.
+ *
+ * Every criterion is a fact the projection recorded about the node itself — a path,
+ * a declaring file, a name, a declaration kind, whether the file publishes it — so a
+ * query can never ask a question the symbol graph did not answer. `kind` is matched
+ * against the node's `kinds` list, because a name can legitimately be established as
+ * more than one kind (`declare function` + `declare const`, a merged namespace).
+ */
+const SYMBOL_NODE_FILTER_KEYS = Object.freeze([
+  "path",
+  "fileId",
+  "name",
+  "kind",
+  "exported",
+  "maxResults",
+]);
+
+/** Criteria a symbol edge list accepts. */
+const SYMBOL_EDGE_FILTER_KEYS = Object.freeze(["from", "to", "type", "maxResults"]);
+
+/** Criteria an unresolved semantic-occurrence list accepts. */
+const SYMBOL_UNRESOLVED_FILTER_KEYS = Object.freeze([
+  "path",
+  "name",
+  "kind",
+  "reason",
+  "maxResults",
+]);
+
+/** Options a symbol candidate list accepts (the bound, and nothing else). */
+const SYMBOL_CANDIDATE_OPTION_KEYS = Object.freeze(["maxResults"]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -850,6 +907,116 @@ export function createRepositoryQuery(model) {
       nodes: [...reached].sort(compareImportNodes),
       edges: [...collected.values()].sort(compareGraphEdges),
       limited,
+    };
+  };
+
+  // ── Symbol graph (Phase 17) ────────────────────────────────────────────────
+  //
+  // Read from `model.symbols.graph` — a projection the builder already built and
+  // validated — and never recomputed here, so an answer cannot disagree with the
+  // model. The graph is deeply frozen, so the adjacency indexes built once per handle
+  // cannot go stale, and each keeps the graph's own `(from, to, type)` order.
+  const symbolGraph =
+    model.symbols?.graph ??
+    Object.freeze({
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      unresolved: Object.freeze([]),
+      state: SYMBOL_GRAPH_STATES.UNKNOWN,
+      established: false,
+      coverage: Object.freeze({
+        state: SYMBOL_GRAPH_STATES.UNKNOWN,
+        established: false,
+        complete: false,
+        truncated: false,
+        inspected: false,
+        symbols: 0,
+        edges: 0,
+        sources: 0,
+        moduleFiles: 0,
+        declaredSymbols: 0,
+        exportedSymbols: 0,
+        referenceEdges: 0,
+        callEdges: 0,
+        bindingEdges: 0,
+        parsed: 0,
+        unsupported: 0,
+        failed: 0,
+        notInspected: 0,
+        uninterpretedSources: 0,
+        uninterpretedExtensions: Object.freeze([]),
+        uninterpretedExtensionsTruncated: false,
+        references: 0,
+        unresolved: 0,
+        unresolvedReported: 0,
+        unresolvedByReason: Object.freeze({}),
+        shadowedSymbols: 0,
+        unestablished: 0,
+        unestablishedSources: Object.freeze([]),
+        nodesTruncated: false,
+        edgesTruncated: false,
+        unresolvedTruncated: false,
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const symbolNodeById = new Map(symbolGraph.nodes.map((node) => [node.id, node]));
+  const symbolOutgoing = new Map();
+  const symbolIncoming = new Map();
+  for (const edge of symbolGraph.edges) {
+    const out = symbolOutgoing.get(edge.from);
+    if (out === undefined) symbolOutgoing.set(edge.from, [edge]);
+    else out.push(edge);
+
+    const incoming = symbolIncoming.get(edge.to);
+    if (incoming === undefined) symbolIncoming.set(edge.to, [edge]);
+    else incoming.push(edge);
+  }
+
+  /**
+   * The guarantee behind a symbol answer.
+   *
+   * `complete` is claimed only when the *semantic* graph is complete as well as the scan:
+   * a scan that covered every file still leaves a symbol graph partial when a module
+   * source was unsupported or an establishment claim could not be made, and a caller
+   * reading `coverage: "complete"` next to `state: "partial"` would be told two
+   * contradictory things. The stricter of the two facts wins.
+   */
+  const symbolCoverageState = () => ({
+    coverage:
+      model.scan.complete === true &&
+      model.scan.truncated !== true &&
+      symbolGraph.state === SYMBOL_GRAPH_STATES.COMPLETE
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || symbolGraph.coverage.truncated === true,
+  });
+
+  /**
+   * The file entity id an argument names.
+   *
+   * A symbol edge's `from` is always a file entity id, and symbol ids start with
+   * `symbol:`, so a bare repository-relative path (`src/a.js`) is read as the file
+   * entity id it names (`file:src/a.js`) and an id is passed through unchanged. Both
+   * spellings are accepted because both are already projected upstream; nothing is
+   * resolved here.
+   */
+  const fileEntityIdOf = (id) =>
+    typeof id === "string" && !id.startsWith("file:") ? `file:${id}` : id;
+
+  /** The repository-relative path a file entity id names. */
+  const filePathOfEntityId = (id) => (typeof id === "string" && id.startsWith("file:") ? id.slice(5) : null);
+
+  /** The symbols a file declares, sorted by id. */
+  const symbolsOfFile = (fileId) =>
+    symbolGraph.nodes.filter((node) => node.fileId === fileId).sort(compareById);
+
+  /** Edges of one type stated by an id, sorted, plus whether a bound cut them. */
+  const edgesOfType = (id, type, maxResults) => {
+    const matching = (symbolOutgoing.get(id) ?? []).filter((edge) => edge.type === type);
+    return {
+      edges: matching.slice(0, maxResults),
+      limited: matching.length > maxResults,
     };
   };
 
@@ -2216,6 +2383,540 @@ export function createRepositoryQuery(model) {
       });
       validateImportNodeQueryResult(result);
       return Object.freeze(result);
+    },
+
+    // ── Symbol graph (Phase 17) ─────────────────────────────────────────────
+    /**
+     * The whole symbol graph: the symbol nodes and the established edges.
+     *
+     * `state` distinguishes an established-but-empty graph (a repository whose
+     * sources declare nothing) from one that was never established, so an empty
+     * `nodes` list is never mistaken for "this repository defines no symbols". The
+     * unresolved occurrences are *not* folded in here — they are not edges, and a
+     * caller that received them together would read a non-fact as a fact. Ask for
+     * them with `unresolvedSymbolReferences`.
+     */
+    symbolGraph() {
+      const result = createSymbolGraphResult({
+        nodes: frozenEntries([...symbolGraph.nodes]),
+        edges: frozenEntries([...symbolGraph.edges]),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        established: symbolGraph.established,
+      });
+      validateSymbolGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The five-way symbol-graph state, its per-reason unresolved counts, the sources
+     * whose semantic claims could not be established, and every bound that bit.
+     */
+    symbolCoverage() {
+      return Object.freeze({ ...symbolGraph.coverage });
+    },
+
+    /**
+     * Symbol nodes matching a `{ path, fileId, name, kind, exported }` filter.
+     *
+     * `kind` is checked against the graph's own declaration vocabulary, so a caller
+     * cannot ask for a kind this build never establishes and receive a plausible
+     * answer. Results are sorted by id and bounded by `maxResults`.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    symbolNodes(criteria = {}) {
+      requireKeys(criteria, SYMBOL_NODE_FILTER_KEYS, "symbolNodeCriteria");
+      for (const field of ["path", "fileId", "name"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `symbolNodeCriteria.${field}`,
+          });
+        }
+      }
+      if ("kind" in criteria && !SYMBOL_KINDS.includes(criteria.kind)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "symbolNodeCriteria.kind",
+        });
+      }
+      if ("exported" in criteria && typeof criteria.exported !== "boolean") {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "symbolNodeCriteria.exported",
+        });
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = symbolGraph.nodes
+        .filter((node) => {
+          if ("path" in criteria && node.path !== criteria.path) return false;
+          if ("fileId" in criteria) {
+            const fileId = fileEntityIdOf(criteria.fileId);
+            if (node.fileId !== fileId) return false;
+          }
+          if ("name" in criteria && node.name !== criteria.name) return false;
+          if ("kind" in criteria && !node.kinds.includes(criteria.kind)) return false;
+          if ("exported" in criteria && node.exported !== criteria.exported) return false;
+          return true;
+        })
+        .slice()
+        .sort(compareById);
+
+      const result = createSymbolNodeQueryResult({
+        nodes: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The symbols a file declares, sorted by id.
+     *
+     * Accepts a file entity id (`file:src/a.js`) or the repository-relative path it
+     * names. An unknown file is an ordinary miss: an empty result carrying the graph's
+     * coverage, never a claim that the file declares nothing.
+     */
+    symbolsInFile(fileId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      if (!isNonEmptyQueryString(fileId)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "fileId" });
+      }
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = symbolsOfFile(fileEntityIdOf(fileId));
+      const result = createSymbolNodeQueryResult({
+        nodes: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Symbol edges matching a `{ from, to, type }` filter, sorted and bounded.
+     *
+     * `type` accepts only the graph's own five-value vocabulary, so a caller cannot
+     * ask the symbol graph for an import or dependency edge and receive a semantic one
+     * instead.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` / `invalid-relationship-type`.
+     */
+    symbolEdges(criteria = {}) {
+      requireKeys(criteria, SYMBOL_EDGE_FILTER_KEYS, "symbolEdgeCriteria");
+      if ("type" in criteria && !SYMBOL_GRAPH_EDGE_TYPE_VALUES.includes(criteria.type)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_RELATIONSHIP_TYPE, {
+          received: safeQueryToken(criteria.type),
+        });
+      }
+      for (const endpoint of ["from", "to"]) {
+        if (endpoint in criteria && typeof criteria[endpoint] !== "string") {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `symbolEdgeCriteria.${endpoint}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = symbolGraph.edges.filter((edge) => {
+        if ("from" in criteria && edge.from !== criteria.from) return false;
+        if ("to" in criteria && edge.to !== criteria.to) return false;
+        if ("type" in criteria && edge.type !== criteria.type) return false;
+        return true;
+      });
+
+      const result = createSymbolEdgeQueryResult({
+        edges: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * What the graph states points at one symbol, split by edge type.
+     *
+     * `references` and `calls` are separate lists because the graph states them as
+     * separate edges: an occurrence that is established as a call is recorded as a
+     * `calls` edge and not also as a reference, so the two lists never double-count
+     * one occurrence. Each edge records the *file* that stated the occurrence, never a
+     * declaring symbol — this build does not attribute a call site to an enclosing
+     * function, and pretending otherwise would be exactly the syntactic approximation
+     * this graph refuses to make.
+     *
+     * An unknown symbol id is an ordinary miss (`symbol: null`, empty lists).
+     */
+    referencesTo(symbolId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const symbol = typeof symbolId === "string" ? (symbolNodeById.get(symbolId) ?? null) : null;
+      const incoming = symbol === null ? [] : (symbolIncoming.get(symbol.id) ?? []);
+      const references = incoming
+        .filter((edge) => edge.type === SYMBOL_GRAPH_EDGE_TYPES.REFERENCES)
+        .sort(compareGraphEdges);
+      const calls = incoming
+        .filter((edge) => edge.type === SYMBOL_GRAPH_EDGE_TYPES.CALLS)
+        .sort(compareGraphEdges);
+
+      const result = createSymbolReferenceResult({
+        symbol,
+        references: frozenEntries(references.slice(0, maxResults)),
+        calls: frozenEntries(calls.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: references.length > maxResults || calls.length > maxResults,
+      });
+      validateSymbolReferenceResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The `calls` edges that point at a symbol: the files that call it.
+     *
+     * The reverse of the edge the graph states, never a second edge, so `calledBy` and
+     * the edge list cannot disagree about who calls what.
+     */
+    calledBy(symbolId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const symbol = typeof symbolId === "string" ? symbolNodeById.get(symbolId) : undefined;
+      const matching =
+        symbol === undefined
+          ? []
+          : (symbolIncoming.get(symbol.id) ?? [])
+              .filter((edge) => edge.type === SYMBOL_GRAPH_EDGE_TYPES.CALLS)
+              .sort(compareGraphEdges);
+
+      const result = createSymbolEdgeQueryResult({
+        edges: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The `calls` edges a **file** states: `file --calls--> symbol`.
+     *
+     * Strictly a file question. A symbol id is rejected rather than answered with its
+     * file's calls, because the acquisition layer attributes a call site to the file
+     * that states it and to nothing finer — answering a symbol-id lookup with the
+     * enclosing file's call edges would attribute calls to a function the graph never
+     * established them for. Per-symbol callers are available the other way round, as
+     * `calledBy`, which the graph *does* establish.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    callsFrom(fileId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      // A *file* question, and only a file question: `symbol:` is not a file id, so it is
+      // refused as the malformed argument it is. There is deliberately no symbol-scoped
+      // variant of this query, because no per-symbol call ownership is established — a
+      // symbol-scoped answer would attribute the enclosing file's calls to a function the
+      // graph never established them for.
+      if (!isNonEmptyQueryString(fileId) || fileId.startsWith("symbol:")) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "fileId" });
+      }
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const { edges, limited } = edgesOfType(
+        fileEntityIdOf(fileId),
+        SYMBOL_GRAPH_EDGE_TYPES.CALLS,
+        maxResults,
+      );
+      const result = createSymbolEdgeQueryResult({
+        edges: frozenEntries(edges),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited,
+      });
+      validateSymbolEdgeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The symbols a file publishes, sorted by id.
+     *
+     * Read from the file's own `exports` edges, so a re-export resolves to the symbol
+     * the repository established rather than to a name this layer guessed. Each node
+     * carries its own `exportNames`, because one symbol can be published under more
+     * than one name (`export { a as b }`).
+     */
+    exportsOf(fileId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      if (!isNonEmptyQueryString(fileId)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "fileId" });
+      }
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const fileEntityId = fileEntityIdOf(fileId);
+      const targets = new Set(
+        (symbolOutgoing.get(fileEntityId) ?? [])
+          .filter((edge) => edge.type === SYMBOL_GRAPH_EDGE_TYPES.EXPORTS)
+          .map((edge) => edge.to),
+      );
+      const matching = [...targets]
+        .map((id) => symbolNodeById.get(id))
+        .filter((node) => node !== undefined)
+        .sort(compareById);
+
+      const result = createSymbolNodeQueryResult({
+        nodes: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolNodeQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * A file's imported bindings, each joined to the symbol it resolves to when the
+     * repository establishes the target, and to the graph's unresolved record when it
+     * does not.
+     *
+     * The two lists are kept apart on purpose: `resolved: false` in `bindings` means the
+     * binding exists but its target was not established, and `unresolved` carries the
+     * closed `reason` for it (`module-not-interpreted`, `namespace-binding`, …). Split,
+     * because "this file binds `x` from `./m`" and "we could not establish what `x`
+     * points at" are different facts.
+     */
+    importsToSymbols(fileId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "symbolCandidateOptions");
+      if (!isNonEmptyQueryString(fileId)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "fileId" });
+      }
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const fileEntityId = fileEntityIdOf(fileId);
+      const path = filePathOfEntityId(fileEntityId);
+      const bindings = [];
+      for (const node of symbolsOfFile(fileEntityId)) {
+        if (node.binding === null) continue;
+        const edge =
+          (symbolOutgoing.get(node.id) ?? []).find(
+            (candidate) => candidate.type === SYMBOL_GRAPH_EDGE_TYPES.IMPORTS_BINDING,
+          ) ?? null;
+        const target = edge === null ? undefined : symbolNodeById.get(edge.to);
+        bindings.push(
+          Object.freeze({
+            symbolId: node.id,
+            fileId: node.fileId,
+            path: node.path,
+            name: node.name,
+            bindingKind: node.binding.bindingKind,
+            importedName: node.binding.importedName,
+            specifier: node.binding.specifier,
+            typeOnly: node.binding.typeOnly === true,
+            resolved: edge !== null,
+            targetSymbolId: edge === null ? null : edge.to,
+            targetPath: target === undefined ? null : target.path,
+            evidenceIds: edge === null ? Object.freeze([]) : edge.evidenceIds,
+          }),
+        );
+      }
+      bindings.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+      // The graph already sorts its unresolved records by `(path, name, kind)`, and
+      // filtering preserves that order, so this needs no second sort.
+      const unresolved = symbolGraph.unresolved.filter(
+        (record) => record.kind === "import-binding" && record.path === path,
+      );
+
+      const result = createSymbolBindingQueryResult({
+        bindings: frozenEntries(bindings.slice(0, maxResults)),
+        unresolved: frozenEntries(unresolved.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: bindings.length > maxResults || unresolved.length > maxResults,
+      });
+      validateSymbolBindingQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Occurrences that are not edges: a name the file refers to, calls or exports whose
+     * target the repository does not establish.
+     *
+     * Each record carries a closed `kind` (which occurrence) and `reason` (why it was
+     * not established), so *a name this file never declares* is distinguishable from *a
+     * name it also binds elsewhere* from *a callee whose value shape is not
+     * established* from *a module the scan did not observe*.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    unresolvedSymbolReferences(criteria = {}) {
+      requireKeys(criteria, SYMBOL_UNRESOLVED_FILTER_KEYS, "unresolvedSymbolCriteria");
+      for (const field of ["path", "name"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `unresolvedSymbolCriteria.${field}`,
+          });
+        }
+      }
+      if ("kind" in criteria && !SYMBOL_UNRESOLVED_KINDS.includes(criteria.kind)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "unresolvedSymbolCriteria.kind",
+        });
+      }
+      if ("reason" in criteria && !SYMBOL_UNRESOLVED_REASON_VALUES.includes(criteria.reason)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "unresolvedSymbolCriteria.reason",
+        });
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = symbolGraph.unresolved.filter((record) => {
+        if ("path" in criteria && record.path !== criteria.path) return false;
+        if ("name" in criteria && record.name !== criteria.name) return false;
+        if ("kind" in criteria && record.kind !== criteria.kind) return false;
+        if ("reason" in criteria && record.reason !== criteria.reason) return false;
+        return true;
+      });
+
+      const result = createSymbolUnresolvedQueryResult({
+        unresolved: frozenEntries(matching.slice(0, maxResults)),
+        ...symbolCoverageState(),
+        state: symbolGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateSymbolUnresolvedQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * A bounded, cycle-safe path between two **symbols** along established edges.
+     *
+     * Follows edges in their stated direction (`symbol --imports-binding--> symbol`),
+     * so the path is a chain of relationships the repository established: following an
+     * imported binding to the symbol it resolves to, through re-exports if the graph
+     * resolved them. A file id is not accepted as an endpoint — a path between two file
+     * *containers* is a different question, and `importPath` already answers it — and two
+     * symbols of the same file are simply not connected by any edge this graph states,
+     * which is a non-answer rather than a negative fact. An unknown endpoint is an
+     * ordinary miss (`found: false`).
+     */
+    symbolPath(fromId, toId, options = {}) {
+      const { maxDepth, maxResults } = parseGraphTraversalOptions(
+        options,
+        QUERY_LIMITS.DEFAULT_DEPTH,
+      );
+      const pathResult = (nodes, edges, found, limited) => {
+        const result = createSymbolPathResult({
+          nodes: frozenEntries(nodes),
+          edges: frozenEntries(edges),
+          found,
+          ...symbolCoverageState(),
+          state: symbolGraph.state,
+          limited,
+        });
+        validateSymbolPathResult(result);
+        return Object.freeze(result);
+      };
+
+      const startNode = typeof fromId === "string" ? symbolNodeById.get(fromId) : undefined;
+      const targetNode = typeof toId === "string" ? symbolNodeById.get(toId) : undefined;
+      if (startNode === undefined || targetNode === undefined) {
+        return pathResult([], [], false, false);
+      }
+      if (fromId === toId) {
+        return pathResult([{ ...startNode, depth: 0 }], [], true, false);
+      }
+
+      const predecessor = new Map([[fromId, null]]);
+      const edgeInto = new Map();
+      let frontier = [fromId];
+      let found = false;
+      let limited = false;
+      let depth = 0;
+
+      while (frontier.length > 0 && !found && depth < maxDepth) {
+        const next = [];
+        for (const id of frontier) {
+          for (const edge of symbolOutgoing.get(id) ?? []) {
+            if (predecessor.has(edge.to)) continue;
+            if (predecessor.size >= maxResults) {
+              limited = true;
+              continue;
+            }
+            predecessor.set(edge.to, id);
+            edgeInto.set(edge.to, edge);
+            if (edge.to === toId) {
+              found = true;
+              break;
+            }
+            next.push(edge.to);
+          }
+          if (found) break;
+        }
+        frontier = next;
+        depth += 1;
+      }
+
+      if (!found) return pathResult([], [], false, limited);
+
+      const chainIds = [toId];
+      const chainEdges = [];
+      let cursor = toId;
+      while (cursor !== fromId) {
+        chainEdges.push(edgeInto.get(cursor));
+        cursor = predecessor.get(cursor);
+        chainIds.push(cursor);
+      }
+      chainIds.reverse();
+      chainEdges.reverse();
+
+      return pathResult(
+        chainIds.map((id, hops) => ({ ...(symbolNodeById.get(id) ?? {}), depth: hops })),
+        chainEdges,
+        true,
+        limited,
+      );
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

@@ -63,6 +63,18 @@ import {
   IMPORT_SPECIFIER_KIND_VALUES,
   isUsableSpecifier,
 } from "./policies/imports.js";
+import {
+  SEMANTIC_MODULE_EXTENSIONS,
+  SEMANTIC_PROBLEM_VALUES,
+  SEMANTIC_SOURCE_REASON_VALUES,
+  SEMANTIC_SOURCE_STATUSES,
+  SEMANTIC_SOURCE_STATUS_VALUES,
+  SYMBOL_BINDING_KIND_VALUES,
+  SYMBOL_EXPORT_FORM_VALUES,
+  SYMBOL_KIND_VALUES,
+  SYMBOL_OCCURRENCE_FORM_VALUES,
+  isUsableSymbolName,
+} from "./policies/semantics.js";
 
 /** Version of the scan result contract. */
 export const SCAN_RESULT_VERSION = "1";
@@ -255,6 +267,7 @@ export function createScanResult(overrides = {}) {
   const containers = overrides.containers ?? {};
   const dependencies = overrides.dependencies ?? {};
   const imports = overrides.imports ?? {};
+  const semantics = overrides.semantics ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -331,6 +344,16 @@ export function createScanResult(overrides = {}) {
       truncated: imports.truncated ?? false,
       files: imports.files ?? [],
       limits: imports.limits ?? {},
+    },
+    // Phase 17 — the same three-state discipline: a draft that declares nothing about
+    // symbols must not look like one whose sources were scanned and found to declare
+    // nothing.
+    semantics: {
+      inspected: semantics.inspected ?? false,
+      complete: semantics.complete ?? false,
+      truncated: semantics.truncated ?? false,
+      files: semantics.files ?? [],
+      limits: semantics.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -963,6 +986,310 @@ function collectImportsIssues(section, ctx, path) {
   }
 }
 
+/**
+ * Validate the `semantics` section (Phase 17).
+ *
+ * Every closed vocabulary is re-checked here, plus the two structural invariants the
+ * projection depends on: a source that was not scanned states neither a declaration
+ * nor a reference, and a reference list is sorted deterministically.
+ */
+function collectSemanticsIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") ctx.fail(`${path}.${field}`, "must be a boolean");
+  }
+  if (!isPlainObject(section.limits)) ctx.fail(`${path}.limits`, "must be a plain object");
+  if (!Array.isArray(section.files)) {
+    ctx.fail(`${path}.files`, "must be an array");
+    return;
+  }
+
+  section.files.forEach((record, index) => {
+    const at = `${path}.files[${index}]`;
+    if (!isPlainObject(record)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    for (const field of ["path", "extension", "language"]) {
+      if (!isNonEmptyString(record[field])) ctx.fail(`${at}.${field}`, "must be a non-empty string");
+    }
+    if (isNonEmptyString(record.path) && isAbsolutePath(record.path)) {
+      ctx.fail(`${at}.path`, "must be a repository-relative path");
+    }
+    if (!SEMANTIC_MODULE_EXTENSIONS.includes(record.extension)) {
+      ctx.fail(`${at}.extension`, "must be a module source extension this build covers");
+    }
+    if (!SEMANTIC_SOURCE_STATUS_VALUES.includes(record.status)) {
+      ctx.fail(`${at}.status`, `must be one of: ${SEMANTIC_SOURCE_STATUS_VALUES.join(", ")}`);
+    }
+    if (
+      record.reason !== null &&
+      record.reason !== undefined &&
+      !SEMANTIC_SOURCE_REASON_VALUES.includes(record.reason)
+    ) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${SEMANTIC_SOURCE_REASON_VALUES.join(", ")}`);
+    }
+    if (record.status === SEMANTIC_SOURCE_STATUSES.PARSED && record.reason != null) {
+      ctx.fail(`${at}.reason`, "must be null for a scanned module source");
+    }
+    if (record.status !== SEMANTIC_SOURCE_STATUSES.PARSED && record.reason == null) {
+      ctx.fail(`${at}.reason`, "must record why the module source was not scanned");
+    }
+    if (record.detail !== null && record.detail !== undefined && !isNonEmptyString(record.detail)) {
+      ctx.fail(`${at}.detail`, "must be a bounded identifier or null");
+    }
+    if (!isNonNegativeInteger(record.bytesInspected)) {
+      ctx.fail(`${at}.bytesInspected`, "must be a non-negative integer");
+    }
+    if (typeof record.truncated !== "boolean") ctx.fail(`${at}.truncated`, "must be a boolean");
+
+    // Establishment: three separate answers (declarations, resolution, exports),
+    // each about a different class of claim.
+    if (!isPlainObject(record.established)) {
+      ctx.fail(`${at}.established`, "must be a plain object");
+    } else {
+      for (const field of ["declarations", "resolution", "exports"]) {
+        if (typeof record.established[field] !== "boolean") {
+          ctx.fail(`${at}.established.${field}`, "must be a boolean");
+        }
+      }
+      if (
+        record.established.resolution === true &&
+        record.established.declarations !== true
+      ) {
+        ctx.fail(
+          `${at}.established.resolution`,
+          "cannot be established while the declaration set is not",
+        );
+      }
+      if (record.status !== SEMANTIC_SOURCE_STATUSES.PARSED) {
+        for (const field of ["declarations", "resolution", "exports"]) {
+          if (record.established[field] !== false) {
+            ctx.fail(
+              `${at}.established.${field}`,
+              "must be false for a module source that was not scanned",
+            );
+          }
+        }
+      }
+    }
+
+    if (!isPlainObject(record.counts)) {
+      ctx.fail(`${at}.counts`, "must be a plain object");
+    } else {
+      for (const field of ["declarations", "exports", "names", "references", "calls", "constructs", "tokens"]) {
+        if (!isNonNegativeInteger(record.counts[field])) {
+          ctx.fail(`${at}.counts.${field}`, "must be a non-negative integer");
+        }
+      }
+    }
+
+    if (!Array.isArray(record.problems)) {
+      ctx.fail(`${at}.problems`, "must be an array");
+    } else {
+      record.problems.forEach((problem, problemIndex) => {
+        if (!SEMANTIC_PROBLEM_VALUES.includes(problem)) {
+          ctx.fail(
+            `${at}.problems[${problemIndex}]`,
+            `must be one of: ${SEMANTIC_PROBLEM_VALUES.join(", ")}`,
+          );
+        }
+      });
+      for (let next = 1; next < record.problems.length; next += 1) {
+        if (record.problems[next - 1] >= record.problems[next]) {
+          ctx.fail(`${at}.problems`, "must be sorted and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.declarations)) {
+      ctx.fail(`${at}.declarations`, "must be an array");
+    } else {
+      record.declarations.forEach((declaration, declarationIndex) => {
+        const declarationAt = `${at}.declarations[${declarationIndex}]`;
+        if (!isPlainObject(declaration)) {
+          ctx.fail(declarationAt, "must be a plain object");
+          return;
+        }
+        if (!isUsableSymbolName(declaration.name)) {
+          ctx.fail(`${declarationAt}.name`, "must be bounded identifier text");
+        }
+        if (!Array.isArray(declaration.kinds) || declaration.kinds.length === 0) {
+          ctx.fail(`${declarationAt}.kinds`, "must be a non-empty array");
+        } else {
+          declaration.kinds.forEach((kind, kindIndex) => {
+            if (!SYMBOL_KIND_VALUES.includes(kind)) {
+              ctx.fail(
+                `${declarationAt}.kinds[${kindIndex}]`,
+                `must be one of: ${SYMBOL_KIND_VALUES.join(", ")}`,
+              );
+            }
+          });
+        }
+        if (!Array.isArray(declaration.exportNames)) {
+          ctx.fail(`${declarationAt}.exportNames`, "must be an array");
+        } else {
+          declaration.exportNames.forEach((name, nameIndex) => {
+            if (!isUsableSymbolName(name)) {
+              ctx.fail(`${declarationAt}.exportNames[${nameIndex}]`, "must be bounded identifier text");
+            }
+          });
+        }
+        for (const field of ["exported", "shadowed", "reassigned"]) {
+          if (typeof declaration[field] !== "boolean") {
+            ctx.fail(`${declarationAt}.${field}`, "must be a boolean");
+          }
+        }
+        for (const field of ["callable", "constructable"]) {
+          const value = declaration[field];
+          if (value !== true && value !== false && value !== null) {
+            ctx.fail(`${declarationAt}.${field}`, "must be true, false or null");
+          }
+        }
+        if (declaration.binding !== null && declaration.binding !== undefined) {
+          if (!isPlainObject(declaration.binding)) {
+            ctx.fail(`${declarationAt}.binding`, "must be a plain object or null");
+          } else {
+            if (!SYMBOL_BINDING_KIND_VALUES.includes(declaration.binding.bindingKind)) {
+              ctx.fail(
+                `${declarationAt}.binding.bindingKind`,
+                `must be one of: ${SYMBOL_BINDING_KIND_VALUES.join(", ")}`,
+              );
+            }
+            if (
+              declaration.binding.specifier !== null &&
+              !isUsableSpecifier(declaration.binding.specifier)
+            ) {
+              ctx.fail(
+                `${declarationAt}.binding.specifier`,
+                "must be null or bounded specifier text",
+              );
+            }
+            if (typeof declaration.binding.typeOnly !== "boolean") {
+              ctx.fail(`${declarationAt}.binding.typeOnly`, "must be a boolean");
+            }
+          }
+        }
+      });
+      if (record.status !== SEMANTIC_SOURCE_STATUSES.PARSED && record.declarations.length > 0) {
+        ctx.fail(`${at}.declarations`, "a module source that was not scanned declares nothing");
+      }
+    }
+
+    if (!Array.isArray(record.exports)) {
+      ctx.fail(`${at}.exports`, "must be an array");
+    } else {
+      record.exports.forEach((entry, entryIndex) => {
+        const entryAt = `${at}.exports[${entryIndex}]`;
+        if (!isPlainObject(entry)) {
+          ctx.fail(entryAt, "must be a plain object");
+          return;
+        }
+        if (entry.name !== null && !isUsableSymbolName(entry.name)) {
+          ctx.fail(`${entryAt}.name`, "must be null or bounded identifier text");
+        }
+        if (entry.localName !== null && !isUsableSymbolName(entry.localName)) {
+          ctx.fail(`${entryAt}.localName`, "must be null or bounded identifier text");
+        }
+        if (!SYMBOL_EXPORT_FORM_VALUES.includes(entry.form)) {
+          ctx.fail(`${entryAt}.form`, `must be one of: ${SYMBOL_EXPORT_FORM_VALUES.join(", ")}`);
+        }
+        if (entry.specifier !== null && !isUsableSpecifier(entry.specifier)) {
+          ctx.fail(`${entryAt}.specifier`, "must be null or bounded specifier text");
+        }
+        if (typeof entry.typeOnly !== "boolean") {
+          ctx.fail(`${entryAt}.typeOnly`, "must be a boolean");
+        }
+      });
+      if (record.status !== SEMANTIC_SOURCE_STATUSES.PARSED && record.exports.length > 0) {
+        ctx.fail(`${at}.exports`, "a module source that was not scanned exports nothing");
+      }
+    }
+
+    if (!Array.isArray(record.starExports)) {
+      ctx.fail(`${at}.starExports`, "must be an array");
+    } else {
+      record.starExports.forEach((specifier, specifierIndex) => {
+        if (!isUsableSpecifier(specifier)) {
+          ctx.fail(`${at}.starExports[${specifierIndex}]`, "must be bounded specifier text");
+        }
+      });
+      for (let next = 1; next < record.starExports.length; next += 1) {
+        if (record.starExports[next - 1] >= record.starExports[next]) {
+          ctx.fail(`${at}.starExports`, "must be sorted and unique");
+          break;
+        }
+      }
+    }
+
+    if (!Array.isArray(record.references)) {
+      ctx.fail(`${at}.references`, "must be an array");
+    } else {
+      record.references.forEach((reference, referenceIndex) => {
+        const referenceAt = `${at}.references[${referenceIndex}]`;
+        if (!isPlainObject(reference)) {
+          ctx.fail(referenceAt, "must be a plain object");
+          return;
+        }
+        if (!isUsableSymbolName(reference.name)) {
+          ctx.fail(`${referenceAt}.name`, "must be bounded identifier text");
+        }
+        if (!SYMBOL_OCCURRENCE_FORM_VALUES.includes(reference.form)) {
+          ctx.fail(
+            `${referenceAt}.form`,
+            `must be one of: ${SYMBOL_OCCURRENCE_FORM_VALUES.join(", ")}`,
+          );
+        }
+        if (!isNonNegativeInteger(reference.count) || reference.count < 1) {
+          ctx.fail(`${referenceAt}.count`, "must be a positive integer");
+        }
+      });
+      for (let next = 1; next < record.references.length; next += 1) {
+        const previous = record.references[next - 1];
+        const current = record.references[next];
+        const ordered =
+          isPlainObject(previous) &&
+          isPlainObject(current) &&
+          (previous.name < current.name ||
+            (previous.name === current.name && previous.form < current.form));
+        if (!ordered) {
+          ctx.fail(`${at}.references`, "must be sorted by name and form");
+          break;
+        }
+      }
+      if (record.status !== SEMANTIC_SOURCE_STATUSES.PARSED && record.references.length > 0) {
+        ctx.fail(`${at}.references`, "a module source that was not scanned references nothing");
+      }
+    }
+  });
+
+  for (let index = 1; index < section.files.length; index += 1) {
+    if (section.files[index - 1]?.path >= section.files[index]?.path) {
+      ctx.fail(`${path}.files[${index}].path`, "must be sorted by path and unique");
+      break;
+    }
+  }
+
+  const everySourceComplete = section.files.every(
+    (record) =>
+      isPlainObject(record) &&
+      record.status === SEMANTIC_SOURCE_STATUSES.PARSED &&
+      record.truncated !== true &&
+      Array.isArray(record.problems) &&
+      record.problems.length === 0,
+  );
+  if (section.complete === true && !everySourceComplete) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true unless every module source was scanned without truncation or problems",
+    );
+  }
+}
+
 function collectDetectionIssues(section, ctx, path) {  if (!isPlainObject(section)) {
     ctx.fail(path, "must be a plain object");
     return;
@@ -1059,6 +1386,7 @@ export function validateScanResult(value) {
   collectContainersIssues(value.containers, ctx, "scanResult.containers");
   collectDependenciesIssues(value.dependencies, ctx, "scanResult.dependencies");
   collectImportsIssues(value.imports, ctx, "scanResult.imports");
+  collectSemanticsIssues(value.semantics, ctx, "scanResult.semantics");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

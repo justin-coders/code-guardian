@@ -322,6 +322,7 @@ export async function scanRepository(root, options = {}) {
     content: detection.content,
     containers: detection.containers,
     imports: detection.imports,
+    semantics: detection.semantics,
     statistics: {
       filesScanned: files.length,
       directoriesScanned: directories.length,

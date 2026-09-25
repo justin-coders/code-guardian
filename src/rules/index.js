@@ -206,3 +206,36 @@ export {
   dependencyRuleSetIssues,
   dependencyRules,
 } from "./dependency/index.js";
+
+// Phase 17 — the symbol rule pack. The minimum integration that proves the semantic
+// graph is consumable through the accepted Rule Engine: one informational inventory
+// rule, its own registry and analyzer adapter. Purely additive — the Rule Engine is
+// unchanged and every other pack is untouched.
+export {
+  EDGE_TYPE_WORDING,
+  MAX_SYMBOL_FINDINGS,
+  SYMBOL_ANALYZER_ID,
+  SYMBOL_ANALYZER_NAME,
+  SYMBOL_ANALYZER_SCOPE,
+  SYMBOL_BASIS,
+  SYMBOL_CATEGORY,
+  SYMBOL_CONFIDENCE,
+  SYMBOL_DESCRIBED_EDGE_TYPES,
+  SYMBOL_DESCRIBED_UNRESOLVED_REASONS,
+  SYMBOL_GRAPH_STATES,
+  SYMBOL_KIND_WORDING,
+  SYMBOL_RULE_ID_PREFIX,
+  SYMBOL_RULE_IDS,
+  SYMBOL_RULE_PACK_VERSION,
+  SYMBOL_RULE_VERSION,
+  UNRESOLVED_SYMBOL_REASON_WORDING,
+  createSymbolAnalyzer,
+  createSymbolRuleRegistry,
+  symbolCoverage,
+  symbolInventoryRules,
+  symbolRelationships,
+  symbolRuleSetIssues,
+  symbolRules,
+  symbolUnresolved,
+  symbolsAbsence,
+} from "./symbols/index.js";

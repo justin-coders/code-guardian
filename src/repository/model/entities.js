@@ -41,6 +41,7 @@ import {
   createDependencySourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
+  createSymbolSourceObservation,
   createObservation,
   createSignalObservation,
 } from "./evidence.js";
@@ -1473,6 +1474,652 @@ function projectImportsSection(section, observedFilePaths, issues, record) {
 }
 
 /**
+ * Semantic vocabularies and bounds (Phase 17).
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like the
+ * import and dependency vocabularies above: the model must not depend on the scanner,
+ * and a test in `tests/symbol-graph.test.js` pins every one of these lists against the
+ * scanner's own, so a rename on either side fails the suite instead of silently
+ * retiring a value.
+ *
+ * What the model re-derives is the safety property, not the acquisition rules: a
+ * symbol name is projected only when it is bounded, printable identifier text that
+ * cannot corrupt a symbol identity, and a reference count is projected only when it
+ * is a positive integer. Which names a language permits is the acquisition
+ * contract's question; whether a name may become a model identity is this layer's.
+ */
+export const SEMANTIC_SOURCE_STATUSES = Object.freeze([
+  "parsed",
+  "unsupported",
+  "failed",
+  "not-inspected",
+]);
+
+export const SEMANTIC_SOURCE_REASONS = Object.freeze([
+  "format-not-interpreted",
+  "module-could-not-be-read",
+  "not-text",
+  "budget-exhausted",
+]);
+
+export const SEMANTIC_PROBLEM_REASONS = Object.freeze([
+  "unterminated-string",
+  "unterminated-template",
+  "unterminated-comment",
+  "unterminated-regex",
+  "unlexable-character",
+  "token-limit",
+  "unbalanced-groups",
+  "declaration-limit",
+  "reference-limit",
+  "export-limit",
+  "dynamic-scope-construct",
+  "anonymous-default-export",
+  "unsupported-export-form",
+  "unsupported-declarator",
+  "unterminated-export-clause",
+  "commonjs-module-form",
+]);
+
+/** The declaration kinds a module-scope binding can be observed as. */
+export const SYMBOL_KINDS = Object.freeze([
+  "function",
+  "class",
+  "variable",
+  "interface",
+  "type-alias",
+  "enum",
+  "namespace",
+  "imported-binding",
+]);
+
+/** How an imported binding was declared. */
+export const SYMBOL_BINDING_KINDS = Object.freeze(["default", "named", "namespace", "require"]);
+
+/** How a file exposes a name. */
+export const SYMBOL_EXPORT_FORMS = Object.freeze(["named", "default", "star", "reexport"]);
+
+/** The syntactic form of one recorded occurrence. */
+export const SYMBOL_OCCURRENCE_FORMS = Object.freeze(["reference", "call", "construct"]);
+
+/** Extensions that make a file a semantic source. The same set the import graph reads. */
+export const SEMANTIC_MODULE_EXTENSIONS = Object.freeze([
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".mts",
+  ".cts",
+  ".jsx",
+  ".tsx",
+]);
+
+/** Maximum semantic source records a scan result may carry. */
+const MAX_SEMANTIC_SOURCES = 20000;
+
+/** Maximum declarations one source record may carry. */
+const MAX_SEMANTIC_DECLARATIONS = 512;
+
+/** Maximum exports one source record may carry. */
+const MAX_SEMANTIC_EXPORTS = 512;
+
+/** Maximum distinct referenced names one source record may carry. */
+const MAX_SEMANTIC_REFERENCES = 2048;
+
+/** Longest binding name the model will keep. */
+const MAX_SYMBOL_NAME_LENGTH = 256;
+
+/**
+ * Project a name that is about to become a symbol identity.
+ *
+ * Bounded, printable, non-empty text with no whitespace and no `#`, because a symbol
+ * id is built from the file path and this name: a name that could contain the
+ * separator would make two different symbols share an id. Unlike a specifier, a name
+ * is an identity rather than a path, so anything path-shaped is refused.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function projectSymbolName(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_SYMBOL_NAME_LENGTH) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code === 0x7f) return null;
+    if (value[index] === "#" || value[index] === "/" || value[index] === "\\") return null;
+  }
+  return value;
+}
+
+/** A tri-state value: `true`, `false` or "not established". */
+function projectTriState(value, issues, path) {
+  if (value === true || value === false || value === null || value === undefined) {
+    return value === true ? true : value === false ? false : null;
+  }
+  fail(issues, path, "must be true, false or null");
+  return null;
+}
+
+/**
+ * Project the scan's semantic acquisition into per-source symbol records.
+ *
+ * One record per module source, and it carries everything the projection needs to
+ * decide what a name means: the declarations with their value shapes and their
+ * shadow/reassignment flags, the export statements, the reference counts, and the
+ * three establishment answers the scanner made. The model re-checks every one of them
+ * because a malformed ScanResult must fail here rather than become a fabricated
+ * symbol, and it never re-derives resolution — that is `symbol-graph.js`.
+ *
+ * @param {object|undefined} section The scan result's `semantics` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {{sources: object[], coverage: object}}
+ */
+function projectSemanticsSection(section, observedFilePaths, issues, record) {
+  const empty = {
+    sources: [],
+    coverage: {
+      inspected: false,
+      complete: false,
+      truncated: false,
+      sources: 0,
+      declarations: 0,
+      exports: 0,
+      references: 0,
+      calls: 0,
+      unresolved: 0,
+      unestablished: 0,
+    },
+  };
+
+  if (section === undefined || section === null) return empty;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.semantics", "must be a plain object");
+    return empty;
+  }
+  if (!Array.isArray(section.files)) {
+    fail(issues, "scanResult.semantics.files", "must be an array");
+    return empty;
+  }
+  if (section.files.length > MAX_SEMANTIC_SOURCES) {
+    fail(issues, "scanResult.semantics.files", "carries more semantic sources than a scan can report");
+    return empty;
+  }
+
+  const sources = [];
+  let declarationCount = 0;
+  let exportCount = 0;
+  let referenceCount = 0;
+  let callCount = 0;
+  let unestablishedCount = 0;
+
+  for (const source of section.files) {
+    if (!isPlainObject(source)) {
+      fail(issues, "scanResult.semantics.files[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(source.path, "scanResult.semantics.files[].path");
+    if (!observedFilePaths.has(path)) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}]`,
+        "a semantic source must be a file the inventory observed",
+      );
+      continue;
+    }
+
+    const extension = identifier(source.extension);
+    if (extension === null || !SEMANTIC_MODULE_EXTENSIONS.includes(extension)) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].extension`,
+        "must be a module source extension this build covers",
+      );
+      continue;
+    }
+    const language = identifier(source.language);
+    if (language === null) {
+      fail(issues, `scanResult.semantics.files[${path}].language`, "must be a bounded language id");
+      continue;
+    }
+
+    const status = source.status;
+    if (!SEMANTIC_SOURCE_STATUSES.includes(status)) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].status`,
+        "must be a documented semantic source status",
+      );
+      continue;
+    }
+
+    const reason =
+      source.reason === null || source.reason === undefined ? null : identifier(source.reason);
+    if (reason !== null && !SEMANTIC_SOURCE_REASONS.includes(reason)) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].reason`,
+        "must be a documented acquisition reason",
+      );
+      continue;
+    }
+    if (status === "parsed" && reason !== null) {
+      fail(issues, `scanResult.semantics.files[${path}].reason`, "must be null for a scanned source");
+      continue;
+    }
+    if (status !== "parsed" && reason === null) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].reason`,
+        "must record why the source was not scanned",
+      );
+      continue;
+    }
+
+    const detail =
+      source.detail === null || source.detail === undefined ? null : identifier(source.detail);
+
+    const established = isPlainObject(source.established) ? source.established : {};
+    const declarationsEstablished = established.declarations === true;
+    const resolutionEstablished = established.resolution === true;
+    const exportsEstablished = established.exports === true;
+    if (resolutionEstablished && !declarationsEstablished) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].established.resolution`,
+        "cannot be established while the declaration set is not",
+      );
+      continue;
+    }
+    if (status !== "parsed" && (declarationsEstablished || resolutionEstablished || exportsEstablished)) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].established`,
+        "a source that was not scanned establishes nothing",
+      );
+      continue;
+    }
+
+    const problemReasons = [];
+    let problemsValid = true;
+    for (const problem of Array.isArray(source.problems) ? source.problems : []) {
+      const problemReason = identifier(problem);
+      if (problemReason === null || !SEMANTIC_PROBLEM_REASONS.includes(problemReason)) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].problems`,
+          "must carry documented semantic problem reasons",
+        );
+        problemsValid = false;
+        break;
+      }
+      problemReasons.push(problemReason);
+    }
+    if (!problemsValid) continue;
+    problemReasons.sort();
+
+    // ── Declarations ─────────────────────────────────────────────────────────
+    const declarations = [];
+    let declarationsValid = true;
+    const rawDeclarations = Array.isArray(source.declarations) ? source.declarations : [];
+    if (rawDeclarations.length > MAX_SEMANTIC_DECLARATIONS) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].declarations`,
+        "carries more declarations than a source may state",
+      );
+      continue;
+    }
+    for (const declaration of rawDeclarations) {
+      if (!isPlainObject(declaration)) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].declarations[]`,
+          "must be a plain object",
+        );
+        declarationsValid = false;
+        break;
+      }
+      const name = projectSymbolName(declaration.name);
+      if (name === null) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].declarations[].name`,
+          "must be bounded identifier text",
+        );
+        declarationsValid = false;
+        break;
+      }
+      const kinds = [];
+      for (const kind of Array.isArray(declaration.kinds) ? declaration.kinds : []) {
+        if (!SYMBOL_KINDS.includes(kind)) {
+          fail(
+            issues,
+            `scanResult.semantics.files[${path}].declarations[${name}].kinds`,
+            "must be documented symbol kinds",
+          );
+          declarationsValid = false;
+          break;
+        }
+        if (!kinds.includes(kind)) kinds.push(kind);
+      }
+      if (!declarationsValid) break;
+      if (kinds.length === 0) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].declarations[${name}].kinds`,
+          "must state at least one kind",
+        );
+        declarationsValid = false;
+        break;
+      }
+      kinds.sort();
+
+      const exportNames = [];
+      for (const exportName of Array.isArray(declaration.exportNames) ? declaration.exportNames : []) {
+        const projected = projectSymbolName(exportName);
+        if (projected === null) {
+          fail(
+            issues,
+            `scanResult.semantics.files[${path}].declarations[${name}].exportNames`,
+            "must be bounded identifier text",
+          );
+          declarationsValid = false;
+          break;
+        }
+        if (!exportNames.includes(projected)) exportNames.push(projected);
+      }
+      if (!declarationsValid) break;
+      exportNames.sort();
+
+      let binding = null;
+      if (declaration.binding !== null && declaration.binding !== undefined) {
+        if (!isPlainObject(declaration.binding)) {
+          fail(
+            issues,
+            `scanResult.semantics.files[${path}].declarations[${name}].binding`,
+            "must be a plain object or null",
+          );
+          declarationsValid = false;
+          break;
+        }
+        if (!SYMBOL_BINDING_KINDS.includes(declaration.binding.bindingKind)) {
+          fail(
+            issues,
+            `scanResult.semantics.files[${path}].declarations[${name}].binding.kindingKind`,
+            "must be a documented binding kind",
+          );
+          declarationsValid = false;
+          break;
+        }
+        const importedName =
+          declaration.binding.importedName === null || declaration.binding.importedName === undefined
+            ? null
+            : projectSymbolName(declaration.binding.importedName);
+        const specifier =
+          declaration.binding.specifier === null || declaration.binding.specifier === undefined
+            ? null
+            : projectModuleSpecifier(declaration.binding.specifier);
+        if (declaration.binding.specifier != null && specifier === null) {
+          fail(
+            issues,
+            `scanResult.semantics.files[${path}].declarations[${name}].binding.specifier`,
+            "must be bounded, printable specifier text",
+          );
+          declarationsValid = false;
+          break;
+        }
+        binding = {
+          bindingKind: declaration.binding.bindingKind,
+          importedName,
+          specifier,
+          typeOnly: declaration.binding.typeOnly === true,
+        };
+      }
+      if (!declarationsValid) break;
+
+      declarations.push({
+        name,
+        kinds,
+        exported: declaration.exported === true || exportNames.length > 0,
+        exportNames,
+        callable: projectTriState(
+          declaration.callable,
+          issues,
+          `scanResult.semantics.files[${path}].declarations[${name}].callable`,
+        ),
+        constructable: projectTriState(
+          declaration.constructable,
+          issues,
+          `scanResult.semantics.files[${path}].declarations[${name}].constructable`,
+        ),
+        shadowed: declaration.shadowed === true,
+        reassigned: declaration.reassigned === true,
+        binding,
+      });
+    }
+    if (!declarationsValid) continue;
+
+    // ── Exports ──────────────────────────────────────────────────────────────
+    const exports = [];
+    let exportsValid = true;
+    const rawExports = Array.isArray(source.exports) ? source.exports : [];
+    if (rawExports.length > MAX_SEMANTIC_EXPORTS) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].exports`,
+        "carries more exports than a source may state",
+      );
+      continue;
+    }
+    for (const entry of rawExports) {
+      if (!isPlainObject(entry)) {
+        fail(issues, `scanResult.semantics.files[${path}].exports[]`, "must be a plain object");
+        exportsValid = false;
+        break;
+      }
+      const name =
+        entry.name === null || entry.name === undefined ? null : projectSymbolName(entry.name);
+      const localName =
+        entry.localName === null || entry.localName === undefined
+          ? null
+          : projectSymbolName(entry.localName);
+      if ((entry.name != null && name === null) || (entry.localName != null && localName === null)) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].exports[].name`,
+          "must be bounded identifier text or null",
+        );
+        exportsValid = false;
+        break;
+      }
+      if (!SYMBOL_EXPORT_FORMS.includes(entry.form)) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].exports[].form`,
+          "must be a documented export form",
+        );
+        exportsValid = false;
+        break;
+      }
+      const specifier =
+        entry.specifier === null || entry.specifier === undefined
+          ? null
+          : projectModuleSpecifier(entry.specifier);
+      if (entry.specifier != null && specifier === null) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].exports[].specifier`,
+          "must be bounded, printable specifier text",
+        );
+        exportsValid = false;
+        break;
+      }
+      exports.push({
+        name,
+        localName,
+        form: entry.form,
+        specifier,
+        typeOnly: entry.typeOnly === true,
+      });
+    }
+    if (!exportsValid) continue;
+    exports.sort(compareByKeys(["name", "form", "localName"]));
+
+    // ── Star exports, references ─────────────────────────────────────────────
+    const starExports = [];
+    let starValid = true;
+    for (const specifier of Array.isArray(source.starExports) ? source.starExports : []) {
+      const projected = projectModuleSpecifier(specifier);
+      if (projected === null) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].starExports`,
+          "must be bounded, printable specifier text",
+        );
+        starValid = false;
+        break;
+      }
+      if (!starExports.includes(projected)) starExports.push(projected);
+    }
+    if (!starValid) continue;
+    starExports.sort();
+
+    const references = [];
+    let referencesValid = true;
+    const rawReferences = Array.isArray(source.references) ? source.references : [];
+    if (rawReferences.length > MAX_SEMANTIC_REFERENCES) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}].references`,
+        "carries more referenced names than a source may state",
+      );
+      continue;
+    }
+    for (const reference of rawReferences) {
+      if (!isPlainObject(reference)) {
+        fail(issues, `scanResult.semantics.files[${path}].references[]`, "must be a plain object");
+        referencesValid = false;
+        break;
+      }
+      const name = projectSymbolName(reference.name);
+      if (name === null || !SYMBOL_OCCURRENCE_FORMS.includes(reference.form)) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].references[]`,
+          "must carry a bounded name and a documented occurrence form",
+        );
+        referencesValid = false;
+        break;
+      }
+      const count = Number.isInteger(reference.count) && reference.count > 0 ? reference.count : null;
+      if (count === null) {
+        fail(
+          issues,
+          `scanResult.semantics.files[${path}].references[].count`,
+          "must be a positive integer",
+        );
+        referencesValid = false;
+        break;
+      }
+      references.push({ name, form: reference.form, count });
+    }
+    if (!referencesValid) continue;
+    references.sort(compareByKeys(["name", "form"]));
+
+    if (
+      status !== "parsed" &&
+      (declarations.length > 0 || exports.length > 0 || references.length > 0 || starExports.length > 0)
+    ) {
+      fail(
+        issues,
+        `scanResult.semantics.files[${path}]`,
+        "a source that was not scanned states no declaration, export or reference",
+      );
+      continue;
+    }
+
+    const counts = isPlainObject(source.counts) ? source.counts : {};
+    const countOf = (field) => (Number.isInteger(counts[field]) && counts[field] >= 0 ? counts[field] : 0);
+    const callSites = countOf("calls") + countOf("constructs");
+
+    const evidenceId = record(
+      createSymbolSourceObservation({
+        path,
+        language,
+        status,
+        reason,
+        detail,
+        declarations: declarations.length,
+        exports: exports.length,
+        references: countOf("references") + callSites,
+        calls: callSites,
+        problems: problemReasons,
+        declarationsEstablished,
+        resolutionEstablished,
+        exportsEstablished,
+        truncated: source.truncated === true,
+      }),
+    );
+
+    declarationCount += declarations.length;
+    exportCount += exports.length;
+    referenceCount += countOf("references");
+    callCount += callSites;
+    if (!declarationsEstablished || !resolutionEstablished) unestablishedCount += 1;
+
+    sources.push({
+      path,
+      extension,
+      languageId: entityId(ENTITY_KINDS.LANGUAGE, language),
+      status,
+      reason,
+      detail,
+      bytesInspected:
+        Number.isInteger(source.bytesInspected) && source.bytesInspected >= 0
+          ? source.bytesInspected
+          : 0,
+      truncated: source.truncated === true || status === "not-inspected",
+      established: { declarationsEstablished, resolutionEstablished, exportsEstablished },
+      declarations,
+      exports,
+      starExports,
+      references,
+      problems: problemReasons,
+      counts: {
+        declarations: declarations.length,
+        exports: exports.length,
+        names: references.length,
+        references: countOf("references"),
+        calls: countOf("calls"),
+        constructs: countOf("constructs"),
+        tokens: countOf("tokens"),
+      },
+      evidenceId,
+    });
+  }
+
+  return {
+    sources: sources.sort(compareByKeys(["path"])),
+    coverage: {
+      inspected: section.inspected === true,
+      complete: section.complete === true,
+      truncated: section.truncated === true,
+      sources: sources.length,
+      declarations: declarationCount,
+      exports: exportCount,
+      references: referenceCount,
+      calls: callCount,
+      // Filled by the graph projection, which is where resolution happens; the
+      // section itself can only count what it acquired.
+      unresolved: 0,
+      unestablished: unestablishedCount,
+    },
+  };
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -1864,6 +2511,18 @@ export function buildEntities(scanResult, repositoryIdValue) {
     record,
   );
 
+  // Phase 17 — the semantic section, projected by the same rules: a record about an
+  // unobserved path fails the build, every vocabulary is re-checked here, and the
+  // records are kept exactly as the scanner established them. Resolution is still not
+  // attempted: whether a name resolves is decided by `symbol-graph.js` against the
+  // file entities and the export tables, never here.
+  const semanticsSection = projectSemanticsSection(
+    scanResult.semantics,
+    observedFilePaths,
+    issues,
+    record,
+  );
+
   // ── Testing, frameworks, CI/CD, documentation, configuration ──────────────
 
   const tests = [];
@@ -2192,6 +2851,8 @@ export function buildEntities(scanResult, repositoryIdValue) {
     dependencyCoverage: dependencySection.coverage,
     importSources: importSection.sources,
     importCoverage: importSection.coverage,
+    semanticsSources: semanticsSection.sources,
+    semanticsCoverage: semanticsSection.coverage,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

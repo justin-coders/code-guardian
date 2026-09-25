@@ -47,6 +47,7 @@ import { buildArchitectureGraph } from "./architecture-graph.js";
 import { buildEntities } from "./entities.js";
 import { buildDependencyGraph } from "./dependency-graph.js";
 import { buildImportGraph, isInterpretedLanguage } from "./import-graph.js";
+import { buildSymbolGraph } from "./symbol-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
@@ -180,6 +181,26 @@ export function buildRepositoryModel(scanResult) {
     },
   });
 
+  // Phase 17 — the symbol graph. Built from the same two inputs as the import graph
+  // (the observed file entities and this phase's own acquisition records), with the
+  // Phase 16 module resolver reused for repository-relative paths so one resolver
+  // decides what a specifier points at. Resolution here is *same-file* for references
+  // and calls — the acquisition layer proved the name unique, and nothing weaker is
+  // accepted — and *cross-file* only for exports and import bindings, where the target
+  // module's own export table establishes the name. It parses nothing and runs nothing.
+  const symbolGraph = buildSymbolGraph({
+    files: collections.files,
+    sources: collections.semanticsSources,
+    coverage: {
+      scanComplete: scan.scan.complete === true,
+      scanTruncated: scan.scan.truncated === true,
+    },
+    uninterpreted: {
+      sources: uninterpretedFiles.length,
+      extensions: uninterpretedFiles.map((file) => file.extension),
+    },
+  });
+
   const relationships = buildRelationships(
     { ...collections, importEdges: importGraph.edges },
     repositoryIdValue,
@@ -293,6 +314,27 @@ export function buildRepositoryModel(scanResult) {
         unresolved: importGraph.coverage.unresolved,
       },
       graph: importGraph,
+    },
+    // Phase 17 — the semantic substrate. `entries` is one record per module source
+    // (what it declares, exports, references and calls, and which of those three
+    // classes of claim the scanner could establish), and `graph` is the resolved
+    // projection over the observed file entities: symbol nodes, `declares` /
+    // `exports` / `references` / `calls` / `imports-binding` edges with provenance, the
+    // occurrences that are not edges, and the coverage state. No complexity, dead
+    // code, coupling or quality judgment is attached, and none can be: the model
+    // records what the repository establishes.
+    symbols: {
+      ...skeleton.symbols,
+      // Whether any module source was observed — the same "the scan saw something to
+      // interpret" statement `imports.detected` makes.
+      detected: collections.semanticsSources.length > 0,
+      entries: collections.semanticsSources,
+      count: collections.semanticsSources.length,
+      coverage: {
+        ...collections.semanticsCoverage,
+        unresolved: symbolGraph.coverage.unresolved,
+      },
+      graph: symbolGraph,
     },
     configuration: {
       detected: scan.configuration.detected,

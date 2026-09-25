@@ -124,6 +124,42 @@ export {
   resolveModuleReference,
 } from "./import-graph.js";
 
+// Phase 17 — the symbol graph: its closed vocabularies, its resolution reasons, its
+// bounds and its identity rule, plus the projection the builder materializes into
+// `model.symbols.graph`.
+export {
+  SYMBOL_GRAPH_EDGE_TYPES,
+  SYMBOL_GRAPH_EDGE_TYPE_VALUES,
+  SYMBOL_GRAPH_LIMITS,
+  SYMBOL_GRAPH_STATES,
+  SYMBOL_GRAPH_STATE_VALUES,
+  SYMBOL_GRAPH_VERSION,
+  SYMBOL_MODULE_EXTENSIONS,
+  SYMBOL_UNRESOLVED_KINDS,
+  SYMBOL_UNRESOLVED_REASONS,
+  SYMBOL_UNRESOLVED_REASON_VALUES,
+  buildSymbolGraph,
+  isEstablishedSymbolState,
+  isSymbolSourceEstablished,
+  isSymbolSourceResolvable,
+  symbolGraphState,
+  symbolIdOf,
+} from "./symbol-graph.js";
+
+// Phase 17 — the semantic vocabularies the model re-declares, so a consumer of the
+// model never has to import the acquisition layer.
+export {
+  SEMANTIC_MODULE_EXTENSIONS,
+  SEMANTIC_PROBLEM_REASONS,
+  SEMANTIC_SOURCE_REASONS,
+  SEMANTIC_SOURCE_STATUSES as SEMANTIC_SOURCE_STATUS_VALUES,
+  SYMBOL_BINDING_KINDS,
+  SYMBOL_EXPORT_FORMS,
+  SYMBOL_KINDS,
+  SYMBOL_OCCURRENCE_FORMS,
+  projectSymbolName,
+} from "./entities.js";
+
 export {
   GRAPH_ENTITY_KINDS,
   GRAPH_RELATIONSHIP_TYPES,
@@ -222,6 +258,14 @@ export {
   createImportTraversalResult,
   createImportUnresolvedQueryResult,
   createRelationshipQueryResult,
+  createSymbolBindingQueryResult,
+  createSymbolEdgeQueryResult,
+  createSymbolGraphResult,
+  createSymbolNodeQueryResult,
+  createSymbolPathResult,
+  createSymbolReferenceResult,
+  createSymbolTraversalResult,
+  createSymbolUnresolvedQueryResult,
   createTraversalResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
@@ -236,6 +280,14 @@ export {
   validateImportTraversalResult,
   validateImportUnresolvedQueryResult,
   validateRelationshipQueryResult,
+  validateSymbolBindingQueryResult,
+  validateSymbolEdgeQueryResult,
+  validateSymbolGraphResult,
+  validateSymbolNodeQueryResult,
+  validateSymbolPathResult,
+  validateSymbolReferenceResult,
+  validateSymbolTraversalResult,
+  validateSymbolUnresolvedQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";
 
