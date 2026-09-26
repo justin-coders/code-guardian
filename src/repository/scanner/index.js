@@ -153,6 +153,24 @@ export {
 export { detectSemantics } from "./detectors/semantics.js";
 
 export {
+  API_ACQUISITION_LIMITS,
+  API_FRAMEWORKS,
+  API_HTTP_METHODS,
+  API_PROBLEMS,
+  API_RECEIVER_KINDS,
+  API_ROUTE_METHODS,
+  API_SHAPE_REASONS,
+  API_SOURCE_REASONS,
+  API_SOURCE_STATUSES,
+  API_UNSUPPORTED_FRAMEWORKS,
+  isUsableApiName,
+  isUsableRoutePath,
+  scanApiRoutes,
+} from "./policies/api.js";
+
+export { detectApi } from "./detectors/api.js";
+
+export {
   SCAN_OPTION_KEYS,
   TRUNCATION_REASONS,
   scanRepository,

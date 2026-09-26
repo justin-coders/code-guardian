@@ -48,6 +48,12 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // always emits it, empty by default) because a consumer must be able to tell "this
   // repository establishes no symbol" from "this model says nothing about symbols".
   "symbols",
+  // Phase 18 — the API substrate: which HTTP routes each module declares on a framework
+  // registrar it establishes, and which handler/middleware symbols those routes connect
+  // to. A required area like every other one (the factory always emits it, empty by
+  // default) because a consumer must be able to tell "this repository exposes no route"
+  // from "this model says nothing about routes".
+  "api",
   "scan",
   "metadata",
 ]);
@@ -144,6 +150,7 @@ export function createRepositoryModel(overrides = {}) {
     architecture: overrides.architecture ?? {},
     imports: overrides.imports ?? {},
     symbols: overrides.symbols ?? {},
+    api: overrides.api ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

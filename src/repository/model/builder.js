@@ -43,6 +43,7 @@ import {
   REPOSITORY_MODEL_BUILDER_VERSION,
   validateRepositoryModelGraph,
 } from "./contracts.js";
+import { buildApiGraph } from "./api-graph.js";
 import { buildArchitectureGraph } from "./architecture-graph.js";
 import { buildEntities } from "./entities.js";
 import { buildDependencyGraph } from "./dependency-graph.js";
@@ -201,6 +202,24 @@ export function buildRepositoryModel(scanResult) {
     },
   });
 
+  // Phase 18 — the API graph. Built from this phase's own acquisition records and the
+  // symbol graph above, so a route handler points at a Phase 17 symbol node rather than
+  // duplicating it. It reads only the model's already-frozen facts: no file, no parser,
+  // no runtime router, no HTTP.
+  const apiGraph = buildApiGraph({
+    sources: collections.apiSources,
+    semanticsSources: collections.semanticsSources,
+    symbolGraph,
+    coverage: {
+      scanComplete: scan.scan.complete === true,
+      scanTruncated: scan.scan.truncated === true,
+    },
+    uninterpreted: {
+      sources: uninterpretedFiles.length,
+      extensions: uninterpretedFiles.map((file) => file.extension),
+    },
+  });
+
   const relationships = buildRelationships(
     { ...collections, importEdges: importGraph.edges },
     repositoryIdValue,
@@ -335,6 +354,24 @@ export function buildRepositoryModel(scanResult) {
         unresolved: symbolGraph.coverage.unresolved,
       },
       graph: symbolGraph,
+    },
+    // Phase 18 — the API substrate. `entries` is one record per module source (the
+    // frameworks it established, the routes it declared and the route-shaped
+    // occurrences it could not establish), and `graph` is the resolved projection over
+    // the observed file entities and the symbol nodes: route nodes, `declares` /
+    // `handled-by` / `middleware` edges, the occurrences that are not edges, and the
+    // coverage state. No reachability, authentication, quality or request-flow judgment
+    // is attached, and none can be: the model records what the repository declares.
+    api: {
+      ...skeleton.api,
+      detected: collections.apiSources.length > 0,
+      entries: collections.apiSources,
+      count: collections.apiSources.length,
+      coverage: {
+        ...collections.apiCoverage,
+        unresolved: apiGraph.coverage.unresolved,
+      },
+      graph: apiGraph,
     },
     configuration: {
       detected: scan.configuration.detected,

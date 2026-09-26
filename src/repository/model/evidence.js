@@ -47,6 +47,8 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   IMPORT: "import",
   /** Phase 17 — a module-scope declaration, export, reference or call observation. */
   SYMBOL: "symbol",
+  /** Phase 18 — an API route declaration observation. */
+  API: "api",
 });
 
 /**
@@ -80,6 +82,10 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // borrowed vocabulary — and using it keeps the mapping honest: an observation of
   // this subject is *about* names the source declares, not about a graph.
   [EVIDENCE_SUBJECTS.SYMBOL]: "symbol",
+  // Core has a `graph` evidence type (Phase 7), which is what a route is: an
+  // endpoint the repository establishes between a path and a handler. Using it keeps
+  // the Phase 7 vocabulary closed rather than inventing an "api" type.
+  [EVIDENCE_SUBJECTS.API]: "graph",
 });
 
 /**
@@ -354,6 +360,75 @@ export function createImportSourceObservation({
 export const SYMBOL_SIGNALS = Object.freeze({
   SOURCE: "symbol-source",
 });
+
+/**
+ * Signals recorded on API route observations (Phase 18).
+ *
+ * One record per module source, deliberately: the model's per-file record already
+ * carries the routes, the framework bindings and the route-shaped observations that
+ * could not be established, and duplicating every route into the evidence list would
+ * multiply the model's size without adding a fact. The record states what the file was
+ * as an API source — which frameworks it established, how many routes it declared and
+ * how many route-shaped occurrences it could not establish — and it is the provenance
+ * every route from that file cites.
+ */
+export const API_SIGNALS = Object.freeze({
+  SOURCE: "api-source",
+});
+
+/**
+ * Build the observation for one module source's API route scan.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.language Module language id (`javascript` / `typescript`).
+ * @param {string} input.status Parsed / unsupported / failed / not-inspected.
+ * @param {string|null} input.reason Bounded reason when not scanned.
+ * @param {string|null} input.detail Bounded detail token (a failure kind, an extension).
+ * @param {string[]} input.frameworks Supported frameworks the source established.
+ * @param {string[]} input.unsupportedFrameworks Recognised-but-unsupported frameworks.
+ * @param {number} input.routes Route declarations established.
+ * @param {number} input.shapes Route-shaped occurrences that produced no route.
+ * @param {string[]} input.problems Bounded problem reason ids.
+ * @param {boolean} input.established Whether the source's route set is trustworthy.
+ * @param {boolean} input.truncated Whether a byte or token budget cut the file short.
+ * @returns {object} A Core Evidence object.
+ */
+export function createApiSourceObservation({
+  path,
+  language,
+  status,
+  reason,
+  detail,
+  frameworks,
+  unsupportedFrameworks,
+  routes,
+  shapes,
+  problems,
+  established,
+  truncated,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.API,
+    key: `${API_SIGNALS.SOURCE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.API],
+    path,
+    data: {
+      signal: API_SIGNALS.SOURCE,
+      language,
+      status,
+      reason,
+      detail,
+      frameworks: [...frameworks],
+      unsupportedFrameworks: [...unsupportedFrameworks],
+      routes,
+      shapes,
+      problems: [...problems],
+      established,
+      truncated,
+    },
+  });
+}
 
 /**
  * Build the observation for one module source's semantic scan.

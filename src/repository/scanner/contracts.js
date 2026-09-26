@@ -64,6 +64,17 @@ import {
   isUsableSpecifier,
 } from "./policies/imports.js";
 import {
+  API_FRAMEWORK_VALUES,
+  API_PROBLEM_VALUES,
+  API_RECEIVER_KINDS,
+  API_ROUTE_METHODS,
+  API_SHAPE_REASON_VALUES,
+  API_SOURCE_REASON_VALUES,
+  API_SOURCE_STATUSES,
+  API_SOURCE_STATUS_VALUES,
+  API_UNSUPPORTED_FRAMEWORKS,
+} from "./policies/api.js";
+import {
   SEMANTIC_MODULE_EXTENSIONS,
   SEMANTIC_PROBLEM_VALUES,
   SEMANTIC_SOURCE_REASON_VALUES,
@@ -268,6 +279,7 @@ export function createScanResult(overrides = {}) {
   const dependencies = overrides.dependencies ?? {};
   const imports = overrides.imports ?? {};
   const semantics = overrides.semantics ?? {};
+  const api = overrides.api ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -354,6 +366,16 @@ export function createScanResult(overrides = {}) {
       truncated: semantics.truncated ?? false,
       files: semantics.files ?? [],
       limits: semantics.limits ?? {},
+    },
+    // Phase 18 — the same three-state discipline for API route acquisition: a draft
+    // that declares nothing about routes must not look like one whose sources were
+    // scanned and found to declare none.
+    api: {
+      inspected: api.inspected ?? false,
+      complete: api.complete ?? false,
+      truncated: api.truncated ?? false,
+      files: api.files ?? [],
+      limits: api.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -987,6 +1009,245 @@ function collectImportsIssues(section, ctx, path) {
 }
 
 /**
+ * Validate the `api` section (Phase 18).
+ *
+ * Every closed vocabulary is re-checked here, plus the structural invariants the
+ * projection depends on: a source that was not scanned states no route, every route's
+ * method is in the recorded vocabulary and its path is usable, and `complete` cannot
+ * be true unless every module source was parsed without truncation or problems.
+ */
+function collectApiIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") ctx.fail(`${path}.${field}`, "must be a boolean");
+  }
+  if (!isPlainObject(section.limits)) ctx.fail(`${path}.limits`, "must be a plain object");
+  if (!Array.isArray(section.files)) {
+    ctx.fail(`${path}.files`, "must be an array");
+    return;
+  }
+
+  const receiverKinds = Object.values(API_RECEIVER_KINDS);
+  const unsupportedFrameworks = Object.values(API_UNSUPPORTED_FRAMEWORKS);
+  const handlerForms = ["reference", "inline"];
+
+  section.files.forEach((record, index) => {
+    const at = `${path}.files[${index}]`;
+    if (!isPlainObject(record)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    for (const field of ["path", "extension", "language"]) {
+      if (!isNonEmptyString(record[field])) ctx.fail(`${at}.${field}`, "must be a non-empty string");
+    }
+    if (isNonEmptyString(record.path) && isAbsolutePath(record.path)) {
+      ctx.fail(`${at}.path`, "must be a repository-relative path");
+    }
+    if (!SEMANTIC_MODULE_EXTENSIONS.includes(record.extension)) {
+      ctx.fail(`${at}.extension`, "must be a module source extension this build covers");
+    }
+    if (!API_SOURCE_STATUS_VALUES.includes(record.status)) {
+      ctx.fail(`${at}.status`, `must be one of: ${API_SOURCE_STATUS_VALUES.join(", ")}`);
+    }
+    if (
+      record.reason !== null &&
+      record.reason !== undefined &&
+      !API_SOURCE_REASON_VALUES.includes(record.reason)
+    ) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${API_SOURCE_REASON_VALUES.join(", ")}`);
+    }
+    if (record.status === API_SOURCE_STATUSES.PARSED && record.reason != null) {
+      ctx.fail(`${at}.reason`, "must be null for a scanned module source");
+    }
+    if (record.status !== API_SOURCE_STATUSES.PARSED && record.reason == null) {
+      ctx.fail(`${at}.reason`, "must record why the module source was not scanned");
+    }
+    if (record.detail !== null && record.detail !== undefined && !isNonEmptyString(record.detail)) {
+      ctx.fail(`${at}.detail`, "must be a bounded identifier or null");
+    }
+    if (!isNonNegativeInteger(record.bytesInspected)) {
+      ctx.fail(`${at}.bytesInspected`, "must be a non-negative integer");
+    }
+    if (typeof record.truncated !== "boolean") ctx.fail(`${at}.truncated`, "must be a boolean");
+    if (typeof record.established !== "boolean") {
+      ctx.fail(`${at}.established`, "must be a boolean");
+    }
+    if (record.status !== API_SOURCE_STATUSES.PARSED && record.established === true) {
+      ctx.fail(`${at}.established`, "cannot be established for a module source that was not scanned");
+    }
+
+    if (!Array.isArray(record.frameworks)) {
+      ctx.fail(`${at}.frameworks`, "must be an array");
+    } else {
+      record.frameworks.forEach((framework, frameworkIndex) => {
+        if (!API_FRAMEWORK_VALUES.includes(framework)) {
+          ctx.fail(`${at}.frameworks[${frameworkIndex}]`, "must be a supported framework");
+        }
+      });
+    }
+    if (!Array.isArray(record.unsupportedFrameworks)) {
+      ctx.fail(`${at}.unsupportedFrameworks`, "must be an array");
+    } else {
+      record.unsupportedFrameworks.forEach((framework, frameworkIndex) => {
+        if (!unsupportedFrameworks.includes(framework)) {
+          ctx.fail(`${at}.unsupportedFrameworks[${frameworkIndex}]`, "must be a recognised framework");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.receivers)) {
+      ctx.fail(`${at}.receivers`, "must be an array");
+    } else {
+      record.receivers.forEach((receiver, receiverIndex) => {
+        const receiverAt = `${at}.receivers[${receiverIndex}]`;
+        if (!isPlainObject(receiver)) {
+          ctx.fail(receiverAt, "must be a plain object");
+          return;
+        }
+        if (!isNonEmptyString(receiver.name)) ctx.fail(`${receiverAt}.name`, "must be a name");
+        if (typeof receiver.framework !== "string" || receiver.framework.length === 0) {
+          ctx.fail(`${receiverAt}.framework`, "must name a framework");
+        }
+        if (typeof receiver.supported !== "boolean") {
+          ctx.fail(`${receiverAt}.supported`, "must be a boolean");
+        }
+        if (!receiverKinds.includes(receiver.kind)) {
+          ctx.fail(`${receiverAt}.kind`, `must be one of: ${receiverKinds.join(", ")}`);
+        }
+      });
+    }
+
+    if (!Array.isArray(record.routes)) {
+      ctx.fail(`${at}.routes`, "must be an array");
+    } else if (record.status !== API_SOURCE_STATUSES.PARSED && record.routes.length > 0) {
+      ctx.fail(`${at}.routes`, "must be empty for a module source that was not scanned");
+    } else {
+      record.routes.forEach((route, routeIndex) => {
+        const routeAt = `${at}.routes[${routeIndex}]`;
+        if (!isPlainObject(route)) {
+          ctx.fail(routeAt, "must be a plain object");
+          return;
+        }
+        if (!API_ROUTE_METHODS.includes(route.method)) {
+          ctx.fail(`${routeAt}.method`, `must be one of: ${API_ROUTE_METHODS.join(", ")}`);
+        }
+        if (!isNonEmptyString(route.path) || !route.path.startsWith("/")) {
+          ctx.fail(`${routeAt}.path`, "must be a route path beginning with \"/\"");
+        }
+        if (!isNonEmptyString(route.receiver)) ctx.fail(`${routeAt}.receiver`, "must be a name");
+        if (!API_FRAMEWORK_VALUES.includes(route.framework)) {
+          ctx.fail(`${routeAt}.framework`, "must be a supported framework");
+        }
+        if (!receiverKinds.includes(route.receiverKind)) {
+          ctx.fail(`${routeAt}.receiverKind`, `must be one of: ${receiverKinds.join(", ")}`);
+        }
+        if (route.form !== "direct" && route.form !== "chain") {
+          ctx.fail(`${routeAt}.form`, "must be \"direct\" or \"chain\"");
+        }
+        const callables = [
+          ...(route.handler === null ? [] : [route.handler]),
+          ...(Array.isArray(route.middleware) ? route.middleware : []),
+        ];
+        callables.forEach((callable, callableIndex) => {
+          const callableAt = `${routeAt}.callables[${callableIndex}]`;
+          if (!isPlainObject(callable)) {
+            ctx.fail(callableAt, "must be a plain object");
+            return;
+          }
+          if (!handlerForms.includes(callable.form)) {
+            ctx.fail(`${callableAt}.form`, `must be one of: ${handlerForms.join(", ")}`);
+          }
+          if (callable.form === "reference" && !isNonEmptyString(callable.name)) {
+            ctx.fail(`${callableAt}.name`, "must be a name for a reference");
+          }
+          if (
+            callable.member !== null &&
+            callable.member !== undefined &&
+            !isNonEmptyString(callable.member)
+          ) {
+            ctx.fail(`${callableAt}.member`, "must be a bounded identifier or null");
+          }
+          if (callable.form === "reference" && callable.member === undefined) {
+            ctx.fail(`${callableAt}.member`, "must be present (null for a bare reference)");
+          }
+        });
+        if (route.handler !== null && route.handler !== undefined && !isPlainObject(route.handler)) {
+          ctx.fail(`${routeAt}.handler`, "must be a plain object or null");
+        }
+        if (!Array.isArray(route.middleware)) {
+          ctx.fail(`${routeAt}.middleware`, "must be an array");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.shapes)) {
+      ctx.fail(`${at}.shapes`, "must be an array");
+    } else {
+      record.shapes.forEach((shape, shapeIndex) => {
+        const shapeAt = `${at}.shapes[${shapeIndex}]`;
+        if (!isPlainObject(shape)) {
+          ctx.fail(shapeAt, "must be a plain object");
+          return;
+        }
+        if (!API_SHAPE_REASON_VALUES.includes(shape.reason)) {
+          ctx.fail(`${shapeAt}.reason`, `must be one of: ${API_SHAPE_REASON_VALUES.join(", ")}`);
+        }
+        if (!isNonEmptyString(shape.receiver)) ctx.fail(`${shapeAt}.receiver`, "must be a name");
+        if (shape.method !== null && !API_ROUTE_METHODS.includes(shape.method)) {
+          ctx.fail(`${shapeAt}.method`, "must be null or a recorded method");
+        }
+        if (shape.path !== null && !isNonEmptyString(shape.path)) {
+          ctx.fail(`${shapeAt}.path`, "must be null or a route path");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.problems)) {
+      ctx.fail(`${at}.problems`, "must be an array");
+    } else {
+      record.problems.forEach((problem, problemIndex) => {
+        if (!API_PROBLEM_VALUES.includes(problem)) {
+          ctx.fail(`${at}.problems[${problemIndex}]`, `must be one of: ${API_PROBLEM_VALUES.join(", ")}`);
+        }
+      });
+    }
+
+    if (!isPlainObject(record.counts)) {
+      ctx.fail(`${at}.counts`, "must be a plain object");
+    } else {
+      for (const field of ["tokens", "routes", "shapes", "receivers"]) {
+        if (!isNonNegativeInteger(record.counts[field])) {
+          ctx.fail(`${at}.counts.${field}`, "must be a non-negative integer");
+        }
+      }
+      if (record.counts.routes !== (Array.isArray(record.routes) ? record.routes.length : -1)) {
+        ctx.fail(`${at}.counts.routes`, "must count the routes the source records");
+      }
+      if (record.counts.shapes !== (Array.isArray(record.shapes) ? record.shapes.length : -1)) {
+        ctx.fail(`${at}.counts.shapes`, "must count the shapes the source records");
+      }
+    }
+  });
+
+  const everySourceEstablished = section.files.every(
+    (record) =>
+      record.status === API_SOURCE_STATUSES.PARSED &&
+      record.truncated !== true &&
+      Array.isArray(record.problems) &&
+      record.problems.length === 0,
+  );
+  if (section.complete === true && !everySourceEstablished) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true unless every module source was parsed without truncation or problems",
+    );
+  }
+}
+
+/**
  * Validate the `semantics` section (Phase 17).
  *
  * Every closed vocabulary is re-checked here, plus the two structural invariants the
@@ -1387,6 +1648,7 @@ export function validateScanResult(value) {
   collectDependenciesIssues(value.dependencies, ctx, "scanResult.dependencies");
   collectImportsIssues(value.imports, ctx, "scanResult.imports");
   collectSemanticsIssues(value.semantics, ctx, "scanResult.semantics");
+  collectApiIssues(value.api, ctx, "scanResult.api");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

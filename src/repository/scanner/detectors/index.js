@@ -15,6 +15,7 @@
  * themselves and record what they could not interpret.
  */
 
+import { detectApi } from "./api.js";
 import { detectCicd } from "./cicd.js";
 import { detectConfiguration } from "./configuration.js";
 import { detectContainers } from "./containers.js";
@@ -28,9 +29,9 @@ import { detectManifests } from "./manifests.js";
 import { detectSemantics } from "./semantics.js";
 import { detectTesting } from "./testing.js";
 
-export { detectCicd, detectConfiguration, detectContainers, detectContent, detectDependencies };
-export { detectDocumentation, detectGit, detectImports, detectLanguages, detectManifests };
-export { detectSemantics, detectTesting };
+export { detectApi, detectCicd, detectConfiguration, detectContainers, detectContent };
+export { detectDependencies, detectDocumentation, detectGit, detectImports };
+export { detectLanguages, detectManifests, detectSemantics, detectTesting };
 
 /**
  * Run all detectors.
@@ -65,5 +66,10 @@ export async function runDetectors(view) {
     // are recorded as observed, and resolution against the repository is the model's
     // question, because the model owns entity identity.
     semantics: await detectSemantics(view),
+    // Phase 18 — the same module sources re-read for their API route declarations.
+    // It runs after `semantics` so a failure in one acquisition cannot hide the
+    // other, and it resolves nothing: a route's handler name is recorded as written,
+    // and whether it denotes a symbol is the model's question.
+    api: await detectApi(view),
   };
 }

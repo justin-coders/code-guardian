@@ -39,6 +39,7 @@ import {
   createDependencyDeclarationObservation,
   createDependencyResolutionObservation,
   createDependencySourceObservation,
+  createApiSourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
   createSymbolSourceObservation,
@@ -1570,6 +1571,176 @@ const MAX_SEMANTIC_REFERENCES = 2048;
 const MAX_SYMBOL_NAME_LENGTH = 256;
 
 /**
+ * API route vocabularies and bounds (Phase 18).
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like the
+ * import, dependency and semantic vocabularies above: the model must not depend on the
+ * scanner, and a test in `tests/api-graph.test.js` pins every one of these lists
+ * against the scanner's own, so a rename on either side fails the suite instead of
+ * silently retiring a value.
+ */
+export const API_SOURCE_STATUSES = Object.freeze([
+  "parsed",
+  "unsupported",
+  "failed",
+  "not-inspected",
+]);
+
+export const API_SOURCE_REASONS = Object.freeze([
+  "format-not-interpreted",
+  "unreadable",
+  "not-text",
+  "budget-exhausted",
+]);
+
+export const API_PROBLEM_REASONS = Object.freeze([
+  "lexical-failure",
+  "token-limit",
+  "unbalanced-groups",
+  "route-limit",
+  "receiver-limit",
+  "shape-limit",
+]);
+
+/** Supported route-registrar frameworks. */
+export const API_FRAMEWORKS = Object.freeze(["express", "fastify"]);
+
+/** Recognised-but-unsupported framework ids a file may import. */
+export const API_UNSUPPORTED_FRAMEWORKS = Object.freeze([
+  "koa",
+  "hapi",
+  "nestjs",
+  "next",
+  "remix",
+  "trpc",
+  "graphql",
+  "apollo",
+  "socket.io",
+  "ws",
+  "restify",
+  "polka",
+  "feathers",
+  "adonisjs",
+  "hono",
+]);
+
+/** The recorded HTTP methods a route may state. */
+export const API_ROUTE_METHODS = Object.freeze([
+  "GET",
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+  "HEAD",
+  "OPTIONS",
+  "ALL",
+]);
+
+/** What kind of route registrar a receiver is. */
+export const API_RECEIVER_KINDS = Object.freeze(["app", "router"]);
+
+/** The callable forms a handler or middleware reference can take. */
+export const API_CALLABLE_FORMS = Object.freeze(["reference", "inline"]);
+
+/** Why a route-shaped occurrence produced no route. */
+export const API_SHAPE_REASONS = Object.freeze([
+  "receiver-not-established",
+  "framework-unsupported",
+  "path-not-established",
+  "path-computed",
+  "path-concatenated",
+  "shorthand-not-established",
+  "method-not-established",
+]);
+
+/** Maximum API source records a scan result may carry. */
+const MAX_API_SOURCES = 20000;
+
+/** Maximum routes one source record may carry. */
+const MAX_API_ROUTES = 1024;
+
+/** Maximum route-shaped observations one source record may carry. */
+const MAX_API_SHAPES = 1024;
+
+/** Maximum receiver bindings one source record may carry. */
+const MAX_API_RECEIVERS = 256;
+
+/** Longest receiver/handler name the model will keep. */
+const MAX_API_NAME_LENGTH = 256;
+
+/** Longest route path the model will keep. */
+const MAX_API_PATH_LENGTH = 2048;
+
+/**
+ * Project a name that is about to become part of a route identity or an edge endpoint.
+ *
+ * Same discipline as `projectSymbolName`: bounded, printable, non-empty text with no
+ * whitespace and no separator characters, so a hostile name cannot corrupt an id.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function projectApiName(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_API_NAME_LENGTH) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x20 || code === 0x7f) return null;
+    if (value[index] === "#" || value[index] === "/" || value[index] === "\\") return null;
+  }
+  return value;
+}
+
+/**
+ * Project a route path.
+ *
+ * A path is a location, not an identity, so it may contain `/` — but never a control
+ * character, and it must begin with `/` so it can never be mistaken for a module path.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function projectRoutePath(value) {
+  if (typeof value !== "string") return null;
+  if (value.length === 0 || value.length > MAX_API_PATH_LENGTH) return null;
+  if (!value.startsWith("/")) return null;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return null;
+  }
+  return value;
+}
+
+/** Project one callable reference (`handler`/`middleware`), or `null` when absent. */
+function projectApiCallable(value, issues, path) {
+  if (value === null || value === undefined) return null;
+  if (!isPlainObject(value)) {
+    fail(issues, path, "must be a plain object or null");
+    return null;
+  }
+  const form = value.form;
+  if (!API_CALLABLE_FORMS.includes(form)) {
+    fail(issues, path + ".form", "must be a documented callable form");
+    return null;
+  }
+  if (form === "inline") {
+    return { form, name: null, member: null };
+  }
+  const name = projectApiName(value.name);
+  if (name === null) {
+    fail(issues, path + ".name", "must be a bounded identifier");
+    return null;
+  }
+  const member =
+    value.member === null || value.member === undefined ? null : projectApiName(value.member);
+  if (value.member !== null && value.member !== undefined && member === null) {
+    fail(issues, path + ".member", "must be a bounded identifier or null");
+    return null;
+  }
+  return { form, name, member };
+}
+
+/**
  * Project a name that is about to become a symbol identity.
  *
  * Bounded, printable, non-empty text with no whitespace and no `#`, because a symbol
@@ -2120,6 +2291,427 @@ function projectSemanticsSection(section, observedFilePaths, issues, record) {
 }
 
 /**
+ * Project the scan's API route acquisition into per-source records.
+ *
+ * One record per module source, carrying the framework bindings the file established,
+ * the route declarations, the route-shaped observations that produced no route, and the
+ * counts. The model re-checks every closed vocabulary because a malformed ScanResult
+ * must fail here rather than become a fabricated route, and it never resolves a handler
+ * — that is `api-graph.js`, against the symbol graph, which is where identity lives.
+ *
+ * @param {object|undefined} section The scan result's `api` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {{sources: object[], coverage: object}}
+ */
+function projectApiSection(section, observedFilePaths, issues, record) {
+  const empty = {
+    sources: [],
+    coverage: {
+      inspected: false,
+      complete: false,
+      truncated: false,
+      sources: 0,
+      routes: 0,
+      shapes: 0,
+      receivers: 0,
+      established: 0,
+      frameworks: [],
+      unsupportedFrameworks: [],
+    },
+  };
+
+  if (section === undefined || section === null) return empty;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.api", "must be a plain object");
+    return empty;
+  }
+  if (!Array.isArray(section.files)) {
+    fail(issues, "scanResult.api.files", "must be an array");
+    return empty;
+  }
+  if (section.files.length > MAX_API_SOURCES) {
+    fail(issues, "scanResult.api.files", "carries more API sources than a scan can report");
+    return empty;
+  }
+
+  const sources = [];
+  const frameworkSet = new Set();
+  const unsupportedSet = new Set();
+  let routeCount = 0;
+  let shapeCount = 0;
+  let receiverCount = 0;
+  let establishedCount = 0;
+
+  for (const source of section.files) {
+    if (!isPlainObject(source)) {
+      fail(issues, "scanResult.api.files[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(source.path, "scanResult.api.files[].path");
+    if (!observedFilePaths.has(path)) {
+      fail(issues, `scanResult.api.files[${path}]`, "names a path the inventory did not observe");
+      continue;
+    }
+    const extension = source.extension;
+    if (!SEMANTIC_MODULE_EXTENSIONS.includes(extension)) {
+      fail(issues, `scanResult.api.files[${path}].extension`, "must be a module source extension");
+      continue;
+    }
+    const language = identifier(source.language);
+    if (language === null) {
+      fail(issues, `scanResult.api.files[${path}].language`, "must be a bounded language id");
+      continue;
+    }
+    const status = source.status;
+    if (!API_SOURCE_STATUSES.includes(status)) {
+      fail(issues, `scanResult.api.files[${path}].status`, "must be a documented API source status");
+      continue;
+    }
+    let reason = source.reason ?? null;
+    if (reason !== null && !API_SOURCE_REASONS.includes(reason)) {
+      fail(issues, `scanResult.api.files[${path}].reason`, "must be a documented reason");
+      continue;
+    }
+    if (status === "parsed" && reason !== null) {
+      fail(issues, `scanResult.api.files[${path}].reason`, "must be null for a scanned source");
+      continue;
+    }
+    if (status !== "parsed" && reason === null) {
+      fail(issues, `scanResult.api.files[${path}].reason`, "must record why the source was not scanned");
+      continue;
+    }
+    const detail =
+      source.detail === null || source.detail === undefined ? null : identifier(source.detail);
+    if (source.detail !== null && source.detail !== undefined && detail === null) {
+      fail(issues, `scanResult.api.files[${path}].detail`, "must be a bounded token or null");
+      continue;
+    }
+
+    const frameworks = [];
+    if (!Array.isArray(source.frameworks)) {
+      fail(issues, `scanResult.api.files[${path}].frameworks`, "must be an array");
+      continue;
+    }
+    let bad = false;
+    for (const framework of source.frameworks) {
+      if (!API_FRAMEWORKS.includes(framework)) {
+        fail(issues, `scanResult.api.files[${path}].frameworks`, "must name a supported framework");
+        bad = true;
+        break;
+      }
+      if (!frameworks.includes(framework)) frameworks.push(framework);
+    }
+    if (bad) continue;
+    frameworks.sort();
+
+    const unsupportedFrameworks = [];
+    if (!Array.isArray(source.unsupportedFrameworks)) {
+      fail(issues, `scanResult.api.files[${path}].unsupportedFrameworks`, "must be an array");
+      continue;
+    }
+    for (const framework of source.unsupportedFrameworks) {
+      if (!API_UNSUPPORTED_FRAMEWORKS.includes(framework)) {
+        fail(
+          issues,
+          `scanResult.api.files[${path}].unsupportedFrameworks`,
+          "must name a recognised framework",
+        );
+        bad = true;
+        break;
+      }
+      if (!unsupportedFrameworks.includes(framework)) unsupportedFrameworks.push(framework);
+    }
+    if (bad) continue;
+    unsupportedFrameworks.sort();
+
+    // ── Receivers ─────────────────────────────────────────────────────────
+    const receivers = [];
+    if (!Array.isArray(source.receivers)) {
+      fail(issues, `scanResult.api.files[${path}].receivers`, "must be an array");
+      continue;
+    }
+    if (source.receivers.length > MAX_API_RECEIVERS) {
+      fail(issues, `scanResult.api.files[${path}].receivers`, "carries more receivers than allowed");
+      continue;
+    }
+    for (const receiver of source.receivers) {
+      const name = projectApiName(receiver?.name);
+      if (name === null) {
+        fail(issues, `scanResult.api.files[${path}].receivers[].name`, "must be a bounded name");
+        bad = true;
+        break;
+      }
+      const framework = receiver.framework;
+      const supported = receiver.supported === true;
+      const known =
+        (supported && API_FRAMEWORKS.includes(framework)) ||
+        (!supported && API_UNSUPPORTED_FRAMEWORKS.includes(framework));
+      if (!known) {
+        fail(issues, `scanResult.api.files[${path}].receivers[].framework`, "must name a framework");
+        bad = true;
+        break;
+      }
+      if (!API_RECEIVER_KINDS.includes(receiver.kind)) {
+        fail(issues, `scanResult.api.files[${path}].receivers[].kind`, "must be app or router");
+        bad = true;
+        break;
+      }
+      receivers.push({ name, framework, supported, kind: receiver.kind });
+    }
+    if (bad) continue;
+    receivers.sort(compareByKeys(["name"]));
+
+    // ── Routes ──────────────────────────────────────────────────────────
+    const routes = [];
+    if (!Array.isArray(source.routes)) {
+      fail(issues, `scanResult.api.files[${path}].routes`, "must be an array");
+      continue;
+    }
+    if (source.routes.length > MAX_API_ROUTES) {
+      fail(issues, `scanResult.api.files[${path}].routes`, "carries more routes than allowed");
+      continue;
+    }
+    for (const route of source.routes) {
+      if (!API_ROUTE_METHODS.includes(route?.method)) {
+        fail(issues, `scanResult.api.files[${path}].routes[].method`, "must be a recorded method");
+        bad = true;
+        break;
+      }
+      const routePath = projectRoutePath(route.path);
+      if (routePath === null) {
+        fail(issues, `scanResult.api.files[${path}].routes[].path`, "must be a route path");
+        bad = true;
+        break;
+      }
+      const receiverName = projectApiName(route.receiver);
+      if (receiverName === null) {
+        fail(issues, `scanResult.api.files[${path}].routes[].receiver`, "must be a bounded name");
+        bad = true;
+        break;
+      }
+      if (!API_FRAMEWORKS.includes(route.framework)) {
+        fail(issues, `scanResult.api.files[${path}].routes[].framework`, "must be supported");
+        bad = true;
+        break;
+      }
+      if (!API_RECEIVER_KINDS.includes(route.receiverKind)) {
+        fail(issues, `scanResult.api.files[${path}].routes[].receiverKind`, "must be app or router");
+        bad = true;
+        break;
+      }
+      if (route.form !== "direct" && route.form !== "chain") {
+        fail(issues, `scanResult.api.files[${path}].routes[].form`, "must be direct or chain");
+        bad = true;
+        break;
+      }
+      const handler = projectApiCallable(
+        route.handler,
+        issues,
+        `scanResult.api.files[${path}].routes[].handler`,
+      );
+      if (route.handler !== null && route.handler !== undefined && handler === null) {
+        bad = true;
+        break;
+      }
+      const middleware = [];
+      if (!Array.isArray(route.middleware)) {
+        fail(issues, `scanResult.api.files[${path}].routes[].middleware`, "must be an array");
+        bad = true;
+        break;
+      }
+      for (const entry of route.middleware) {
+        const callable = projectApiCallable(
+          entry,
+          issues,
+          `scanResult.api.files[${path}].routes[].middleware[]`,
+        );
+        if (callable === null) {
+          bad = true;
+          break;
+        }
+        middleware.push(callable);
+      }
+      if (bad) break;
+      routes.push({
+        method: route.method,
+        path: routePath,
+        receiver: receiverName,
+        framework: route.framework,
+        receiverKind: route.receiverKind,
+        form: route.form,
+        handler,
+        middleware,
+      });
+    }
+    if (bad) continue;
+    routes.sort(compareByKeys(["method", "path", "receiver"]));
+
+    // ── Route-shaped observations ────────────────────────────────────────
+    const shapes = [];
+    if (!Array.isArray(source.shapes)) {
+      fail(issues, `scanResult.api.files[${path}].shapes`, "must be an array");
+      continue;
+    }
+    if (source.shapes.length > MAX_API_SHAPES) {
+      fail(issues, `scanResult.api.files[${path}].shapes`, "carries more shapes than allowed");
+      continue;
+    }
+    for (const shape of source.shapes) {
+      if (!API_SHAPE_REASONS.includes(shape?.reason)) {
+        fail(issues, `scanResult.api.files[${path}].shapes[].reason`, "must be a documented reason");
+        bad = true;
+        break;
+      }
+      const receiverName = projectApiName(shape.receiver);
+      if (receiverName === null) {
+        fail(issues, `scanResult.api.files[${path}].shapes[].receiver`, "must be a bounded name");
+        bad = true;
+        break;
+      }
+      const shapePath =
+        shape.path === null || shape.path === undefined ? null : projectRoutePath(shape.path);
+      if (shape.path !== null && shape.path !== undefined && shapePath === null) {
+        fail(issues, `scanResult.api.files[${path}].shapes[].path`, "must be a route path or null");
+        bad = true;
+        break;
+      }
+      const method = shape.method === null || shape.method === undefined ? null : shape.method;
+      if (method !== null && !API_ROUTE_METHODS.includes(method)) {
+        fail(issues, `scanResult.api.files[${path}].shapes[].method`, "must be null or a method");
+        bad = true;
+        break;
+      }
+      const framework =
+        shape.framework === null || shape.framework === undefined ? null : shape.framework;
+      if (
+        framework !== null &&
+        !API_FRAMEWORKS.includes(framework) &&
+        !API_UNSUPPORTED_FRAMEWORKS.includes(framework)
+      ) {
+        fail(issues, `scanResult.api.files[${path}].shapes[].framework`, "must name a framework");
+        bad = true;
+        break;
+      }
+      shapes.push({
+        receiver: receiverName,
+        framework,
+        supported: shape.supported === true,
+        method,
+        path: shapePath,
+        reason: shape.reason,
+      });
+    }
+    if (bad) continue;
+    shapes.sort(compareByKeys(["reason", "receiver", "path"]));
+
+    // ── Problems and counters ───────────────────────────────────────────
+    const problemReasons = [];
+    if (!Array.isArray(source.problems)) {
+      fail(issues, `scanResult.api.files[${path}].problems`, "must be an array");
+      continue;
+    }
+    for (const problem of source.problems) {
+      if (!API_PROBLEM_REASONS.includes(problem)) {
+        fail(issues, `scanResult.api.files[${path}].problems[]`, "must be a documented problem");
+        bad = true;
+        break;
+      }
+      if (!problemReasons.includes(problem)) problemReasons.push(problem);
+    }
+    if (bad) continue;
+    problemReasons.sort();
+
+    if (
+      status !== "parsed" &&
+      (routes.length > 0 || shapes.length > 0 || receivers.length > 0)
+    ) {
+      fail(
+        issues,
+        `scanResult.api.files[${path}]`,
+        "a source that was not scanned states no route, shape or receiver",
+      );
+      continue;
+    }
+
+    const established = source.established === true && status === "parsed";
+    const bytesInspected =
+      Number.isInteger(source.bytesInspected) && source.bytesInspected >= 0
+        ? source.bytesInspected
+        : 0;
+    const truncated = source.truncated === true || status === "not-inspected";
+
+    const evidenceId = record(
+      createApiSourceObservation({
+        path,
+        language,
+        status,
+        reason,
+        detail,
+        frameworks,
+        unsupportedFrameworks,
+        routes: routes.length,
+        shapes: shapes.length,
+        problems: problemReasons,
+        established,
+        truncated,
+      }),
+    );
+
+    for (const framework of frameworks) frameworkSet.add(framework);
+    for (const framework of unsupportedFrameworks) unsupportedSet.add(framework);
+    routeCount += routes.length;
+    shapeCount += shapes.length;
+    receiverCount += receivers.length;
+    if (established) establishedCount += 1;
+
+    sources.push({
+      path,
+      extension,
+      languageId: entityId(ENTITY_KINDS.LANGUAGE, language),
+      status,
+      reason,
+      detail,
+      bytesInspected,
+      truncated,
+      established,
+      frameworks,
+      unsupportedFrameworks,
+      receivers,
+      routes,
+      shapes,
+      problems: problemReasons,
+      counts: {
+        tokens: isPlainObject(source.counts) && Number.isInteger(source.counts.tokens)
+          ? Math.max(0, source.counts.tokens)
+          : 0,
+        routes: routes.length,
+        shapes: shapes.length,
+        receivers: receivers.length,
+      },
+      evidenceId,
+    });
+  }
+
+  return {
+    sources: sources.sort(compareByKeys(["path"])),
+    coverage: {
+      inspected: section.inspected === true,
+      complete: section.complete === true,
+      truncated: section.truncated === true,
+      sources: sources.length,
+      routes: routeCount,
+      shapes: shapeCount,
+      receivers: receiverCount,
+      established: establishedCount,
+      frameworks: [...frameworkSet].sort(),
+      unsupportedFrameworks: [...unsupportedSet].sort(),
+    },
+  };
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -2523,6 +3115,18 @@ export function buildEntities(scanResult, repositoryIdValue) {
     record,
   );
 
+  // Phase 18 — the API route section, projected by the same rules: a record about an
+  // unobserved path fails the build, every vocabulary is re-checked here, and the
+  // framework bindings and routes are kept exactly as the scanner established them.
+  // Handler resolution is still not attempted: whether a handler name denotes a symbol
+  // is decided by `api-graph.js` against the symbol graph, never here.
+  const apiSection = projectApiSection(
+    scanResult.api,
+    observedFilePaths,
+    issues,
+    record,
+  );
+
   // ── Testing, frameworks, CI/CD, documentation, configuration ──────────────
 
   const tests = [];
@@ -2765,6 +3369,18 @@ export function buildEntities(scanResult, repositoryIdValue) {
       fail(issues, "scanResult.imports.files", "must describe each module source once");
     }
   }
+  {
+    const languageIds = new Set(languages.map((language) => language.id));
+    for (const source of apiSection.sources) {
+      if (!languageIds.has(source.languageId)) {
+        fail(
+          issues,
+          `scanResult.api.files[${source.path}].language`,
+          "an API source's language was not observed",
+        );
+      }
+    }
+  }
 
   // ── Provenance assignment ─────────────────────────────────────────────────
   //
@@ -2853,6 +3469,8 @@ export function buildEntities(scanResult, repositoryIdValue) {
     importCoverage: importSection.coverage,
     semanticsSources: semanticsSection.sources,
     semanticsCoverage: semanticsSection.coverage,
+    apiSources: apiSection.sources,
+    apiCoverage: apiSection.coverage,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

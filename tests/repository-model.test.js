@@ -258,6 +258,49 @@ function semanticsSection(overrides = {}) {
   };
 }
 
+/** A minimal API section, so the `api` evidence subject is exercised. */
+function apiSection(overrides = {}) {
+  return {
+    inspected: true,
+    complete: false,
+    truncated: false,
+    files: [
+      {
+        path: "src/app.ts",
+        extension: ".ts",
+        language: "typescript",
+        status: "parsed",
+        reason: null,
+        detail: null,
+        bytesInspected: 120,
+        truncated: false,
+        established: true,
+        frameworks: ["express"],
+        unsupportedFrameworks: [],
+        aliases: [{ name: "express", framework: "express", supported: true }],
+        receivers: [{ name: "app", framework: "express", supported: true, kind: "app" }],
+        routes: [
+          {
+            method: "GET",
+            path: "/status",
+            receiver: "app",
+            framework: "express",
+            receiverKind: "app",
+            form: "direct",
+            handler: { form: "reference", name: "run", member: null, position: 1 },
+            middleware: [],
+          },
+        ],
+        shapes: [],
+        problems: [],
+        counts: { tokens: 24, routes: 1, shapes: 0, receivers: 1 },
+      },
+    ],
+    limits: { maxFiles: 2000, maxFileBytes: 262144, maxTotalBytes: 33554432 },
+    ...overrides,
+  };
+}
+
 function dependencyScan(overrides = {}) {
   return populatedScan({
     dependencies: {
@@ -767,6 +810,7 @@ describe("model: evidence", () => {
       dependencyScan({
         imports: importsSection(),
         semantics: semanticsSection(),
+        api: apiSection(),
         content: {
           inspected: true,
           complete: false,

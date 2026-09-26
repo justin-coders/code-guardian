@@ -42,6 +42,13 @@ import {
   DEPENDENCY_GRAPH_STATE_VALUES,
 } from "./dependency-graph.js";
 import {
+  API_CALLABLE_FORMS,
+  API_FRAMEWORKS,
+  API_PROBLEM_REASONS,
+  API_RECEIVER_KINDS,
+  API_ROUTE_METHODS,
+  API_SHAPE_REASONS,
+  API_SOURCE_STATUSES,
   DEPENDENCY_SCOPES,
   DEPENDENCY_SOURCE_STATUSES,
   DEPENDENCY_SPEC_KINDS,
@@ -81,6 +88,17 @@ import {
   isEstablishedSymbolState,
   symbolIdOf,
 } from "./symbol-graph.js";
+import {
+  API_GRAPH_EDGE_TYPES,
+  API_GRAPH_EDGE_TYPE_VALUES,
+  API_GRAPH_LIMITS,
+  API_GRAPH_STATES,
+  API_GRAPH_STATE_VALUES,
+  API_UNRESOLVED_KINDS,
+  API_UNRESOLVED_REASON_VALUES,
+  apiRouteIdOf,
+  isEstablishedApiState,
+} from "./api-graph.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -2103,6 +2121,319 @@ export function validateRepositoryModelGraph(model) {
       if (isPlainObject(symbolsArea.coverage) && isPlainObject(symbolsArea.graph?.coverage)) {
         if (symbolsArea.coverage.unresolved !== symbolsArea.graph.coverage.unresolved) {
           fail("symbols.coverage.unresolved", "must agree with the graph it summarises");
+        }
+      }
+    }
+  }
+
+  // ── API graph (Phase 18) ──────────────────────────────────────────────────
+  //
+  // Validated with the same care as the symbol graph, and for the same reason: a route
+  // makes a claim (*this repository exposes this endpoint, handled by this symbol*), so a
+  // malformed graph can mislead a rule into reporting an API surface the repository never
+  // declared.
+  //
+  // The invariants that carry the weight:
+  //
+  //   - a route node's id **is** the identity of the endpoint (`route:METHOD:path`), so a
+  //     fabricated route cannot be smuggled in by inventing an id;
+  //   - `handled-by` / `middleware` may only name a symbol the Phase 17 graph carries, and
+  //     a route may only be `declared` by a file the model observed — no invented endpoint;
+  //   - a state of `complete` requires the scan behind it to have finished and every
+  //     source to have established its route set.
+  {
+    const apiArea = model.api;
+    if (!isPlainObject(apiArea)) {
+      fail("api", "must be a plain object");
+    } else {
+      const filePaths = new Set(model.files.entries.map((file) => file.path));
+      const fileIds = new Set(model.files.entries.map((file) => file.id));
+      const symbolNodeIds = new Set(
+        (Array.isArray(model.symbols?.graph?.nodes) ? model.symbols.graph.nodes : []).map(
+          (node) => node.id,
+        ),
+      );
+      const evidenceIds = new Set(
+        (Array.isArray(model.evidence) ? model.evidence : []).map((record) => record?.id),
+      );
+      const entries = apiArea.entries;
+
+      if (typeof apiArea.detected !== "boolean") fail("api.detected", "must be a boolean");
+      if (!Array.isArray(entries)) {
+        fail("api.entries", "must be an array");
+      } else {
+        const seen = new Set();
+        for (const source of entries) {
+          const at = `api.entries[${source?.path}]`;
+          if (!isPlainObject(source)) {
+            fail("api.entries", "every API source must be a plain object");
+            continue;
+          }
+          if (!filePaths.has(source.path)) {
+            fail(at, "must name a file the model observed");
+            continue;
+          }
+          if (seen.has(source.path)) fail(at, "must describe each API source once");
+          seen.add(source.path);
+
+          if (!SEMANTIC_MODULE_EXTENSIONS.includes(source.extension)) {
+            fail(`${at}.extension`, "must be a module source extension");
+          }
+          if (!API_SOURCE_STATUSES.includes(source.status)) {
+            fail(`${at}.status`, "must be a documented API source status");
+          }
+          if (typeof source.established !== "boolean") {
+            fail(`${at}.established`, "must be a boolean");
+          }
+          if (!Array.isArray(source.frameworks)) {
+            fail(`${at}.frameworks`, "must be an array");
+          } else {
+            for (const framework of source.frameworks) {
+              if (!API_FRAMEWORKS.includes(framework)) {
+                fail(`${at}.frameworks`, "must name a supported framework");
+              }
+            }
+          }
+          if (!Array.isArray(source.routes)) {
+            fail(`${at}.routes`, "must be an array");
+          } else {
+            for (const route of source.routes) {
+              if (!API_ROUTE_METHODS.includes(route?.method)) {
+                fail(`${at}.routes[].method`, "must be a recorded method");
+              }
+              if (typeof route?.path !== "string" || !route.path.startsWith("/")) {
+                fail(`${at}.routes[].path`, "must be a route path");
+              }
+              if (!API_FRAMEWORKS.includes(route?.framework)) {
+                fail(`${at}.routes[].framework`, "must name a supported framework");
+              }
+              if (!API_RECEIVER_KINDS.includes(route?.receiverKind)) {
+                fail(`${at}.routes[].receiverKind`, "must be app or router");
+              }
+              const callables = [
+                ...(route?.handler == null ? [] : [route.handler]),
+                ...(Array.isArray(route?.middleware) ? route.middleware : []),
+              ];
+              for (const callable of callables) {
+                if (!API_CALLABLE_FORMS.includes(callable?.form)) {
+                  fail(`${at}.routes[].callables`, "must be a documented callable form");
+                }
+              }
+            }
+          }
+          if (!Array.isArray(source.shapes)) {
+            fail(`${at}.shapes`, "must be an array");
+          } else {
+            for (const shape of source.shapes) {
+              if (!API_SHAPE_REASONS.includes(shape?.reason)) {
+                fail(`${at}.shapes[].reason`, "must be a documented reason");
+              }
+            }
+          }
+          if (!Array.isArray(source.problems)) {
+            fail(`${at}.problems`, "must be an array");
+          } else {
+            for (const problem of source.problems) {
+              if (!API_PROBLEM_REASONS.includes(problem)) {
+                fail(`${at}.problems[]`, "must be a documented problem");
+              }
+            }
+          }
+          if (!evidenceIds.has(source.evidenceId)) {
+            fail(`${at}.evidenceId`, "must name an observation the model carries");
+          }
+        }
+      }
+      if (apiArea.count !== (Array.isArray(entries) ? entries.length : 0)) {
+        fail("api.count", "must count the API sources the area carries");
+      }
+
+      const graph = apiArea.graph;
+      if (!isPlainObject(graph)) {
+        fail("api.graph", "must be a plain object");
+      } else {
+        const routeIds = new Set();
+        if (!isNonEmptyString(graph.version)) fail("api.graph.version", "must be a non-empty string");
+        if (!API_GRAPH_STATE_VALUES.includes(graph.state)) {
+          fail("api.graph.state", `must be one of: ${API_GRAPH_STATE_VALUES.join(", ")}`);
+        }
+        if (typeof graph.established !== "boolean") {
+          fail("api.graph.established", "must be a boolean");
+        } else if (graph.established !== isEstablishedApiState(graph.state)) {
+          fail("api.graph.established", "must agree with the state it reports");
+        }
+
+        if (!Array.isArray(graph.nodes)) {
+          fail("api.graph.nodes", "must be an array");
+        } else {
+          if (graph.nodes.length > API_GRAPH_LIMITS.MAX_ROUTES) {
+            fail("api.graph.nodes", "must stay within the graph node bound");
+          }
+          let previous = null;
+          graph.nodes.forEach((node, index) => {
+            const at = `api.graph.nodes[${index}]`;
+            if (!isPlainObject(node)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!API_ROUTE_METHODS.includes(node.method)) {
+              fail(`${at}.method`, "must be a recorded method");
+            }
+            if (typeof node.path !== "string" || !node.path.startsWith("/")) {
+              fail(`${at}.path`, "must be a route path");
+            }
+            if (node.id !== apiRouteIdOf(node.method, node.path)) {
+              fail(`${at}.id`, "must be the identity of the endpoint it describes");
+            }
+            if (!Array.isArray(node.frameworks)) {
+              fail(`${at}.frameworks`, "must be an array");
+            } else {
+              for (const framework of node.frameworks) {
+                if (!API_FRAMEWORKS.includes(framework)) {
+                  fail(`${at}.frameworks`, "must name a supported framework");
+                }
+              }
+            }
+            if (!Array.isArray(node.sourcePaths)) {
+              fail(`${at}.sourcePaths`, "must be an array");
+            } else {
+              for (const sourcePath of node.sourcePaths) {
+                if (!filePaths.has(sourcePath)) {
+                  fail(`${at}.sourcePaths`, "must name files the model observed");
+                }
+              }
+            }
+            if (!Array.isArray(node.evidenceIds)) {
+              fail(`${at}.evidenceIds`, "must be an array");
+            } else {
+              for (const evidenceId of node.evidenceIds) {
+                if (!evidenceIds.has(evidenceId)) {
+                  fail(`${at}.evidenceIds`, "must name observations the model carries");
+                }
+              }
+            }
+            if (previous !== null && previous >= node.id) {
+              fail("api.graph.nodes", "nodes must be sorted by id and unique");
+            }
+            previous = node.id;
+            routeIds.add(node.id);
+          });
+        }
+
+        if (!Array.isArray(graph.edges)) {
+          fail("api.graph.edges", "must be an array");
+        } else {
+          if (graph.edges.length > API_GRAPH_LIMITS.MAX_EDGES) {
+            fail("api.graph.edges", "must stay within the graph edge bound");
+          }
+          let previousEdge = null;
+          graph.edges.forEach((edge, index) => {
+            const at = `api.graph.edges[${index}]`;
+            if (!isPlainObject(edge)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!API_GRAPH_EDGE_TYPE_VALUES.includes(edge.type)) {
+              fail(`${at}.type`, "must be a documented edge type");
+            }
+            const endpointExists = (id) =>
+              routeIds.has(id) || fileIds.has(id) || symbolNodeIds.has(id);
+            if (!endpointExists(edge.from)) fail(`${at}.from`, "must name an entity the model carries");
+            if (!endpointExists(edge.to)) fail(`${at}.to`, "must name an entity the model carries");
+            if (edge.type === API_GRAPH_EDGE_TYPES.DECLARES) {
+              if (!fileIds.has(edge.from) || !routeIds.has(edge.to)) {
+                fail(`${at}`, "a `declares` edge must join a file to a route");
+              }
+            } else if (!routeIds.has(edge.from) || !symbolNodeIds.has(edge.to)) {
+              fail(`${at}`, "a route relationship must join a route to a symbol");
+            }
+            if (!Array.isArray(edge.evidenceIds)) {
+              fail(`${at}.evidenceIds`, "must be an array");
+            } else {
+              for (const evidenceId of edge.evidenceIds) {
+                if (!evidenceIds.has(evidenceId)) {
+                  fail(`${at}.evidenceIds`, "must name observations the model carries");
+                }
+              }
+            }
+            const key = `${edge.from}\u0000${edge.to}\u0000${edge.type}`;
+            if (previousEdge !== null && key <= previousEdge) {
+              fail("api.graph.edges", "must state each relationship once, sorted by (from, to, type)");
+            }
+            previousEdge = key;
+          });
+        }
+
+        if (!Array.isArray(graph.unresolved)) {
+          fail("api.graph.unresolved", "must be an array");
+        } else {
+          if (graph.unresolved.length > API_GRAPH_LIMITS.MAX_UNRESOLVED) {
+            fail("api.graph.unresolved", "must stay within the unresolved bound");
+          }
+          let previousUnresolved = null;
+          graph.unresolved.forEach((record, index) => {
+            const at = `api.graph.unresolved[${index}]`;
+            if (!isPlainObject(record)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!filePaths.has(record.path)) {
+              fail(`${at}.path`, "must name a file the model observed");
+            }
+            if (!API_UNRESOLVED_KINDS.includes(record.kind)) {
+              fail(`${at}.kind`, "must be route, handler or middleware");
+            }
+            if (!API_UNRESOLVED_REASON_VALUES.includes(record.reason)) {
+              fail(`${at}.reason`, "must be a documented reason");
+            }
+            const key = `${record.path}\u0000${record.reason}\u0000${record.route ?? ""}\u0000${record.kind}\u0000${record.name ?? ""}`;
+            if (previousUnresolved !== null && key < previousUnresolved) {
+              fail("api.graph.unresolved", "must be sorted deterministically");
+            }
+            previousUnresolved = key;
+          });
+        }
+
+        const coverage = graph.coverage;
+        if (!isPlainObject(coverage)) {
+          fail("api.graph.coverage", "must be a plain object");
+        } else {
+          if (coverage.state !== graph.state) {
+            fail("api.graph.coverage.state", "must agree with the graph state");
+          }
+          if (coverage.established !== graph.established) {
+            fail("api.graph.coverage.established", "must agree with the graph state");
+          }
+          if (coverage.routes !== (Array.isArray(graph.nodes) ? graph.nodes.length : -1)) {
+            fail("api.graph.coverage.routes", "must count the routes the graph contains");
+          }
+          if (coverage.edges !== (Array.isArray(graph.edges) ? graph.edges.length : -1)) {
+            fail("api.graph.coverage.edges", "must count the edges the graph contains");
+          }
+          if (coverage.unresolved !== (Array.isArray(graph.unresolved) ? graph.unresolved.length : -1)) {
+            fail("api.graph.coverage.unresolved", "must count every unresolved record");
+          }
+          if (coverage.truncated !== (graph.state === API_GRAPH_STATES.TRUNCATED)) {
+            fail("api.graph.coverage.truncated", "must agree with the graph state");
+          }
+          if (coverage.complete !== (graph.state === API_GRAPH_STATES.COMPLETE)) {
+            fail("api.graph.coverage.complete", "must agree with the graph state");
+          }
+          if (graph.state === API_GRAPH_STATES.COMPLETE) {
+            if (model.scan.complete !== true) {
+              fail("api.graph.state", "cannot be complete unless the scan covered the repository");
+            }
+            const sources = Array.isArray(entries) ? entries : [];
+            if (sources.length > 0 && !sources.every((source) => source.established === true)) {
+              fail("api.graph.state", "cannot be complete while an API source is unestablished");
+            }
+          }
+        }
+      }
+
+      if (isPlainObject(apiArea.coverage) && isPlainObject(apiArea.graph?.coverage)) {
+        if (apiArea.coverage.unresolved !== apiArea.graph.coverage.unresolved) {
+          fail("api.coverage.unresolved", "must agree with the graph it summarises");
         }
       }
     }

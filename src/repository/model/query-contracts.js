@@ -37,6 +37,11 @@ import {
   SYMBOL_UNRESOLVED_KINDS,
   SYMBOL_UNRESOLVED_REASON_VALUES,
 } from "./symbol-graph.js";
+import {
+  API_GRAPH_STATE_VALUES,
+  API_UNRESOLVED_KINDS,
+  API_UNRESOLVED_REASON_VALUES,
+} from "./api-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -340,6 +345,91 @@ export const SYMBOL_PATH_RESULT_FIELDS = Object.freeze([
  */
 export const SYMBOL_UNRESOLVED_KIND_VALUES = SYMBOL_UNRESOLVED_KINDS;
 export const SYMBOL_UNRESOLVED_REASONS = SYMBOL_UNRESOLVED_REASON_VALUES;
+
+/** Fields a whole-API-graph result declares. */
+export const API_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded route list declares. */
+export const API_ROUTE_RESULT_FIELDS = Object.freeze([
+  "routes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a single-route lookup declares. */
+export const API_ROUTE_LOOKUP_RESULT_FIELDS = Object.freeze([
+  "route",
+  "coverage",
+  "state",
+  "truncated",
+]);
+
+/** Fields a route's handler list declares. */
+export const API_ROUTE_HANDLER_RESULT_FIELDS = Object.freeze([
+  "route",
+  "handlers",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a route's middleware list declares. */
+export const API_ROUTE_MIDDLEWARE_RESULT_FIELDS = Object.freeze([
+  "route",
+  "middleware",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a symbol's route list declares. */
+export const API_HANDLER_ROUTE_RESULT_FIELDS = Object.freeze([
+  "symbol",
+  "routes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded handler-module list declares. */
+export const API_SERVICE_RESULT_FIELDS = Object.freeze([
+  "modules",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded unresolved-route list declares. */
+export const API_UNRESOLVED_ROUTE_RESULT_FIELDS = Object.freeze([
+  "unresolved",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * The vocabularies an API query validates its criteria against.
+ *
+ * Re-exported so a consumer can ask the query layer what it accepts without importing
+ * the projection module.
+ */
+export const API_UNRESOLVED_KIND_VALUES = API_UNRESOLVED_KINDS;
+export const API_UNRESOLVED_REASONS = API_UNRESOLVED_REASON_VALUES;
+export const API_ROUTE_STATE_VALUES = API_GRAPH_STATE_VALUES;
 
 /** Fields a bounded import-path result declares. */
 export const IMPORT_PATH_RESULT_FIELDS = Object.freeze([
@@ -1077,5 +1167,194 @@ export function validateImportPathResult(value) {
     "ImportPathResult",
     ["found", "truncated", "limited"],
     IMPORT_GRAPH_STATE_VALUES,
+  );
+}
+
+// ── API & Service graph results (Phase 18) ───────────────────────────────────
+
+/** Build a whole-API-graph result draft. */
+export function createApiGraphResult(input = {}) {
+  return createEnvelope(API_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded route-list result draft. */
+export function createApiRouteQueryResult(input = {}) {
+  return createEnvelope(API_ROUTE_RESULT_FIELDS, {
+    routes: input.routes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a single-route lookup result draft. */
+export function createApiRouteLookupResult(input = {}) {
+  return createEnvelope(API_ROUTE_LOOKUP_RESULT_FIELDS, {
+    route: input.route ?? null,
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a route's handler-list result draft. */
+export function createApiRouteHandlerResult(input = {}) {
+  return createEnvelope(API_ROUTE_HANDLER_RESULT_FIELDS, {
+    route: input.route ?? null,
+    handlers: input.handlers ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a route's middleware-list result draft. */
+export function createApiRouteMiddlewareResult(input = {}) {
+  return createEnvelope(API_ROUTE_MIDDLEWARE_RESULT_FIELDS, {
+    route: input.route ?? null,
+    middleware: input.middleware ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a symbol's route-list result draft. */
+export function createApiHandlerRouteResult(input = {}) {
+  return createEnvelope(API_HANDLER_ROUTE_RESULT_FIELDS, {
+    symbol: input.symbol ?? null,
+    routes: input.routes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded handler-module list result draft. */
+export function createApiServiceResult(input = {}) {
+  return createEnvelope(API_SERVICE_RESULT_FIELDS, {
+    modules: input.modules ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded unresolved-route result draft. */
+export function createApiUnresolvedRouteResult(input = {}) {
+  return createEnvelope(API_UNRESOLVED_ROUTE_RESULT_FIELDS, {
+    unresolved: input.unresolved ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Validate a whole-API-graph result. */
+export function validateApiGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges"],
+    "ApiGraphResult",
+    ["established", "truncated"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded route-list result. */
+export function validateApiRouteQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_ROUTE_RESULT_FIELDS,
+    ["routes"],
+    "ApiRouteQueryResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a single-route lookup result. */
+export function validateApiRouteLookupResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_ROUTE_LOOKUP_RESULT_FIELDS,
+    [],
+    "ApiRouteLookupResult",
+    ["truncated"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a route's handler-list result. */
+export function validateApiRouteHandlerResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_ROUTE_HANDLER_RESULT_FIELDS,
+    ["handlers"],
+    "ApiRouteHandlerResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a route's middleware-list result. */
+export function validateApiRouteMiddlewareResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_ROUTE_MIDDLEWARE_RESULT_FIELDS,
+    ["middleware"],
+    "ApiRouteMiddlewareResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a symbol's route-list result. */
+export function validateApiHandlerRouteResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_HANDLER_ROUTE_RESULT_FIELDS,
+    ["routes"],
+    "ApiHandlerRouteResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded handler-module list result. */
+export function validateApiServiceResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_SERVICE_RESULT_FIELDS,
+    ["modules"],
+    "ApiServiceResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
+  );
+}
+
+/** Validate a bounded unresolved-route result. */
+export function validateApiUnresolvedRouteResult(value) {
+  return validateGraphEnvelope(
+    value,
+    API_UNRESOLVED_ROUTE_RESULT_FIELDS,
+    ["unresolved"],
+    "ApiUnresolvedRouteResult",
+    ["truncated", "limited"],
+    API_GRAPH_STATE_VALUES,
   );
 }

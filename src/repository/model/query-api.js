@@ -83,7 +83,14 @@ import {
   SYMBOL_UNRESOLVED_KINDS,
   SYMBOL_UNRESOLVED_REASON_VALUES,
 } from "./symbol-graph.js";
-import { SYMBOL_KINDS } from "./entities.js";
+import {
+  API_GRAPH_EDGE_TYPES,
+  API_GRAPH_EDGE_TYPE_VALUES,
+  API_GRAPH_STATES,
+  API_UNRESOLVED_KINDS,
+  API_UNRESOLVED_REASON_VALUES,
+} from "./api-graph.js";
+import { API_ROUTE_METHODS, SYMBOL_KINDS } from "./entities.js";
 import { isRepositoryRelativePath } from "./paths.js";
 import {
   QUERY_DIRECTIONS,
@@ -94,6 +101,14 @@ import {
   createArchitectureGraphResult,
   createArchitectureNodeQueryResult,
   createArchitecturePathResult,
+  createApiGraphResult,
+  createApiHandlerRouteResult,
+  createApiRouteHandlerResult,
+  createApiRouteLookupResult,
+  createApiRouteMiddlewareResult,
+  createApiRouteQueryResult,
+  createApiServiceResult,
+  createApiUnresolvedRouteResult,
   createDependencyEdgeQueryResult,
   createDependencyGraphResult,
   createDependencyPathResult,
@@ -122,6 +137,14 @@ import {
   validateArchitectureGraphResult,
   validateArchitectureNodeQueryResult,
   validateArchitecturePathResult,
+  validateApiGraphResult,
+  validateApiHandlerRouteResult,
+  validateApiRouteHandlerResult,
+  validateApiRouteLookupResult,
+  validateApiRouteMiddlewareResult,
+  validateApiRouteQueryResult,
+  validateApiServiceResult,
+  validateApiUnresolvedRouteResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
   validateDependencyPathResult,
@@ -253,6 +276,24 @@ const SYMBOL_UNRESOLVED_FILTER_KEYS = Object.freeze([
 
 /** Options a symbol candidate list accepts (the bound, and nothing else). */
 const SYMBOL_CANDIDATE_OPTION_KEYS = Object.freeze(["maxResults"]);
+
+/**
+ * Criteria a route list accepts.
+ *
+ * Every criterion is a fact the projection recorded about the route itself — its
+ * method, its path, the framework that declared it, the file that declared it, the
+ * receiver binding — so a query can never ask a question the API graph did not answer.
+ */
+const API_ROUTE_FILTER_KEYS = Object.freeze([
+  "method",
+  "path",
+  "framework",
+  "sourcePath",
+  "maxResults",
+]);
+
+/** Criteria an unresolved-route list accepts. */
+const API_UNRESOLVED_FILTER_KEYS = Object.freeze(["path", "reason", "maxResults"]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1019,6 +1060,90 @@ export function createRepositoryQuery(model) {
       limited: matching.length > maxResults,
     };
   };
+
+  // ── API & Service graph (Phase 18) ────────────────────────────────────────
+  //
+  // Read from `model.api.graph` — a projection the builder already built and validated
+  // — and never recomputed here. Handler and middleware edges point at Phase 17 symbol
+  // nodes, which are looked up in the symbol graph above rather than duplicated, so a
+  // route's handler and the symbol's own view of itself can never disagree.
+  const apiGraph =
+    model.api?.graph ??
+    Object.freeze({
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      unresolved: Object.freeze([]),
+      state: API_GRAPH_STATES.UNKNOWN,
+      established: false,
+      coverage: Object.freeze({
+        state: API_GRAPH_STATES.UNKNOWN,
+        established: false,
+        complete: false,
+        truncated: false,
+        inspected: false,
+        routes: 0,
+        edges: 0,
+        sources: 0,
+        declaringModules: 0,
+        handlerEdges: 0,
+        middlewareEdges: 0,
+        declareEdges: 0,
+        handlerModules: 0,
+        parsed: 0,
+        unsupported: 0,
+        failed: 0,
+        notInspected: 0,
+        uninterpretedSources: 0,
+        uninterpretedExtensions: Object.freeze([]),
+        uninterpretedExtensionsTruncated: false,
+        unresolved: 0,
+        unresolvedReported: 0,
+        unresolvedByReason: Object.freeze({}),
+        unestablished: 0,
+        unestablishedSources: Object.freeze([]),
+        nodesTruncated: false,
+        edgesTruncated: false,
+        unresolvedTruncated: false,
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const apiNodeById = new Map(apiGraph.nodes.map((node) => [node.id, node]));
+  const apiOutgoing = new Map();
+  const apiIncoming = new Map();
+  for (const edge of apiGraph.edges) {
+    const out = apiOutgoing.get(edge.from);
+    if (out === undefined) apiOutgoing.set(edge.from, [edge]);
+    else out.push(edge);
+
+    const incoming = apiIncoming.get(edge.to);
+    if (incoming === undefined) apiIncoming.set(edge.to, [edge]);
+    else incoming.push(edge);
+  }
+
+  /**
+   * The guarantee behind an API answer.
+   *
+   * `complete` is claimed only when the API graph is complete as well as the scan — the
+   * stricter of the two facts wins, so a caller is never told `complete` next to a
+   * `partial` state.
+   */
+  const apiCoverageState = () => ({
+    coverage:
+      model.scan.complete === true &&
+      model.scan.truncated !== true &&
+      apiGraph.state === API_GRAPH_STATES.COMPLETE
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || apiGraph.coverage.truncated === true,
+  });
+
+  /** The identity of an endpoint, reused from the projection so the two can never disagree. */
+  const apiRouteIdOf = (method, path) => `route:${method}:${path}`;
+
+  /** The symbol node behind a `handled-by` / `middleware` endpoint, or `null`. */
+  const symbolDetailOf = (edge) =>
+    edge === null ? null : { edge: { ...edge }, symbol: symbolNodeById.get(edge.to) ?? null };
 
   const query = {
     /**
@@ -2917,6 +3042,318 @@ export function createRepositoryQuery(model) {
         true,
         limited,
       );
+    },
+
+    // ── API & Service graph (Phase 18) ──────────────────────────────────────
+    /**
+     * The whole API graph: the route nodes and the established edges.
+     *
+     * `state` distinguishes an established-but-empty graph (a repository that declares
+     * no route) from one that was never established, so an empty `nodes` list is never
+     * mistaken for "this repository exposes nothing". The unresolved occurrences are
+     * *not* folded in here — they are not edges, and a caller that received them
+     * together would read a non-fact as a fact. Ask for them with `unresolvedRoutes`.
+     */
+    apiGraph() {
+      const result = createApiGraphResult({
+        nodes: frozenEntries([...apiGraph.nodes]),
+        edges: frozenEntries([...apiGraph.edges]),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        established: apiGraph.established,
+      });
+      validateApiGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The five-way API-graph state, its per-reason unresolved counts, the sources whose
+     * route set could not be established, and every bound that bit.
+     */
+    apiCoverage() {
+      return Object.freeze({ ...apiGraph.coverage });
+    },
+
+    /**
+     * Route nodes matching a `{ method, path, framework, sourcePath }` filter.
+     *
+     * `method` is checked against the recorded method vocabulary, so a caller cannot ask
+     * for a method this build never records and receive a plausible answer. Results are
+     * sorted by id and bounded by `maxResults`.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    routes(criteria = {}) {
+      requireKeys(criteria, API_ROUTE_FILTER_KEYS, "routeCriteria");
+      if ("method" in criteria && !API_ROUTE_METHODS.includes(criteria.method)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "routeCriteria.method",
+        });
+      }
+      for (const field of ["path", "framework", "sourcePath"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `routeCriteria.${field}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = apiGraph.nodes
+        .filter((node) => {
+          if ("method" in criteria && node.method !== criteria.method) return false;
+          if ("path" in criteria && node.path !== criteria.path) return false;
+          if ("framework" in criteria && !node.frameworks.includes(criteria.framework)) return false;
+          if ("sourcePath" in criteria && !node.sourcePaths.includes(criteria.sourcePath)) {
+            return false;
+          }
+          return true;
+        })
+        .slice()
+        .sort(compareById);
+
+      const result = createApiRouteQueryResult({
+        routes: frozenEntries(matching.slice(0, maxResults)),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateApiRouteQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * One route by its method and declared path.
+     *
+     * An unknown route is an ordinary miss (`route: null`), never a claim that the
+     * repository does not expose it: an absent node alongside a `partial` state is
+     * exactly the case a caller must not read as an absence.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    routeByPath(method, path) {
+      if (!API_ROUTE_METHODS.includes(method)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "method" });
+      }
+      if (!isNonEmptyQueryString(path)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: "path" });
+      }
+      const route = apiNodeById.get(apiRouteIdOf(method, path)) ?? null;
+      const result = createApiRouteLookupResult({
+        route,
+        ...apiCoverageState(),
+        state: apiGraph.state,
+      });
+      validateApiRouteLookupResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The symbols a route is `handled-by`, each with the edge that states it.
+     *
+     * `handlers` are the graph's `handled-by` edges, so a handler reference the graph
+     * could not resolve is *not* here — it is reported by `unresolvedRoutes`-adjacent
+     * coverage, never presented as a handler.
+     */
+    handlersForRoute(routeId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "routeHandlerOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const route = typeof routeId === "string" ? (apiNodeById.get(routeId) ?? null) : null;
+      const edges =
+        route === null
+          ? []
+          : (apiOutgoing.get(route.id) ?? [])
+              .filter((edge) => edge.type === API_GRAPH_EDGE_TYPES.HANDLED_BY)
+              .slice()
+              .sort(compareGraphEdges);
+      const handlers = edges.slice(0, maxResults).map(symbolDetailOf).filter((entry) => entry !== null);
+      const result = createApiRouteHandlerResult({
+        route,
+        handlers: frozenEntries(handlers),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: edges.length > maxResults,
+      });
+      validateApiRouteHandlerResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The symbols a route lists as `middleware`.
+     *
+     * A middleware reference is a positional reading of the call, and the graph states
+     * it as such: this is not a claim about runtime ordering.
+     */
+    middlewareForRoute(routeId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "routeMiddlewareOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const route = typeof routeId === "string" ? (apiNodeById.get(routeId) ?? null) : null;
+      const edges =
+        route === null
+          ? []
+          : (apiOutgoing.get(route.id) ?? [])
+              .filter((edge) => edge.type === API_GRAPH_EDGE_TYPES.MIDDLEWARE)
+              .slice()
+              .sort(compareGraphEdges);
+      const middleware = edges.slice(0, maxResults).map(symbolDetailOf).filter((entry) => entry !== null);
+      const result = createApiRouteMiddlewareResult({
+        route,
+        middleware: frozenEntries(middleware),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: edges.length > maxResults,
+      });
+      validateApiRouteMiddlewareResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The routes a symbol is a resolved handler of.
+     *
+     * The reverse of the `handled-by` edge the graph states, never a second edge, so a
+     * symbol's routes and a route's handlers cannot disagree.
+     */
+    routesForHandler(symbolId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "handlerRouteOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const symbol =
+        typeof symbolId === "string" ? (symbolNodeById.get(symbolId) ?? null) : null;
+      const incoming =
+        symbol === null
+          ? []
+          : (apiIncoming.get(symbol.id) ?? []).filter(
+              (edge) => edge.type === API_GRAPH_EDGE_TYPES.HANDLED_BY,
+            );
+      const routeIds = [...new Set(incoming.map((edge) => edge.from))].sort();
+      const routes = routeIds
+        .map((id) => apiNodeById.get(id))
+        .filter((node) => node !== undefined)
+        .slice(0, maxResults);
+      const result = createApiHandlerRouteResult({
+        symbol,
+        routes: frozenEntries(routes),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: routeIds.length > maxResults,
+      });
+      validateApiHandlerRouteResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The modules that declare at least one resolved route handler.
+     *
+     * Deliberately *not* a call or dependency relationship: this build establishes no
+     * controller→service edge, so "which module provides a handler" is the most this
+     * graph can honestly say. Each module carries the handler names and route ids that
+     * make it a member, so nothing is left implicit.
+     */
+    services(options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "serviceOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const byFile = new Map();
+      for (const edge of apiGraph.edges) {
+        if (edge.type !== API_GRAPH_EDGE_TYPES.HANDLED_BY) continue;
+        const symbol = symbolNodeById.get(edge.to);
+        if (symbol === undefined) continue;
+        let entry = byFile.get(symbol.fileId);
+        if (entry === undefined) {
+          entry = {
+            fileId: symbol.fileId,
+            path: symbol.path,
+            handlerNames: new Set(),
+            routeIds: new Set(),
+          };
+          byFile.set(symbol.fileId, entry);
+        }
+        entry.handlerNames.add(symbol.name);
+        entry.routeIds.add(edge.from);
+      }
+      const modules = [...byFile.values()]
+        .map((entry) => ({
+          fileId: entry.fileId,
+          path: entry.path,
+          handlerCount: entry.handlerNames.size,
+          routeCount: entry.routeIds.size,
+          handlerNames: [...entry.handlerNames].sort(),
+          routeIds: [...entry.routeIds].sort(),
+        }))
+        .sort((a, b) => (a.fileId < b.fileId ? -1 : a.fileId > b.fileId ? 1 : 0));
+      const result = createApiServiceResult({
+        modules: frozenEntries(modules.slice(0, maxResults)),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: modules.length > maxResults,
+      });
+      validateApiServiceResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The route-shaped occurrences the repository does **not** establish as routes.
+     *
+     * Kept separate from `routes` on purpose: an occurrence whose receiver is not a
+     * framework registrar — or whose path is computed, or whose framework this build
+     * does not support — is a different fact from a declared endpoint, and a caller that
+     * received them together would read a non-fact as a fact.
+     */
+    unresolvedRoutes(criteria = {}) {
+      requireKeys(criteria, API_UNRESOLVED_FILTER_KEYS, "unresolvedRouteCriteria");
+      for (const field of ["path", "reason"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `unresolvedRouteCriteria.${field}`,
+          });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const matching = apiGraph.unresolved
+        .filter((record) => {
+          if (record.kind !== "route") return false;
+          if ("path" in criteria && record.path !== criteria.path) return false;
+          if ("reason" in criteria && record.reason !== criteria.reason) return false;
+          return true;
+        })
+        .slice()
+        .sort((a, b) => {
+          if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+          if (a.reason !== b.reason) return a.reason < b.reason ? -1 : 1;
+          const left = a.route ?? "";
+          const right = b.route ?? "";
+          return left < right ? -1 : left > right ? 1 : 0;
+        });
+      const result = createApiUnresolvedRouteResult({
+        unresolved: frozenEntries(matching.slice(0, maxResults)),
+        ...apiCoverageState(),
+        state: apiGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateApiUnresolvedRouteResult(result);
+      return Object.freeze(result);
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

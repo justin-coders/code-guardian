@@ -146,6 +146,26 @@ export {
   symbolIdOf,
 } from "./symbol-graph.js";
 
+// Phase 18 — the API & Service graph: its identity rule, its closed vocabularies and
+// bounds, plus the projection the builder materializes into `model.api.graph`.
+export {
+  API_GRAPH_EDGE_TYPES,
+  API_GRAPH_EDGE_TYPE_VALUES,
+  API_GRAPH_LIMITS,
+  API_GRAPH_STATES,
+  API_GRAPH_STATE_VALUES,
+  API_GRAPH_VERSION,
+  API_UNRESOLVED_KINDS,
+  API_UNRESOLVED_REASONS,
+  API_UNRESOLVED_REASON_VALUES,
+  apiRouteIdOf,
+  apiGraphState,
+  apiHandlerSymbolId,
+  buildApiGraph,
+  isApiSourceEstablished,
+  isEstablishedApiState,
+} from "./api-graph.js";
+
 // Phase 17 — the semantic vocabularies the model re-declares, so a consumer of the
 // model never has to import the acquisition layer.
 export {
@@ -158,6 +178,22 @@ export {
   SYMBOL_KINDS,
   SYMBOL_OCCURRENCE_FORMS,
   projectSymbolName,
+} from "./entities.js";
+
+// Phase 18 — the API vocabularies the model re-declares, so a consumer never has to
+// import the acquisition layer.
+export {
+  API_CALLABLE_FORMS,
+  API_FRAMEWORKS,
+  API_PROBLEM_REASONS,
+  API_RECEIVER_KINDS,
+  API_ROUTE_METHODS,
+  API_SHAPE_REASONS,
+  API_SOURCE_REASONS,
+  API_SOURCE_STATUSES,
+  API_UNSUPPORTED_FRAMEWORKS,
+  projectApiName,
+  projectRoutePath,
 } from "./entities.js";
 
 export {
@@ -237,6 +273,15 @@ export {
   IMPORT_EDGE_RESULT_FIELDS,
   IMPORT_GRAPH_RESULT_FIELDS,
   IMPORT_NODE_RESULT_FIELDS,
+  API_GRAPH_RESULT_FIELDS,
+  API_HANDLER_ROUTE_RESULT_FIELDS,
+  API_ROUTE_HANDLER_RESULT_FIELDS,
+  API_ROUTE_LOOKUP_RESULT_FIELDS,
+  API_ROUTE_MIDDLEWARE_RESULT_FIELDS,
+  API_ROUTE_RESULT_FIELDS,
+  API_ROUTE_STATE_VALUES,
+  API_SERVICE_RESULT_FIELDS,
+  API_UNRESOLVED_ROUTE_RESULT_FIELDS,
   IMPORT_PATH_RESULT_FIELDS,
   IMPORT_TRAVERSAL_RESULT_FIELDS,
   IMPORT_UNRESOLVED_RESULT_FIELDS,
@@ -245,6 +290,14 @@ export {
   QUERY_LIMITS,
   RELATIONSHIP_QUERY_RESULT_FIELDS,
   TRAVERSAL_RESULT_FIELDS,
+  createApiGraphResult,
+  createApiHandlerRouteResult,
+  createApiRouteHandlerResult,
+  createApiRouteLookupResult,
+  createApiRouteMiddlewareResult,
+  createApiRouteQueryResult,
+  createApiServiceResult,
+  createApiUnresolvedRouteResult,
   createDependencyEdgeQueryResult,
   createDependencyGraphResult,
   createDependencyPathResult,
@@ -267,6 +320,14 @@ export {
   createSymbolTraversalResult,
   createSymbolUnresolvedQueryResult,
   createTraversalResult,
+  validateApiGraphResult,
+  validateApiHandlerRouteResult,
+  validateApiRouteHandlerResult,
+  validateApiRouteLookupResult,
+  validateApiRouteMiddlewareResult,
+  validateApiRouteQueryResult,
+  validateApiServiceResult,
+  validateApiUnresolvedRouteResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
   validateDependencyPathResult,

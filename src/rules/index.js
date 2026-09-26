@@ -239,3 +239,35 @@ export {
   symbolUnresolved,
   symbolsAbsence,
 } from "./symbols/index.js";
+
+// Phase 18 — the API rule pack. The minimum integration that proves the API & Service
+// graph is consumable through the accepted Rule Engine: one informational inventory
+// rule, its own registry and analyzer adapter. Purely additive — the Rule Engine is
+// unchanged and every other pack is untouched.
+export {
+  API_ANALYZER_ID,
+  API_ANALYZER_NAME,
+  API_ANALYZER_SCOPE,
+  API_BASIS,
+  API_CATEGORY,
+  API_CONFIDENCE,
+  API_DESCRIBED_EDGE_TYPES,
+  API_DESCRIBED_UNRESOLVED_REASONS,
+  API_EDGE_TYPE_WORDING,
+  API_GRAPH_STATES,
+  API_RULE_ID_PREFIX,
+  API_RULE_IDS,
+  API_RULE_PACK_VERSION,
+  API_RULE_VERSION,
+  API_UNRESOLVED_REASON_WORDING,
+  MAX_API_FINDINGS,
+  apiAbsence,
+  apiCoverage,
+  apiInventoryRules,
+  apiRoutes,
+  apiRuleSetIssues,
+  apiRules,
+  apiUnresolved,
+  createApiAnalyzer,
+  createApiRuleRegistry,
+} from "./api/index.js";
