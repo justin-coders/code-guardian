@@ -24,6 +24,7 @@ import { detectDependencies } from "./dependencies.js";
 import { detectDocumentation } from "./documentation.js";
 import { detectGit } from "./git.js";
 import { detectImports } from "./imports.js";
+import { detectMiddleware } from "./middleware.js";
 import { detectLanguages } from "./languages.js";
 import { detectManifests } from "./manifests.js";
 import { detectSemantics } from "./semantics.js";
@@ -31,7 +32,7 @@ import { detectTesting } from "./testing.js";
 
 export { detectApi, detectCicd, detectConfiguration, detectContainers, detectContent };
 export { detectDependencies, detectDocumentation, detectGit, detectImports };
-export { detectLanguages, detectManifests, detectSemantics, detectTesting };
+export { detectLanguages, detectManifests, detectMiddleware, detectSemantics, detectTesting };
 
 /**
  * Run all detectors.
@@ -71,5 +72,10 @@ export async function runDetectors(view) {
     // other, and it resolves nothing: a route's handler name is recorded as written,
     // and whether it denotes a symbol is the model's question.
     api: await detectApi(view),
+    // Phase 19 — the same module sources re-read for their middleware registrations.
+    // It runs after `api` so a failure in one acquisition cannot hide the other, and it
+    // resolves nothing: a middleware name is recorded as written, and whether it denotes
+    // a symbol is the model's question.
+    middleware: await detectMiddleware(view),
   };
 }

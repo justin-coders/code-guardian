@@ -42,6 +42,15 @@ import {
   API_UNRESOLVED_KINDS,
   API_UNRESOLVED_REASON_VALUES,
 } from "./api-graph.js";
+import {
+  MIDDLEWARE_CLASSIFICATION_VALUES as MIDDLEWARE_CLASSIFICATION_VALUES_SOURCE,
+  MIDDLEWARE_GRAPH_STATE_VALUES as MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
+  MIDDLEWARE_PROTECTION_VALUES as MIDDLEWARE_PROTECTION_VALUES_SOURCE,
+  MIDDLEWARE_REGISTRATIONS as MIDDLEWARE_GRAPH_REGISTRATIONS_SOURCE,
+  MIDDLEWARE_SCOPES as MIDDLEWARE_GRAPH_SCOPES_SOURCE,
+  MIDDLEWARE_UNRESOLVED_KINDS as MIDDLEWARE_UNRESOLVED_KINDS_SOURCE,
+  MIDDLEWARE_UNRESOLVED_REASON_VALUES as MIDDLEWARE_UNRESOLVED_REASON_VALUES_SOURCE,
+} from "./middleware-graph.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -383,10 +392,21 @@ export const API_ROUTE_HANDLER_RESULT_FIELDS = Object.freeze([
   "limited",
 ]);
 
-/** Fields a route's middleware list declares. */
+/**
+ * Fields a route's middleware answer declares.
+ *
+ * Phase 19 extended this envelope rather than adding a second method with the same name:
+ * `middleware` is the route-scope middleware the API graph resolved from the route's own
+ * declaration, `applied` is the receiver-scope middleware the middleware graph established
+ * for the route, and `unresolved` and `protection` are the middleware graph's answer for
+ * the occurrences it could not establish. One method, one route, one coherent answer.
+ */
 export const API_ROUTE_MIDDLEWARE_RESULT_FIELDS = Object.freeze([
   "route",
   "middleware",
+  "applied",
+  "unresolved",
+  "protection",
   "coverage",
   "state",
   "truncated",
@@ -430,6 +450,68 @@ export const API_UNRESOLVED_ROUTE_RESULT_FIELDS = Object.freeze([
 export const API_UNRESOLVED_KIND_VALUES = API_UNRESOLVED_KINDS;
 export const API_UNRESOLVED_REASONS = API_UNRESOLVED_REASON_VALUES;
 export const API_ROUTE_STATE_VALUES = API_GRAPH_STATE_VALUES;
+
+/** Fields a whole-middleware-graph result declares. */
+export const MIDDLEWARE_GRAPH_RESULT_FIELDS = Object.freeze([
+  "nodes",
+  "edges",
+  "routes",
+  "coverage",
+  "state",
+  "established",
+  "truncated",
+]);
+
+/** Fields a bounded middleware-node list declares. */
+export const MIDDLEWARE_RESULT_FIELDS = Object.freeze([
+  "middleware",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a middleware node's route list declares. */
+export const MIDDLEWARE_PROTECTED_ROUTE_RESULT_FIELDS = Object.freeze([
+  "symbol",
+  "routes",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded middleware-chain list declares. */
+export const MIDDLEWARE_CHAIN_RESULT_FIELDS = Object.freeze([
+  "chains",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/** Fields a bounded unresolved-middleware list declares. */
+export const MIDDLEWARE_UNRESOLVED_RESULT_FIELDS = Object.freeze([
+  "unresolved",
+  "coverage",
+  "state",
+  "truncated",
+  "limited",
+]);
+
+/**
+ * The vocabularies a middleware query validates its criteria against.
+ *
+ * Re-exported so a consumer can ask the query layer what it accepts without importing the
+ * projection module.
+ */
+export const MIDDLEWARE_CLASSIFICATION_VALUES = MIDDLEWARE_CLASSIFICATION_VALUES_SOURCE;
+export const MIDDLEWARE_PROTECTION_VALUES = MIDDLEWARE_PROTECTION_VALUES_SOURCE;
+export const MIDDLEWARE_SCOPE_VALUES = MIDDLEWARE_GRAPH_SCOPES_SOURCE;
+export const MIDDLEWARE_REGISTRATION_VALUES = MIDDLEWARE_GRAPH_REGISTRATIONS_SOURCE;
+export const MIDDLEWARE_UNRESOLVED_KIND_VALUES = MIDDLEWARE_UNRESOLVED_KINDS_SOURCE;
+export const MIDDLEWARE_UNRESOLVED_REASON_VALUES = MIDDLEWARE_UNRESOLVED_REASON_VALUES_SOURCE;
+export const MIDDLEWARE_STATE_VALUES = MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE;
 
 /** Fields a bounded import-path result declares. */
 export const IMPORT_PATH_RESULT_FIELDS = Object.freeze([
@@ -1217,11 +1299,14 @@ export function createApiRouteHandlerResult(input = {}) {
   });
 }
 
-/** Build a route's middleware-list result draft. */
+/** Build a route's middleware result draft. */
 export function createApiRouteMiddlewareResult(input = {}) {
   return createEnvelope(API_ROUTE_MIDDLEWARE_RESULT_FIELDS, {
     route: input.route ?? null,
     middleware: input.middleware ?? [],
+    applied: input.applied ?? [],
+    unresolved: input.unresolved ?? [],
+    protection: input.protection === undefined ? null : input.protection,
     coverage: input.coverage,
     state: input.state,
     truncated: input.truncated === true,
@@ -1311,12 +1396,12 @@ export function validateApiRouteHandlerResult(value) {
   );
 }
 
-/** Validate a route's middleware-list result. */
+/** Validate a route's middleware result. */
 export function validateApiRouteMiddlewareResult(value) {
   return validateGraphEnvelope(
     value,
     API_ROUTE_MIDDLEWARE_RESULT_FIELDS,
-    ["middleware"],
+    ["middleware", "applied", "unresolved"],
     "ApiRouteMiddlewareResult",
     ["truncated", "limited"],
     API_GRAPH_STATE_VALUES,
@@ -1356,5 +1441,125 @@ export function validateApiUnresolvedRouteResult(value) {
     "ApiUnresolvedRouteResult",
     ["truncated", "limited"],
     API_GRAPH_STATE_VALUES,
+  );
+}
+
+// ── Middleware & authorization graph results (Phase 19) ──────────────────────
+
+/** Build a whole-middleware-graph result draft. */
+export function createMiddlewareGraphResult(input = {}) {
+  return createEnvelope(MIDDLEWARE_GRAPH_RESULT_FIELDS, {
+    nodes: input.nodes ?? [],
+    edges: input.edges ?? [],
+    routes: input.routes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    established: input.established === true,
+    truncated: input.truncated === true,
+  });
+}
+
+/** Build a bounded middleware-node list draft. */
+export function createMiddlewareQueryResult(input = {}) {
+  return createEnvelope(MIDDLEWARE_RESULT_FIELDS, {
+    middleware: input.middleware ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a middleware node's route-list draft. */
+export function createMiddlewareProtectedRouteResult(input = {}) {
+  return createEnvelope(MIDDLEWARE_PROTECTED_ROUTE_RESULT_FIELDS, {
+    symbol: input.symbol ?? null,
+    routes: input.routes ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded middleware-chain list draft. */
+export function createMiddlewareChainResult(input = {}) {
+  return createEnvelope(MIDDLEWARE_CHAIN_RESULT_FIELDS, {
+    chains: input.chains ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Build a bounded unresolved-middleware list draft. */
+export function createMiddlewareUnresolvedResult(input = {}) {
+  return createEnvelope(MIDDLEWARE_UNRESOLVED_RESULT_FIELDS, {
+    unresolved: input.unresolved ?? [],
+    coverage: input.coverage,
+    state: input.state,
+    truncated: input.truncated === true,
+    limited: input.limited === true,
+  });
+}
+
+/** Validate a whole-middleware-graph result. */
+export function validateMiddlewareGraphResult(value) {
+  return validateGraphEnvelope(
+    value,
+    MIDDLEWARE_GRAPH_RESULT_FIELDS,
+    ["nodes", "edges", "routes"],
+    "MiddlewareGraphResult",
+    ["established", "truncated"],
+    MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
+  );
+}
+
+/** Validate a bounded middleware-node list. */
+export function validateMiddlewareQueryResult(value) {
+  return validateGraphEnvelope(
+    value,
+    MIDDLEWARE_RESULT_FIELDS,
+    ["middleware"],
+    "MiddlewareQueryResult",
+    ["truncated", "limited"],
+    MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
+  );
+}
+
+/** Validate a middleware node's route list. */
+export function validateMiddlewareProtectedRouteResult(value) {
+  return validateGraphEnvelope(
+    value,
+    MIDDLEWARE_PROTECTED_ROUTE_RESULT_FIELDS,
+    ["routes"],
+    "MiddlewareProtectedRouteResult",
+    ["truncated", "limited"],
+    MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
+  );
+}
+
+/** Validate a bounded middleware-chain list. */
+export function validateMiddlewareChainResult(value) {
+  return validateGraphEnvelope(
+    value,
+    MIDDLEWARE_CHAIN_RESULT_FIELDS,
+    ["chains"],
+    "MiddlewareChainResult",
+    ["truncated", "limited"],
+    MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
+  );
+}
+
+/** Validate a bounded unresolved-middleware list. */
+export function validateMiddlewareUnresolvedResult(value) {
+  return validateGraphEnvelope(
+    value,
+    MIDDLEWARE_UNRESOLVED_RESULT_FIELDS,
+    ["unresolved"],
+    "MiddlewareUnresolvedResult",
+    ["truncated", "limited"],
+    MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
   );
 }

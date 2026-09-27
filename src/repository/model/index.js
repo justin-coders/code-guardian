@@ -66,6 +66,7 @@ export {
   EVIDENCE_TYPE_BY_SUBJECT,
   IMPORT_SIGNALS,
   INVENTORY_KINDS,
+  MIDDLEWARE_SIGNALS,
   contentObservationKind,
   createBuildContextObservation,
   createContentInspectionObservation,
@@ -75,6 +76,7 @@ export {
   createDependencySourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
+  createMiddlewareSourceObservation,
   createObservation,
   createSignalObservation,
 } from "./evidence.js";
@@ -166,6 +168,42 @@ export {
   isEstablishedApiState,
 } from "./api-graph.js";
 
+// Phase 19 — the middleware graph: its identity rule, its closed vocabularies (edges,
+// classifications, protection states), its name-only classification function and its
+// bounds, plus the projection the builder materializes into `model.middleware.graph`.
+export {
+  MIDDLEWARE_CLASSIFICATION_RULES,
+  MIDDLEWARE_CLASSIFICATION_VALUES,
+  MIDDLEWARE_CLASSIFICATIONS,
+  MIDDLEWARE_EDGE_TYPES,
+  MIDDLEWARE_EDGE_TYPE_VALUES,
+  MIDDLEWARE_GRAPH_LIMITS,
+  MIDDLEWARE_GRAPH_STATES,
+  MIDDLEWARE_GRAPH_STATE_VALUES,
+  MIDDLEWARE_GRAPH_VERSION,
+  MIDDLEWARE_PROTECTION_STATES,
+  MIDDLEWARE_PROTECTION_VALUES,
+  // The graph's own scope and registration-kind vocabularies are a documented superset of the
+  // acquisition layer's (they add `route`, the registration a route declaration's own argument
+  // list states), so they are exported under graph-qualified names rather than shadowing the
+  // acquisition values the block below re-declares.
+  MIDDLEWARE_REGISTRATIONS as MIDDLEWARE_GRAPH_REGISTRATIONS,
+  MIDDLEWARE_ROUTE_REASON_MAP,
+  MIDDLEWARE_ROUTE_REGISTRATION,
+  MIDDLEWARE_ROUTE_SCOPE,
+  MIDDLEWARE_SCOPES as MIDDLEWARE_GRAPH_SCOPES,
+  MIDDLEWARE_UNRESOLVED_KINDS,
+  MIDDLEWARE_UNRESOLVED_REASONS,
+  MIDDLEWARE_UNRESOLVED_REASON_VALUES,
+  buildMiddlewareGraph,
+  classifyMiddlewareName,
+  isEstablishedMiddlewareState,
+  isMiddlewareSourceEstablished,
+  middlewareGraphState,
+  middlewareNameWords,
+  middlewareRouteIdOf,
+} from "./middleware-graph.js";
+
 // Phase 17 — the semantic vocabularies the model re-declares, so a consumer of the
 // model never has to import the acquisition layer.
 export {
@@ -194,6 +232,19 @@ export {
   API_UNSUPPORTED_FRAMEWORKS,
   projectApiName,
   projectRoutePath,
+} from "./entities.js";
+
+// Phase 19 — the middleware vocabularies the model re-declares, so a consumer never has to
+// import the acquisition layer.
+export {
+  MIDDLEWARE_CALLABLE_FORMS,
+  MIDDLEWARE_FRAMEWORKS,
+  MIDDLEWARE_PROBLEM_REASONS,
+  MIDDLEWARE_REGISTRATIONS,
+  MIDDLEWARE_SCOPES,
+  MIDDLEWARE_SOURCE_REASONS,
+  MIDDLEWARE_SOURCE_STATUSES,
+  MIDDLEWARE_UNRESOLVED_REASONS as MIDDLEWARE_SOURCE_UNRESOLVED_REASONS,
 } from "./entities.js";
 
 export {
@@ -278,6 +329,12 @@ export {
   API_ROUTE_HANDLER_RESULT_FIELDS,
   API_ROUTE_LOOKUP_RESULT_FIELDS,
   API_ROUTE_MIDDLEWARE_RESULT_FIELDS,
+  MIDDLEWARE_CHAIN_RESULT_FIELDS,
+  MIDDLEWARE_GRAPH_RESULT_FIELDS,
+  MIDDLEWARE_PROTECTED_ROUTE_RESULT_FIELDS,
+  MIDDLEWARE_RESULT_FIELDS,
+  MIDDLEWARE_STATE_VALUES,
+  MIDDLEWARE_UNRESOLVED_RESULT_FIELDS,
   API_ROUTE_RESULT_FIELDS,
   API_ROUTE_STATE_VALUES,
   API_SERVICE_RESULT_FIELDS,
@@ -298,6 +355,11 @@ export {
   createApiRouteQueryResult,
   createApiServiceResult,
   createApiUnresolvedRouteResult,
+  createMiddlewareChainResult,
+  createMiddlewareGraphResult,
+  createMiddlewareProtectedRouteResult,
+  createMiddlewareQueryResult,
+  createMiddlewareUnresolvedResult,
   createDependencyEdgeQueryResult,
   createDependencyGraphResult,
   createDependencyPathResult,
@@ -328,6 +390,11 @@ export {
   validateApiRouteQueryResult,
   validateApiServiceResult,
   validateApiUnresolvedRouteResult,
+  validateMiddlewareChainResult,
+  validateMiddlewareGraphResult,
+  validateMiddlewareProtectedRouteResult,
+  validateMiddlewareQueryResult,
+  validateMiddlewareUnresolvedResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
   validateDependencyPathResult,

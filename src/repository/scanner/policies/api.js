@@ -305,9 +305,13 @@ function note(problems, reason) {
 /**
  * Find the token index of the closer matching the opener at `openIndex`.
  *
+ * Exported because Phase 19's middleware scanner shares this token stream and must
+ * delimit call arguments the same way this scanner does; a second, subtly different
+ * delimiter would let the two acquisitions disagree about the same call.
+ *
  * @returns {number} The closer index, or `-1` when the input is unbalanced.
  */
-function findMatching(tokens, openIndex) {
+export function findMatching(tokens, openIndex) {
   const open = tokens[openIndex]?.value;
   const close = OPENERS.get(open);
   if (close === undefined) return -1;
@@ -332,7 +336,7 @@ function findMatching(tokens, openIndex) {
  * @param {number} limit Maximum arguments to return.
  * @returns {Array<{start: number, end: number}>} Ranges are inclusive `[start, end]`.
  */
-function splitArguments(tokens, openIndex, limit) {
+export function splitArguments(tokens, openIndex, limit) {
   const closeIndex = findMatching(tokens, openIndex);
   if (closeIndex < 0) return [];
   const args = [];
@@ -363,13 +367,13 @@ function firstToken(tokens, range) {
 }
 
 /**
- * Classify a route-call argument.
+ * Classify a call argument.
  *
  * @returns {{form: string, name: string|null, member: string|null}|null}
  *   `form` is one of `reference`, `inline`, `options`, `other`; `null` when the range
  *   is empty.
  */
-function classifyArgument(tokens, range) {
+export function classifyArgument(tokens, range) {
   if (range.empty === true || range.start > range.end) return null;
   const first = firstToken(tokens, range);
 
@@ -604,6 +608,31 @@ function collectReceivers(tokens, aliases, problems, limits) {
   return receivers.slice(0, limits.maxReceiversPerFile);
 }
 
+/**
+ * Establish a module's framework context: which names it bound to a framework *module*
+ * (the aliases) and which names it bound to the *result* of a framework factory call (the
+ * route registrars).
+ *
+ * Extracted so Phase 19's middleware scanner reuses this phase's framework detection
+ * verbatim rather than re-implementing it: a second detector would be a second answer to
+ * "is this receiver an Express app?", and the two could disagree. Nothing is resolved
+ * here — no import is followed, no package is consulted, no file is read.
+ *
+ * @param {object[]} tokens The lexed token stream.
+ * @param {string[]} problems Problem list to record bounds into.
+ * @param {object} [limits]
+ * @returns {{aliases: Map<string, object>, receivers: object[], receiversByName: Map<string, object>}}
+ */
+export function establishFrameworkContext(tokens, problems, limits = API_ACQUISITION_LIMITS) {
+  const aliases = collectAliases(tokens, problems, limits);
+  const receivers = collectReceivers(tokens, aliases, problems, limits);
+  return {
+    aliases,
+    receivers,
+    receiversByName: new Map(receivers.map((receiver) => [receiver.name, receiver])),
+  };
+}
+
 // ── Route extraction ─────────────────────────────────────────────────────────
 
 /** Normalise a lower-case verb to its recorded upper-case method. */
@@ -691,9 +720,10 @@ export function scanApiRoutes(text, options = {}) {
     note(problems, API_PROBLEMS.TOKEN_LIMIT);
   }
 
-  const aliases = collectAliases(tokens, problems, limits);
-  const receiverList = collectReceivers(tokens, aliases, problems, limits);
-  const receiverByName = new Map(receiverList.map((receiver) => [receiver.name, receiver]));
+  const frameworkContext = establishFrameworkContext(tokens, problems, limits);
+  const aliases = frameworkContext.aliases;
+  const receiverList = frameworkContext.receivers;
+  const receiverByName = frameworkContext.receiversByName;
 
   const routes = [];
   const shapes = [];

@@ -57,6 +57,13 @@ import {
   IMPORT_SOURCE_REASONS,
   IMPORT_SOURCE_STATUSES as IMPORT_SOURCE_STATUS_VALUES,
   IMPORT_SPECIFIER_KINDS,
+  MIDDLEWARE_FRAMEWORKS,
+  MIDDLEWARE_PROBLEM_REASONS,
+  MIDDLEWARE_REGISTRATIONS as ENTITY_MIDDLEWARE_REGISTRATIONS,
+  MIDDLEWARE_SCOPES as ENTITY_MIDDLEWARE_SCOPES,
+  MIDDLEWARE_SOURCE_REASONS,
+  MIDDLEWARE_SOURCE_STATUSES,
+  MIDDLEWARE_UNRESOLVED_REASONS as ENTITY_MIDDLEWARE_UNRESOLVED_REASONS,
   SEMANTIC_MODULE_EXTENSIONS,
   SEMANTIC_PROBLEM_REASONS,
   SEMANTIC_SOURCE_REASONS,
@@ -99,6 +106,21 @@ import {
   apiRouteIdOf,
   isEstablishedApiState,
 } from "./api-graph.js";
+import {
+  MIDDLEWARE_CLASSIFICATION_VALUES,
+  MIDDLEWARE_EDGE_TYPES,
+  MIDDLEWARE_EDGE_TYPE_VALUES,
+  MIDDLEWARE_GRAPH_LIMITS,
+  MIDDLEWARE_GRAPH_STATES,
+  MIDDLEWARE_GRAPH_STATE_VALUES,
+  MIDDLEWARE_PROTECTION_STATES,
+  MIDDLEWARE_PROTECTION_VALUES,
+  MIDDLEWARE_REGISTRATIONS as GRAPH_MIDDLEWARE_REGISTRATIONS,
+  MIDDLEWARE_SCOPES as GRAPH_MIDDLEWARE_SCOPES,
+  MIDDLEWARE_UNRESOLVED_KINDS,
+  MIDDLEWARE_UNRESOLVED_REASON_VALUES,
+  isEstablishedMiddlewareState,
+} from "./middleware-graph.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -203,6 +225,11 @@ function isNonEmptyString(value) {
  */
 function isNonNegativeInteger(value) {
   return Number.isInteger(value) && value >= 0;
+}
+
+/** A sorted, de-duplicated list of strings, for comparing two sets of ids. */
+function sortedStringList(values) {
+  return [...new Set(values.filter((value) => typeof value === "string"))].sort();
 }
 
 function checkIndexCoverage(model, entityIds, evidenceIds, ctx) {
@@ -2467,6 +2494,477 @@ export function validateRepositoryModelGraph(model) {
       const value = entity[field];
       if (typeof value === "string" && value !== model.identity.root && value.startsWith("/")) {
         fail(`${label}[${entity.id}].${field}`, "must not be an absolute path");
+      }
+    }
+  }
+
+  // ── Middleware graph (Phase 19) ───────────────────────────────────────────
+  //
+  // The middleware graph is validated against the two graphs it projects from, so a broken
+  // projection fails the build here instead of reaching a rule as a plausible finding:
+  //
+  //   - every middleware node's id must be a symbol the Phase 17 graph carries, and the
+  //     node must not invent a symbol of its own (`node.symbolId === node.id`);
+  //   - every `protects` / `applies-to` target must be a route the API graph carries, and
+  //     `precedes` must join two middleware nodes and `registered-on` a middleware node to
+  //     a file the model observed — no invented endpoint;
+  //   - a route's protection state must agree with its own middleware and unresolved
+  //     counts, so a route that carries an unresolved observation can never read as
+  //     unprotected;
+  //   - a state of `complete` requires the scan behind it to have finished and every source
+  //     to have established its registrations.
+  {
+    const middlewareArea = model.middleware;
+    if (!isPlainObject(middlewareArea)) {
+      fail("middleware", "must be a plain object");
+    } else {
+      const filePaths = new Set(model.files.entries.map((file) => file.path));
+      const fileIds = new Set(model.files.entries.map((file) => file.id));
+      const symbolNodeIds = new Set(
+        (Array.isArray(model.symbols?.graph?.nodes) ? model.symbols.graph.nodes : []).map(
+          (node) => node.id,
+        ),
+      );
+      const apiRouteIds = new Set(
+        (Array.isArray(model.api?.graph?.nodes) ? model.api.graph.nodes : []).map(
+          (node) => node.id,
+        ),
+      );
+      const evidenceIds = new Set(
+        (Array.isArray(model.evidence) ? model.evidence : []).map((record) => record?.id),
+      );
+      const entries = middlewareArea.entries;
+
+      if (typeof middlewareArea.detected !== "boolean") {
+        fail("middleware.detected", "must be a boolean");
+      }
+      if (!Array.isArray(entries)) {
+        fail("middleware.entries", "must be an array");
+      } else {
+        const seen = new Set();
+        for (const source of entries) {
+          const at = `middleware.entries[${source?.path}]`;
+          if (!isPlainObject(source)) {
+            fail("middleware.entries", "every middleware source must be a plain object");
+            continue;
+          }
+          if (!filePaths.has(source.path)) {
+            fail(at, "must name a file the model observed");
+            continue;
+          }
+          if (seen.has(source.path)) fail(at, "must describe each middleware source once");
+          seen.add(source.path);
+
+          if (!SEMANTIC_MODULE_EXTENSIONS.includes(source.extension)) {
+            fail(`${at}.extension`, "must be a module source extension");
+          }
+          if (!MIDDLEWARE_SOURCE_STATUSES.includes(source.status)) {
+            fail(`${at}.status`, "must be a documented middleware source status");
+          }
+          if (typeof source.established !== "boolean") {
+            fail(`${at}.established`, "must be a boolean");
+          }
+          if (typeof source.truncated !== "boolean") {
+            fail(`${at}.truncated`, "must be a boolean");
+          }
+          if (!Array.isArray(source.frameworks)) {
+            fail(`${at}.frameworks`, "must be an array");
+          } else {
+            for (const framework of source.frameworks) {
+              if (!MIDDLEWARE_FRAMEWORKS.includes(framework)) {
+                fail(`${at}.frameworks`, "must name a supported framework");
+              }
+            }
+          }
+          if (!Array.isArray(source.receivers)) {
+            fail(`${at}.receivers`, "must be an array");
+          }
+          if (!Array.isArray(source.registrations)) {
+            fail(`${at}.registrations`, "must be an array");
+          } else {
+            for (const registration of source.registrations) {
+              const registrationAt = `${at}.registrations[]`;
+              if (!ENTITY_MIDDLEWARE_REGISTRATIONS.includes(registration?.registration)) {
+                fail(`${registrationAt}.registration`, "must be a documented registration kind");
+              }
+              if (!ENTITY_MIDDLEWARE_SCOPES.includes(registration?.scope)) {
+                fail(`${registrationAt}.scope`, "must be a documented scope");
+              }
+              if (!API_RECEIVER_KINDS.includes(registration?.receiverKind)) {
+                fail(`${registrationAt}.receiverKind`, "must be app or router");
+              }
+              for (const entry of registration?.middleware ?? []) {
+                if (!API_CALLABLE_FORMS.includes(entry?.form)) {
+                  fail(`${registrationAt}.middleware`, "must be a documented callable form");
+                }
+              }
+              for (const observation of registration?.unresolved ?? []) {
+                if (!ENTITY_MIDDLEWARE_UNRESOLVED_REASONS.includes(observation?.reason)) {
+                  fail(`${registrationAt}.unresolved`, "must be a documented reason");
+                }
+              }
+            }
+          }
+          if (!Array.isArray(source.mounts)) {
+            fail(`${at}.mounts`, "must be an array");
+          }
+          if (!Array.isArray(source.problems)) {
+            fail(`${at}.problems`, "must be an array");
+          } else {
+            for (const problem of source.problems) {
+              if (!MIDDLEWARE_PROBLEM_REASONS.includes(problem)) {
+                fail(`${at}.problems[]`, "must be a documented problem");
+              }
+            }
+          }
+          if (!MIDDLEWARE_SOURCE_REASONS.includes(source.reason) && source.reason !== null) {
+            fail(`${at}.reason`, "must be null or a documented reason");
+          }
+          if (!evidenceIds.has(source.evidenceId)) {
+            fail(`${at}.evidenceId`, "must name an observation the model carries");
+          }
+        }
+      }
+      if (middlewareArea.count !== (Array.isArray(entries) ? entries.length : 0)) {
+        fail("middleware.count", "must count the middleware sources the area carries");
+      }
+
+      const graph = middlewareArea.graph;
+      if (!isPlainObject(graph)) {
+        fail("middleware.graph", "must be a plain object");
+      } else {
+        const middlewareIds = new Set();
+        if (!isNonEmptyString(graph.version)) {
+          fail("middleware.graph.version", "must be a non-empty string");
+        }
+        if (!MIDDLEWARE_GRAPH_STATE_VALUES.includes(graph.state)) {
+          fail("middleware.graph.state", `must be one of: ${MIDDLEWARE_GRAPH_STATE_VALUES.join(", ")}`);
+        }
+        if (typeof graph.established !== "boolean") {
+          fail("middleware.graph.established", "must be a boolean");
+        } else if (graph.established !== isEstablishedMiddlewareState(graph.state)) {
+          fail("middleware.graph.established", "must agree with the state it reports");
+        }
+
+        if (!Array.isArray(graph.nodes)) {
+          fail("middleware.graph.nodes", "must be an array");
+        } else {
+          if (graph.nodes.length > MIDDLEWARE_GRAPH_LIMITS.MAX_MIDDLEWARE) {
+            fail("middleware.graph.nodes", "must stay within the graph node bound");
+          }
+          let previous = null;
+          graph.nodes.forEach((node, index) => {
+            const at = `middleware.graph.nodes[${index}]`;
+            if (!isPlainObject(node)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!isNonEmptyString(node.id)) {
+              fail(`${at}.id`, "must be a non-empty string");
+              return;
+            }
+            if (!symbolNodeIds.has(node.id)) {
+              fail(`${at}.id`, "must name a symbol the symbol graph carries");
+            }
+            if (node.symbolId !== node.id) {
+              fail(`${at}.symbolId`, "must be the symbol identity the node reuses");
+            }
+            if (!filePaths.has(node.path)) {
+              fail(`${at}.path`, "must name a file the model observed");
+            }
+            if (node.fileId !== `file:${node.path}`) {
+              fail(`${at}.fileId`, "must be the file entity of the declaring path");
+            }
+            if (!MIDDLEWARE_CLASSIFICATION_VALUES.includes(node.classification)) {
+              fail(`${at}.classification`, "must be a documented classification");
+            }
+            for (const field of ["scopes", "registrations", "hooks", "receivers", "frameworks"]) {
+              if (!Array.isArray(node[field])) fail(`${at}.${field}`, "must be an array");
+            }
+            for (const scope of Array.isArray(node.scopes) ? node.scopes : []) {
+              if (!GRAPH_MIDDLEWARE_SCOPES.includes(scope)) {
+                fail(`${at}.scopes`, "must be a documented scope");
+              }
+            }
+            for (const registration of Array.isArray(node.registrations) ? node.registrations : []) {
+              if (!GRAPH_MIDDLEWARE_REGISTRATIONS.includes(registration)) {
+                fail(`${at}.registrations`, "must be a documented registration kind");
+              }
+            }
+            for (const framework of Array.isArray(node.frameworks) ? node.frameworks : []) {
+              if (!MIDDLEWARE_FRAMEWORKS.includes(framework)) {
+                fail(`${at}.frameworks`, "must name a supported framework");
+              }
+            }
+            for (const sourcePath of Array.isArray(node.sourcePaths) ? node.sourcePaths : []) {
+              if (!filePaths.has(sourcePath)) {
+                fail(`${at}.sourcePaths`, "must name files the model observed");
+              }
+            }
+            for (const evidenceId of Array.isArray(node.evidenceIds) ? node.evidenceIds : []) {
+              if (!evidenceIds.has(evidenceId)) {
+                fail(`${at}.evidenceIds`, "must name observations the model carries");
+              }
+            }
+            if (previous !== null && previous >= node.id) {
+              fail("middleware.graph.nodes", "nodes must be sorted by id and unique");
+            }
+            previous = node.id;
+            middlewareIds.add(node.id);
+          });
+        }
+
+        if (!Array.isArray(graph.edges)) {
+          fail("middleware.graph.edges", "must be an array");
+        } else {
+          if (graph.edges.length > MIDDLEWARE_GRAPH_LIMITS.MAX_EDGES) {
+            fail("middleware.graph.edges", "must stay within the graph edge bound");
+          }
+          let previousKey = null;
+          graph.edges.forEach((edge, index) => {
+            const at = `middleware.graph.edges[${index}]`;
+            if (!isPlainObject(edge)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!MIDDLEWARE_EDGE_TYPE_VALUES.includes(edge.type)) {
+              fail(`${at}.type`, "must be a documented edge type");
+            }
+            const endpointExists = (id) =>
+              middlewareIds.has(id) || apiRouteIds.has(id) || fileIds.has(id);
+            if (!endpointExists(edge.from)) {
+              fail(`${at}.from`, "must name an entity the model carries");
+            }
+            if (!endpointExists(edge.to)) {
+              fail(`${at}.to`, "must name an entity the model carries");
+            }
+            if (edge.type === MIDDLEWARE_EDGE_TYPES.REGISTERED_ON) {
+              if (!middlewareIds.has(edge.from) || !fileIds.has(edge.to)) {
+                fail(at, "a `registered-on` edge must join a middleware node to a file");
+              }
+            } else if (edge.type === MIDDLEWARE_EDGE_TYPES.PRECEDES) {
+              if (!middlewareIds.has(edge.from) || !middlewareIds.has(edge.to)) {
+                fail(at, "a `precedes` edge must join two middleware nodes");
+              }
+            } else if (!middlewareIds.has(edge.from) || !apiRouteIds.has(edge.to)) {
+              fail(at, "a protection edge must join a middleware node to a route");
+            }
+            for (const evidenceId of Array.isArray(edge.evidenceIds) ? edge.evidenceIds : []) {
+              if (!evidenceIds.has(evidenceId)) {
+                fail(`${at}.evidenceIds`, "must name observations the model carries");
+              }
+            }
+            const key = `${edge.from}\u0000${edge.to}\u0000${edge.type}`;
+            if (previousKey !== null && key <= previousKey) {
+              fail(
+                "middleware.graph.edges",
+                "must state each relationship once, sorted by (from, to, type)",
+              );
+            }
+            previousKey = key;
+          });
+        }
+
+        if (!Array.isArray(graph.routes)) {
+          fail("middleware.graph.routes", "must be an array");
+        } else {
+          if (graph.routes.length > MIDDLEWARE_GRAPH_LIMITS.MAX_ROUTES) {
+            fail("middleware.graph.routes", "must stay within the route bound");
+          }
+          const middlewareNames = new Map();
+          let previousRoute = null;
+          graph.routes.forEach((route, index) => {
+            const at = `middleware.graph.routes[${index}]`;
+            if (!isPlainObject(route)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!apiRouteIds.has(route.route)) {
+              fail(`${at}.route`, "must name a route the API graph carries");
+            }
+            if (route.route !== apiRouteIdOf(route.method, route.path)) {
+              fail(`${at}.route`, "must be the identity of the endpoint it describes");
+            }
+            if (!MIDDLEWARE_PROTECTION_VALUES.includes(route.protection)) {
+              fail(`${at}.protection`, "must be a documented protection state");
+            }
+            if (!Array.isArray(route.middleware)) {
+              fail(`${at}.middleware`, "must be an array");
+              return;
+            }
+            let previousMiddleware = null;
+            for (const middlewareId of route.middleware) {
+              if (!middlewareIds.has(middlewareId)) {
+                fail(`${at}.middleware`, "must name middleware nodes the graph carries");
+              }
+              if (previousMiddleware !== null && previousMiddleware >= middlewareId) {
+                fail(
+                  `${at}.middleware`,
+                  "must state each middleware once, sorted by id (no duplicate chains)",
+                );
+              }
+              previousMiddleware = middlewareId;
+            }
+            const unresolvedCount = isNonNegativeInteger(route.unresolvedCount)
+              ? route.unresolvedCount
+              : -1;
+            if (route.protection === MIDDLEWARE_PROTECTION_STATES.PROTECTED) {
+              if (route.middleware.length === 0) {
+                fail(`${at}.protection`, "cannot be protected without established middleware");
+              }
+            } else if (route.middleware.length > 0) {
+              fail(`${at}.protection`, "must be protected when middleware was established");
+            }
+            if (route.protection === MIDDLEWARE_PROTECTION_STATES.UNRESOLVED && unresolvedCount <= 0) {
+              fail(`${at}.protection`, "cannot be unresolved without an unresolved observation");
+            }
+            if (
+              route.protection === MIDDLEWARE_PROTECTION_STATES.NONE_OBSERVED &&
+              unresolvedCount > 0
+            ) {
+              // The whole point of the unresolved state: an occurrence that could be
+              // middleware must never read as "this route has no middleware".
+              fail(
+                `${at}.protection`,
+                "cannot be none-observed while an unresolved middleware observation exists",
+              );
+            }
+            if (previousRoute !== null && previousRoute >= route.route) {
+              fail("middleware.graph.routes", "routes must be sorted by id and unique");
+            }
+            previousRoute = route.route;
+            middlewareNames.set(route.route, route.middleware);
+          });
+
+          // Edge consistency: a route's middleware list and the protection edges that name
+          // it must describe the same set, so a consumer cannot read two answers.
+          if (Array.isArray(graph.edges)) {
+            for (const route of graph.routes) {
+              if (!isPlainObject(route) || !isNonEmptyString(route.route)) continue;
+              const fromEdges = sortedStringList(
+                graph.edges
+                  .filter(
+                    (edge) =>
+                      isPlainObject(edge) &&
+                      edge.to === route.route &&
+                      (edge.type === MIDDLEWARE_EDGE_TYPES.PROTECTS ||
+                        edge.type === MIDDLEWARE_EDGE_TYPES.APPLIES_TO),
+                  )
+                  .map((edge) => edge.from),
+              );
+              const fromRoute = sortedStringList(middlewareNames.get(route.route) ?? []);
+              if (fromEdges.join(",") !== fromRoute.join(",")) {
+                fail(
+                  `middleware.graph.routes[${route.route}].middleware`,
+                  "must agree with the protection edges that name the route",
+                );
+              }
+            }
+          }
+        }
+
+        if (!Array.isArray(graph.unresolved)) {
+          fail("middleware.graph.unresolved", "must be an array");
+        } else {
+          if (graph.unresolved.length > MIDDLEWARE_GRAPH_LIMITS.MAX_UNRESOLVED) {
+            fail("middleware.graph.unresolved", "must stay within the unresolved bound");
+          }
+          let previousUnresolved = null;
+          graph.unresolved.forEach((record, index) => {
+            const at = `middleware.graph.unresolved[${index}]`;
+            if (!isPlainObject(record)) {
+              fail(at, "must be a plain object");
+              return;
+            }
+            if (!filePaths.has(record.path)) {
+              fail(`${at}.path`, "must name a file the model observed");
+            }
+            if (!MIDDLEWARE_UNRESOLVED_KINDS.includes(record.kind)) {
+              fail(`${at}.kind`, "must be a registration or a route middleware");
+            }
+            if (!MIDDLEWARE_UNRESOLVED_REASON_VALUES.includes(record.reason)) {
+              fail(`${at}.reason`, "must be a documented reason");
+            }
+            if (record.route !== null && !apiRouteIds.has(record.route)) {
+              fail(`${at}.route`, "must be null or a route the API graph carries");
+            }
+            const key = `${record.path}\u0000${record.reason}\u0000${record.route ?? ""}\u0000${record.kind}\u0000${record.name ?? ""}`;
+            if (previousUnresolved !== null && key < previousUnresolved) {
+              fail("middleware.graph.unresolved", "must be sorted deterministically");
+            }
+            previousUnresolved = key;
+          });
+        }
+
+        const coverage = graph.coverage;
+        if (!isPlainObject(coverage)) {
+          fail("middleware.graph.coverage", "must be a plain object");
+        } else {
+          if (coverage.state !== graph.state) {
+            fail("middleware.graph.coverage.state", "must agree with the graph state");
+          }
+          if (coverage.established !== graph.established) {
+            fail("middleware.graph.coverage.established", "must agree with the graph state");
+          }
+          if (coverage.middleware !== (Array.isArray(graph.nodes) ? graph.nodes.length : -1)) {
+            fail("middleware.graph.coverage.middleware", "must count the middleware the graph contains");
+          }
+          if (coverage.edges !== (Array.isArray(graph.edges) ? graph.edges.length : -1)) {
+            fail("middleware.graph.coverage.edges", "must count the edges the graph contains");
+          }
+          if (coverage.routes !== (Array.isArray(graph.routes) ? graph.routes.length : -1)) {
+            fail("middleware.graph.coverage.routes", "must count the routes the graph describes");
+          }
+          if (
+            coverage.unresolved !==
+            (Array.isArray(graph.unresolved) ? graph.unresolved.length : -1)
+          ) {
+            fail("middleware.graph.coverage.unresolved", "must count every unresolved record");
+          }
+          if (coverage.truncated !== (graph.state === MIDDLEWARE_GRAPH_STATES.TRUNCATED)) {
+            fail("middleware.graph.coverage.truncated", "must agree with the graph state");
+          }
+          if (coverage.complete !== (graph.state === MIDDLEWARE_GRAPH_STATES.COMPLETE)) {
+            fail("middleware.graph.coverage.complete", "must agree with the graph state");
+          }
+          if (Array.isArray(graph.routes)) {
+            const byState = {};
+            for (const value of MIDDLEWARE_PROTECTION_VALUES) byState[value] = 0;
+            for (const route of graph.routes) byState[route?.protection] = (byState[route?.protection] ?? 0) + 1;
+            if (coverage.protectedRoutes !== byState[MIDDLEWARE_PROTECTION_STATES.PROTECTED]) {
+              fail("middleware.graph.coverage.protectedRoutes", "must count the protected routes");
+            }
+            if (coverage.unresolvedRoutes !== byState[MIDDLEWARE_PROTECTION_STATES.UNRESOLVED]) {
+              fail("middleware.graph.coverage.unresolvedRoutes", "must count the unresolved routes");
+            }
+            if (
+              coverage.unprotectedRoutes !== byState[MIDDLEWARE_PROTECTION_STATES.NONE_OBSERVED]
+            ) {
+              fail("middleware.graph.coverage.unprotectedRoutes", "must count the routes with no observed middleware");
+            }
+          }
+          if (graph.state === MIDDLEWARE_GRAPH_STATES.COMPLETE) {
+            if (model.scan.complete !== true) {
+              fail("middleware.graph.state", "cannot be complete unless the scan covered the repository");
+            }
+            const sources = Array.isArray(entries) ? entries : [];
+            if (sources.length > 0 && !sources.every((source) => source.established === true)) {
+              fail(
+                "middleware.graph.state",
+                "cannot be complete while a middleware source is unestablished",
+              );
+            }
+          }
+        }
+      }
+
+      if (
+        isPlainObject(middlewareArea.coverage) &&
+        isPlainObject(middlewareArea.graph?.coverage)
+      ) {
+        if (middlewareArea.coverage.unresolved !== middlewareArea.graph.coverage.unresolved) {
+          fail("middleware.coverage.unresolved", "must agree with the graph it summarises");
+        }
       }
     }
   }

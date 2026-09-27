@@ -170,6 +170,29 @@ export {
 
 export { detectApi } from "./detectors/api.js";
 
+// Phase 19 — middleware acquisition: the deterministic registration scanner that records
+// `use` / `addHook` / `register` registrations on a framework receiver the module itself
+// establishes, with its closed vocabularies and bounds, plus the detector that applies it.
+export {
+  MIDDLEWARE_ACQUISITION_LIMITS,
+  MIDDLEWARE_CALLABLE_FORMS,
+  MIDDLEWARE_FRAMEWORKS,
+  MIDDLEWARE_HOOK_NAMES,
+  MIDDLEWARE_HOOK_NAME_VALUES,
+  MIDDLEWARE_PROBLEMS,
+  MIDDLEWARE_REGISTRATIONS,
+  MIDDLEWARE_REGISTRATION_VALUES,
+  MIDDLEWARE_SCOPES,
+  MIDDLEWARE_SCOPE_VALUES,
+  MIDDLEWARE_SOURCE_REASONS,
+  MIDDLEWARE_SOURCE_STATUSES,
+  MIDDLEWARE_UNRESOLVED_REASONS,
+  MIDDLEWARE_UNRESOLVED_REASON_VALUES,
+  scanMiddleware,
+} from "./policies/middleware.js";
+
+export { detectMiddleware } from "./detectors/middleware.js";
+
 export {
   SCAN_OPTION_KEYS,
   TRUNCATION_REASONS,

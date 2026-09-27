@@ -44,6 +44,7 @@ import {
   validateRepositoryModelGraph,
 } from "./contracts.js";
 import { buildApiGraph } from "./api-graph.js";
+import { buildMiddlewareGraph } from "./middleware-graph.js";
 import { buildArchitectureGraph } from "./architecture-graph.js";
 import { buildEntities } from "./entities.js";
 import { buildDependencyGraph } from "./dependency-graph.js";
@@ -220,6 +221,27 @@ export function buildRepositoryModel(scanResult) {
     },
   });
 
+  // Phase 19 — the middleware graph. Built from this phase's own acquisition records, the
+  // API graph above (whose route nodes and whose `middleware` edges are the *resolved*
+  // route-scope middleware, so the two graphs cannot disagree about it) and the symbol
+  // graph (whose nodes are the middleware identities, never duplicated here). It reads only
+  // the model's already-frozen facts: no file, no parser, no request pipeline, no runtime.
+  const middlewareGraph = buildMiddlewareGraph({
+    sources: collections.middlewareSources,
+    apiSources: collections.apiSources,
+    apiGraph,
+    semanticsSources: collections.semanticsSources,
+    symbolGraph,
+    coverage: {
+      scanComplete: scan.scan.complete === true,
+      scanTruncated: scan.scan.truncated === true,
+    },
+    uninterpreted: {
+      sources: uninterpretedFiles.length,
+      extensions: uninterpretedFiles.map((file) => file.extension),
+    },
+  });
+
   const relationships = buildRelationships(
     { ...collections, importEdges: importGraph.edges },
     repositoryIdValue,
@@ -372,6 +394,25 @@ export function buildRepositoryModel(scanResult) {
         unresolved: apiGraph.coverage.unresolved,
       },
       graph: apiGraph,
+    },
+    // Phase 19 — the middleware substrate. `entries` is one record per module source (the
+    // receivers it bound, the registrations it declared and the middleware-shaped
+    // occurrences it could not establish), and `graph` is the resolved projection over the
+    // API graph's routes and the symbol graph's nodes: middleware nodes, `protects` /
+    // `applies-to` / `registered-on` / `precedes` edges with provenance, the occurrences
+    // that are not registrations, each route's structural protection state, and the coverage
+    // state. No judgment about whether the protection is correct, sufficient or correctly
+    // ordered is attached, and none can be: the model records the declared structure.
+    middleware: {
+      ...skeleton.middleware,
+      detected: collections.middlewareSources.length > 0,
+      entries: collections.middlewareSources,
+      count: collections.middlewareSources.length,
+      coverage: {
+        ...collections.middlewareCoverage,
+        unresolved: middlewareGraph.coverage.unresolved,
+      },
+      graph: middlewareGraph,
     },
     configuration: {
       detected: scan.configuration.detected,

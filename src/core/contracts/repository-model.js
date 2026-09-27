@@ -54,6 +54,12 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // default) because a consumer must be able to tell "this repository exposes no route"
   // from "this model says nothing about routes".
   "api",
+  // Phase 19 — the middleware substrate: which middleware each module registers on a
+  // framework receiver it establishes, and which routes that registration structurally
+  // reaches. A required area like every other one (the factory always emits it, empty by
+  // default) because a consumer must be able to tell "this repository registers no
+  // middleware" from "this model says nothing about middleware".
+  "middleware",
   "scan",
   "metadata",
 ]);
@@ -151,6 +157,7 @@ export function createRepositoryModel(overrides = {}) {
     imports: overrides.imports ?? {},
     symbols: overrides.symbols ?? {},
     api: overrides.api ?? {},
+    middleware: overrides.middleware ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

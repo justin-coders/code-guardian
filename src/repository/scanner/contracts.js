@@ -75,6 +75,16 @@ import {
   API_UNSUPPORTED_FRAMEWORKS,
 } from "./policies/api.js";
 import {
+  MIDDLEWARE_FRAMEWORKS,
+  MIDDLEWARE_PROBLEM_VALUES,
+  MIDDLEWARE_REGISTRATION_VALUES,
+  MIDDLEWARE_SCOPE_VALUES,
+  MIDDLEWARE_SOURCE_REASON_VALUES,
+  MIDDLEWARE_SOURCE_STATUSES,
+  MIDDLEWARE_SOURCE_STATUS_VALUES,
+  MIDDLEWARE_UNRESOLVED_REASON_VALUES,
+} from "./policies/middleware.js";
+import {
   SEMANTIC_MODULE_EXTENSIONS,
   SEMANTIC_PROBLEM_VALUES,
   SEMANTIC_SOURCE_REASON_VALUES,
@@ -280,6 +290,7 @@ export function createScanResult(overrides = {}) {
   const imports = overrides.imports ?? {};
   const semantics = overrides.semantics ?? {};
   const api = overrides.api ?? {};
+  const middleware = overrides.middleware ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -376,6 +387,16 @@ export function createScanResult(overrides = {}) {
       truncated: api.truncated ?? false,
       files: api.files ?? [],
       limits: api.limits ?? {},
+    },
+    // Phase 19 — the same three-state discipline for middleware acquisition: a draft
+    // that declares nothing about middleware must not look like one whose sources were
+    // scanned and found to register none.
+    middleware: {
+      inspected: middleware.inspected ?? false,
+      complete: middleware.complete ?? false,
+      truncated: middleware.truncated ?? false,
+      files: middleware.files ?? [],
+      limits: middleware.limits ?? {},
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -1649,6 +1670,7 @@ export function validateScanResult(value) {
   collectImportsIssues(value.imports, ctx, "scanResult.imports");
   collectSemanticsIssues(value.semantics, ctx, "scanResult.semantics");
   collectApiIssues(value.api, ctx, "scanResult.api");
+  collectMiddlewareIssues(value.middleware, ctx, "scanResult.middleware");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {
@@ -1767,6 +1789,258 @@ export function validateScanResult(value) {
   }
 
   return value;
+}
+
+/**
+ * Validate the `middleware` section (Phase 19).
+ *
+ * Every closed vocabulary is re-checked here, plus the structural invariants the
+ * projection depends on: a source that was not scanned states no registration, a
+ * registration's receiver kind, scope, registration kind and framework are all in their
+ * recorded vocabularies, a mount path is a route path or null, and `complete` cannot be
+ * true unless every module source was parsed without truncation or problems.
+ */
+function collectMiddlewareIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  for (const field of ["inspected", "complete", "truncated"]) {
+    if (typeof section[field] !== "boolean") ctx.fail(`${path}.${field}`, "must be a boolean");
+  }
+  if (!isPlainObject(section.limits)) ctx.fail(`${path}.limits`, "must be a plain object");
+  if (!Array.isArray(section.files)) {
+    ctx.fail(`${path}.files`, "must be an array");
+    return;
+  }
+
+  const receiverKinds = Object.values(API_RECEIVER_KINDS);
+  const frameworks = Object.values(MIDDLEWARE_FRAMEWORKS);
+  const callableForms = ["reference", "inline"];
+
+  section.files.forEach((record, index) => {
+    const at = `${path}.files[${index}]`;
+    if (!isPlainObject(record)) {
+      ctx.fail(at, "must be a plain object");
+      return;
+    }
+    for (const field of ["path", "extension", "language"]) {
+      if (!isNonEmptyString(record[field])) ctx.fail(`${at}.${field}`, "must be a non-empty string");
+    }
+    if (isNonEmptyString(record.path) && isAbsolutePath(record.path)) {
+      ctx.fail(`${at}.path`, "must be a repository-relative path");
+    }
+    if (!SEMANTIC_MODULE_EXTENSIONS.includes(record.extension)) {
+      ctx.fail(`${at}.extension`, "must be a module source extension this build covers");
+    }
+    if (!MIDDLEWARE_SOURCE_STATUS_VALUES.includes(record.status)) {
+      ctx.fail(`${at}.status`, `must be one of: ${MIDDLEWARE_SOURCE_STATUS_VALUES.join(", ")}`);
+    }
+    if (
+      record.reason !== null &&
+      record.reason !== undefined &&
+      !MIDDLEWARE_SOURCE_REASON_VALUES.includes(record.reason)
+    ) {
+      ctx.fail(`${at}.reason`, `must be null or one of: ${MIDDLEWARE_SOURCE_REASON_VALUES.join(", ")}`);
+    }
+    if (record.status === MIDDLEWARE_SOURCE_STATUSES.PARSED && record.reason != null) {
+      ctx.fail(`${at}.reason`, "must be null for a scanned module source");
+    }
+    if (record.status !== MIDDLEWARE_SOURCE_STATUSES.PARSED && record.reason == null) {
+      ctx.fail(`${at}.reason`, "must record why the module source was not scanned");
+    }
+    if (!isNonNegativeInteger(record.bytesInspected)) {
+      ctx.fail(`${at}.bytesInspected`, "must be a non-negative integer");
+    }
+    if (typeof record.truncated !== "boolean") ctx.fail(`${at}.truncated`, "must be a boolean");
+    if (typeof record.established !== "boolean") {
+      ctx.fail(`${at}.established`, "must be a boolean");
+    }
+    if (record.status !== MIDDLEWARE_SOURCE_STATUSES.PARSED && record.established === true) {
+      ctx.fail(`${at}.established`, "cannot be established for a module source that was not scanned");
+    }
+
+    if (!Array.isArray(record.frameworks)) {
+      ctx.fail(`${at}.frameworks`, "must be an array");
+    } else {
+      record.frameworks.forEach((framework, frameworkIndex) => {
+        if (!frameworks.includes(framework)) {
+          ctx.fail(`${at}.frameworks[${frameworkIndex}]`, "must be a supported framework");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.registrations)) {
+      ctx.fail(`${at}.registrations`, "must be an array");
+    } else if (
+      record.status !== MIDDLEWARE_SOURCE_STATUSES.PARSED &&
+      record.registrations.length > 0
+    ) {
+      ctx.fail(`${at}.registrations`, "must be empty for a module source that was not scanned");
+    } else {
+      record.registrations.forEach((registration, registrationIndex) => {
+        const registrationAt = `${at}.registrations[${registrationIndex}]`;
+        if (!isPlainObject(registration)) {
+          ctx.fail(registrationAt, "must be a plain object");
+          return;
+        }
+        if (!isNonEmptyString(registration.receiver)) {
+          ctx.fail(`${registrationAt}.receiver`, "must be a name");
+        }
+        if (!receiverKinds.includes(registration.receiverKind)) {
+          ctx.fail(`${registrationAt}.receiverKind`, `must be one of: ${receiverKinds.join(", ")}`);
+        }
+        if (
+          registration.framework !== null &&
+          !frameworks.includes(registration.framework)
+        ) {
+          ctx.fail(`${registrationAt}.framework`, "must be null or a supported framework");
+        }
+        if (!MIDDLEWARE_REGISTRATION_VALUES.includes(registration.registration)) {
+          ctx.fail(
+            `${registrationAt}.registration`,
+            `must be one of: ${MIDDLEWARE_REGISTRATION_VALUES.join(", ")}`,
+          );
+        }
+        if (!MIDDLEWARE_SCOPE_VALUES.includes(registration.scope)) {
+          ctx.fail(`${registrationAt}.scope`, `must be one of: ${MIDDLEWARE_SCOPE_VALUES.join(", ")}`);
+        }
+        if (registration.path !== null && !isNonEmptyString(registration.path)) {
+          ctx.fail(`${registrationAt}.path`, "must be null or a mount path");
+        }
+        if (registration.path !== null && !registration.path.startsWith("/")) {
+          ctx.fail(`${registrationAt}.path`, "must be a path beginning with \"/\"");
+        }
+        if (registration.hook !== null && !isNonEmptyString(registration.hook)) {
+          ctx.fail(`${registrationAt}.hook`, "must be null or a hook name");
+        }
+        if (!isNonNegativeInteger(registration.sequence)) {
+          ctx.fail(`${registrationAt}.sequence`, "must be a non-negative integer");
+        }
+        if (typeof registration.conditional !== "boolean") {
+          ctx.fail(`${registrationAt}.conditional`, "must be a boolean");
+        }
+        if (!Array.isArray(registration.middleware)) {
+          ctx.fail(`${registrationAt}.middleware`, "must be an array");
+        } else {
+          registration.middleware.forEach((callable, callableIndex) => {
+            const callableAt = `${registrationAt}.middleware[${callableIndex}]`;
+            if (!isPlainObject(callable)) {
+              ctx.fail(callableAt, "must be a plain object");
+              return;
+            }
+            if (!callableForms.includes(callable.form)) {
+              ctx.fail(`${callableAt}.form`, `must be one of: ${callableForms.join(", ")}`);
+            }
+            if (callable.form === "reference" && !isNonEmptyString(callable.name)) {
+              ctx.fail(`${callableAt}.name`, "must be a name for a reference");
+            }
+            if (
+              callable.member !== null &&
+              callable.member !== undefined &&
+              !isNonEmptyString(callable.member)
+            ) {
+              ctx.fail(`${callableAt}.member`, "must be a bounded identifier or null");
+            }
+          });
+        }
+        if (!Array.isArray(registration.unresolved)) {
+          ctx.fail(`${registrationAt}.unresolved`, "must be an array");
+        } else {
+          registration.unresolved.forEach((observation, observationIndex) => {
+            const observationAt = `${registrationAt}.unresolved[${observationIndex}]`;
+            if (!isPlainObject(observation)) {
+              ctx.fail(observationAt, "must be a plain object");
+              return;
+            }
+            if (!MIDDLEWARE_UNRESOLVED_REASON_VALUES.includes(observation.reason)) {
+              ctx.fail(
+                `${observationAt}.reason`,
+                `must be one of: ${MIDDLEWARE_UNRESOLVED_REASON_VALUES.join(", ")}`,
+              );
+            }
+            if (
+              observation.name !== null &&
+              observation.name !== undefined &&
+              !isNonEmptyString(observation.name)
+            ) {
+              ctx.fail(`${observationAt}.name`, "must be a bounded identifier or null");
+            }
+            if (
+              observation.member !== null &&
+              observation.member !== undefined &&
+              !isNonEmptyString(observation.member)
+            ) {
+              ctx.fail(`${observationAt}.member`, "must be a bounded identifier or null");
+            }
+          });
+        }
+      });
+    }
+
+    if (!Array.isArray(record.mounts)) {
+      ctx.fail(`${at}.mounts`, "must be an array");
+    } else {
+      record.mounts.forEach((mount, mountIndex) => {
+        const mountAt = `${at}.mounts[${mountIndex}]`;
+        if (!isPlainObject(mount)) {
+          ctx.fail(mountAt, "must be a plain object");
+          return;
+        }
+        if (!isNonEmptyString(mount.parent)) ctx.fail(`${mountAt}.parent`, "must be a name");
+        if (!isNonEmptyString(mount.child)) ctx.fail(`${mountAt}.child`, "must be a name");
+        if (mount.path !== null && !isNonEmptyString(mount.path)) {
+          ctx.fail(`${mountAt}.path`, "must be null or a mount path");
+        }
+        if (!isNonNegativeInteger(mount.sequence)) {
+          ctx.fail(`${mountAt}.sequence`, "must be a non-negative integer");
+        }
+      });
+    }
+
+    if (!Array.isArray(record.problems)) {
+      ctx.fail(`${at}.problems`, "must be an array");
+    } else {
+      record.problems.forEach((problem, problemIndex) => {
+        if (!MIDDLEWARE_PROBLEM_VALUES.includes(problem)) {
+          ctx.fail(`${at}.problems[${problemIndex}]`, `must be one of: ${MIDDLEWARE_PROBLEM_VALUES.join(", ")}`);
+        }
+      });
+    }
+
+    if (!isPlainObject(record.counts)) {
+      ctx.fail(`${at}.counts`, "must be a plain object");
+    } else {
+      for (const field of ["tokens", "registrations", "mounts", "middleware", "unresolved"]) {
+        if (!isNonNegativeInteger(record.counts[field])) {
+          ctx.fail(`${at}.counts.${field}`, "must be a non-negative integer");
+        }
+      }
+      if (
+        record.counts.registrations !==
+        (Array.isArray(record.registrations) ? record.registrations.length : -1)
+      ) {
+        ctx.fail(`${at}.counts.registrations`, "must count the registrations the source records");
+      }
+      if (record.counts.mounts !== (Array.isArray(record.mounts) ? record.mounts.length : -1)) {
+        ctx.fail(`${at}.counts.mounts`, "must count the mounts the source records");
+      }
+    }
+  });
+
+  const everySourceEstablished = section.files.every(
+    (record) =>
+      record.status === MIDDLEWARE_SOURCE_STATUSES.PARSED &&
+      record.truncated !== true &&
+      Array.isArray(record.problems) &&
+      record.problems.length === 0,
+  );
+  if (section.complete === true && !everySourceEstablished) {
+    ctx.fail(
+      `${path}.complete`,
+      "cannot be true unless every module source was parsed without truncation or problems",
+    );
+  }
 }
 
 export { sortByPath };

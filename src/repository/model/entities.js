@@ -42,6 +42,7 @@ import {
   createApiSourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
+  createMiddlewareSourceObservation,
   createSymbolSourceObservation,
   createObservation,
   createSignalObservation,
@@ -1672,6 +1673,80 @@ const MAX_API_NAME_LENGTH = 256;
 const MAX_API_PATH_LENGTH = 2048;
 
 /**
+ * Middleware vocabularies and bounds (Phase 19).
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like every
+ * other acquisition vocabulary above: the model must not depend on the scanner, and a test
+ * in `tests/middleware-graph.test.js` pins every one of these lists against the scanner's
+ * own, so a rename on either side fails the suite instead of silently retiring a value.
+ */
+export const MIDDLEWARE_SOURCE_STATUSES = Object.freeze([
+  "parsed",
+  "unsupported",
+  "failed",
+  "not-inspected",
+]);
+
+export const MIDDLEWARE_SOURCE_REASONS = Object.freeze([
+  "format-not-interpreted",
+  "unreadable",
+  "not-text",
+  "budget-exhausted",
+]);
+
+export const MIDDLEWARE_PROBLEM_REASONS = Object.freeze([
+  "lexical-failure",
+  "token-limit",
+  "unbalanced-groups",
+  "registration-limit",
+  "mount-limit",
+  "observation-limit",
+  "receiver-limit",
+]);
+
+/** Frameworks this build models middleware for. The same two the API graph supports. */
+export const MIDDLEWARE_FRAMEWORKS = Object.freeze(["express", "fastify"]);
+
+/** How a middleware became registered. */
+export const MIDDLEWARE_REGISTRATIONS = Object.freeze(["use", "hook", "register"]);
+
+/** The receiver scope a registration declares. */
+export const MIDDLEWARE_SCOPES = Object.freeze(["app", "router", "hook"]);
+
+/** Why a middleware-shaped occurrence produced no registration. */
+export const MIDDLEWARE_UNRESOLVED_REASONS = Object.freeze([
+  "middleware-not-established",
+  "middleware-not-unique",
+  "resolution-not-established",
+  "member-expression",
+  "inline-middleware",
+  "array-not-established",
+  "spread-not-established",
+  "registration-not-established",
+  "conditional-not-established",
+  "hook-name-not-established",
+  "framework-unsupported",
+]);
+
+/** The callable forms a middleware candidate can take. */
+export const MIDDLEWARE_CALLABLE_FORMS = Object.freeze(["reference", "inline"]);
+
+/** Maximum middleware source records a scan result may carry. */
+const MAX_MIDDLEWARE_SOURCES = 20000;
+
+/** Maximum registrations one source record may carry. */
+const MAX_MIDDLEWARE_REGISTRATIONS = 1024;
+
+/** Maximum mounts one source record may carry. */
+const MAX_MIDDLEWARE_MOUNTS = 256;
+
+/** Maximum receiver bindings one source record may carry. */
+const MAX_MIDDLEWARE_RECEIVERS = 256;
+
+/** Longest hook name the model will keep. */
+const MAX_MIDDLEWARE_HOOK_LENGTH = 256;
+
+/**
  * Project a name that is about to become part of a route identity or an edge endpoint.
  *
  * Same discipline as `projectSymbolName`: bounded, printable, non-empty text with no
@@ -2712,6 +2787,499 @@ function projectApiSection(section, observedFilePaths, issues, record) {
 }
 
 /**
+ * Project the scan's middleware acquisition into per-source records.
+ *
+ * One record per module source, carrying the receiver bindings the file established, the
+ * registrations it declared (each with its declared sequence, its declared mount path, its
+ * hook name when it is a hook, and the middleware candidates it stated), the router mounts
+ * it declared, and the middleware-shaped observations that produced no candidate. The model
+ * re-checks every closed vocabulary because a malformed ScanResult must fail here rather
+ * than become a fabricated registration, and it never resolves a middleware name — that is
+ * `middleware-graph.js`, against the symbol graph, which is where identity lives.
+ *
+ * @param {object|undefined} section The scan result's `middleware` section.
+ * @param {Set<string>} observedFilePaths Paths the inventory actually observed.
+ * @param {string[]} issues
+ * @param {Function} record Records one observation and returns its id.
+ * @returns {{sources: object[], coverage: object}}
+ */
+function projectMiddlewareSection(section, observedFilePaths, issues, record) {
+  const empty = {
+    sources: [],
+    coverage: {
+      inspected: false,
+      complete: false,
+      truncated: false,
+      sources: 0,
+      registrations: 0,
+      mounts: 0,
+      middleware: 0,
+      unresolved: 0,
+      established: 0,
+      frameworks: [],
+      unsupportedFrameworks: [],
+    },
+  };
+
+  if (section === undefined || section === null) return empty;
+  if (!isPlainObject(section)) {
+    fail(issues, "scanResult.middleware", "must be a plain object");
+    return empty;
+  }
+  if (!Array.isArray(section.files)) {
+    fail(issues, "scanResult.middleware.files", "must be an array");
+    return empty;
+  }
+  if (section.files.length > MAX_MIDDLEWARE_SOURCES) {
+    fail(issues, "scanResult.middleware.files", "carries more middleware sources than a scan can report");
+    return empty;
+  }
+
+  const sources = [];
+  const frameworkSet = new Set();
+  const unsupportedSet = new Set();
+  let registrationCount = 0;
+  let mountCount = 0;
+  let middlewareCount = 0;
+  let unresolvedCount = 0;
+  let establishedCount = 0;
+
+  for (const source of section.files) {
+    if (!isPlainObject(source)) {
+      fail(issues, "scanResult.middleware.files[]", "must be a plain object");
+      continue;
+    }
+    const path = requireRepositoryRelativePath(
+      source.path,
+      "scanResult.middleware.files[].path",
+    );
+    if (!observedFilePaths.has(path)) {
+      fail(issues, `scanResult.middleware.files[${path}]`, "names a path the inventory did not observe");
+      continue;
+    }
+    const extension = source.extension;
+    if (!SEMANTIC_MODULE_EXTENSIONS.includes(extension)) {
+      fail(issues, `scanResult.middleware.files[${path}].extension`, "must be a module source extension");
+      continue;
+    }
+    const language = identifier(source.language);
+    if (language === null) {
+      fail(issues, `scanResult.middleware.files[${path}].language`, "must be a bounded language id");
+      continue;
+    }
+    const status = source.status;
+    if (!MIDDLEWARE_SOURCE_STATUSES.includes(status)) {
+      fail(issues, `scanResult.middleware.files[${path}].status`, "must be a documented middleware source status");
+      continue;
+    }
+    const reason = source.reason ?? null;
+    if (reason !== null && !MIDDLEWARE_SOURCE_REASONS.includes(reason)) {
+      fail(issues, `scanResult.middleware.files[${path}].reason`, "must be a documented reason");
+      continue;
+    }
+    if (status === "parsed" && reason !== null) {
+      fail(issues, `scanResult.middleware.files[${path}].reason`, "must be null for a scanned source");
+      continue;
+    }
+    if (status !== "parsed" && reason === null) {
+      fail(issues, `scanResult.middleware.files[${path}].reason`, "must record why the source was not scanned");
+      continue;
+    }
+    const detail =
+      source.detail === null || source.detail === undefined ? null : identifier(source.detail);
+    if (source.detail !== null && source.detail !== undefined && detail === null) {
+      fail(issues, `scanResult.middleware.files[${path}].detail`, "must be a bounded token or null");
+      continue;
+    }
+
+    let bad = false;
+
+    const frameworks = [];
+    if (!Array.isArray(source.frameworks)) {
+      fail(issues, `scanResult.middleware.files[${path}].frameworks`, "must be an array");
+      continue;
+    }
+    for (const framework of source.frameworks) {
+      if (!MIDDLEWARE_FRAMEWORKS.includes(framework)) {
+        fail(issues, `scanResult.middleware.files[${path}].frameworks`, "must name a supported framework");
+        bad = true;
+        break;
+      }
+      if (!frameworks.includes(framework)) frameworks.push(framework);
+    }
+    if (bad) continue;
+    frameworks.sort();
+
+    const unsupportedFrameworks = [];
+    if (!Array.isArray(source.unsupportedFrameworks)) {
+      fail(issues, `scanResult.middleware.files[${path}].unsupportedFrameworks`, "must be an array");
+      continue;
+    }
+    for (const framework of source.unsupportedFrameworks) {
+      if (!API_UNSUPPORTED_FRAMEWORKS.includes(framework)) {
+        fail(
+          issues,
+          `scanResult.middleware.files[${path}].unsupportedFrameworks`,
+          "must name a recognised framework",
+        );
+        bad = true;
+        break;
+      }
+      if (!unsupportedFrameworks.includes(framework)) unsupportedFrameworks.push(framework);
+    }
+    if (bad) continue;
+    unsupportedFrameworks.sort();
+
+    // ── Receivers ─────────────────────────────────────────────────────────
+    const receivers = [];
+    if (!Array.isArray(source.receivers)) {
+      fail(issues, `scanResult.middleware.files[${path}].receivers`, "must be an array");
+      continue;
+    }
+    if (source.receivers.length > MAX_MIDDLEWARE_RECEIVERS) {
+      fail(issues, `scanResult.middleware.files[${path}].receivers`, "carries more receivers than allowed");
+      continue;
+    }
+    for (const receiver of source.receivers) {
+      const name = projectApiName(receiver?.name);
+      if (name === null) {
+        fail(issues, `scanResult.middleware.files[${path}].receivers[].name`, "must be a bounded name");
+        bad = true;
+        break;
+      }
+      const framework = receiver.framework;
+      const supported = receiver.supported === true;
+      const known =
+        (supported && MIDDLEWARE_FRAMEWORKS.includes(framework)) ||
+        (!supported && API_UNSUPPORTED_FRAMEWORKS.includes(framework));
+      if (!known) {
+        fail(issues, `scanResult.middleware.files[${path}].receivers[].framework`, "must name a framework");
+        bad = true;
+        break;
+      }
+      if (!API_RECEIVER_KINDS.includes(receiver.kind)) {
+        fail(issues, `scanResult.middleware.files[${path}].receivers[].kind`, "must be app or router");
+        bad = true;
+        break;
+      }
+      receivers.push({ name, framework, supported, kind: receiver.kind });
+    }
+    if (bad) continue;
+    receivers.sort(compareByKeys(["name"]));
+
+    // ── Registrations ────────────────────────────────────────────────────
+    const registrations = [];
+    if (!Array.isArray(source.registrations)) {
+      fail(issues, `scanResult.middleware.files[${path}].registrations`, "must be an array");
+      continue;
+    }
+    if (source.registrations.length > MAX_MIDDLEWARE_REGISTRATIONS) {
+      fail(issues, `scanResult.middleware.files[${path}].registrations`, "carries more registrations than allowed");
+      continue;
+    }
+    for (const registration of source.registrations) {
+      const at = `scanResult.middleware.files[${path}].registrations[]`;
+      const receiverName = projectApiName(registration?.receiver);
+      if (receiverName === null) {
+        fail(issues, `${at}.receiver`, "must be a bounded name");
+        bad = true;
+        break;
+      }
+      if (!API_RECEIVER_KINDS.includes(registration.receiverKind)) {
+        fail(issues, `${at}.receiverKind`, "must be app or router");
+        bad = true;
+        break;
+      }
+      const framework =
+        registration.framework === null || registration.framework === undefined
+          ? null
+          : registration.framework;
+      if (framework !== null && !MIDDLEWARE_FRAMEWORKS.includes(framework)) {
+        fail(issues, `${at}.framework`, "must be null or a supported framework");
+        bad = true;
+        break;
+      }
+      if (!MIDDLEWARE_REGISTRATIONS.includes(registration.registration)) {
+        fail(issues, `${at}.registration`, "must be a documented registration kind");
+        bad = true;
+        break;
+      }
+      if (!MIDDLEWARE_SCOPES.includes(registration.scope)) {
+        fail(issues, `${at}.scope`, "must be a documented scope");
+        bad = true;
+        break;
+      }
+      const mountPath =
+        registration.path === null || registration.path === undefined
+          ? null
+          : projectRoutePath(registration.path);
+      if (registration.path !== null && registration.path !== undefined && mountPath === null) {
+        fail(issues, `${at}.path`, "must be null or a mount path");
+        bad = true;
+        break;
+      }
+      const hook =
+        registration.hook === null || registration.hook === undefined
+          ? null
+          : projectApiName(registration.hook);
+      if (registration.hook !== null && registration.hook !== undefined && hook === null) {
+        fail(issues, `${at}.hook`, "must be null or a bounded hook name");
+        bad = true;
+        break;
+      }
+      if (typeof hook === "string" && hook.length > MAX_MIDDLEWARE_HOOK_LENGTH) {
+        fail(issues, `${at}.hook`, "must be a bounded hook name");
+        bad = true;
+        break;
+      }
+      const sequence =
+        Number.isInteger(registration.sequence) && registration.sequence >= 0
+          ? registration.sequence
+          : null;
+      if (sequence === null) {
+        fail(issues, `${at}.sequence`, "must be a non-negative integer");
+        bad = true;
+        break;
+      }
+
+      const middleware = [];
+      if (!Array.isArray(registration.middleware)) {
+        fail(issues, `${at}.middleware`, "must be an array");
+        bad = true;
+        break;
+      }
+      for (const entry of registration.middleware) {
+        const callable = projectApiCallable(entry, issues, `${at}.middleware[]`);
+        if (callable === null) {
+          bad = true;
+          break;
+        }
+        middleware.push(callable);
+      }
+      if (bad) break;
+
+      const unresolved = [];
+      if (!Array.isArray(registration.unresolved)) {
+        fail(issues, `${at}.unresolved`, "must be an array");
+        bad = true;
+        break;
+      }
+      for (const observation of registration.unresolved) {
+        if (!isPlainObject(observation)) {
+          fail(issues, `${at}.unresolved[]`, "must be a plain object");
+          bad = true;
+          break;
+        }
+        if (!MIDDLEWARE_UNRESOLVED_REASONS.includes(observation.reason)) {
+          fail(issues, `${at}.unresolved[].reason`, "must be a documented reason");
+          bad = true;
+          break;
+        }
+        const name =
+          observation.name === null || observation.name === undefined
+            ? null
+            : projectApiName(observation.name);
+        if (observation.name !== null && observation.name !== undefined && name === null) {
+          fail(issues, `${at}.unresolved[].name`, "must be a bounded identifier or null");
+          bad = true;
+          break;
+        }
+        const member =
+          observation.member === null || observation.member === undefined
+            ? null
+            : projectApiName(observation.member);
+        if (observation.member !== null && observation.member !== undefined && member === null) {
+          fail(issues, `${at}.unresolved[].member`, "must be a bounded identifier or null");
+          bad = true;
+          break;
+        }
+        const form =
+          observation.form === null || observation.form === undefined
+            ? null
+            : observation.form;
+        if (form !== null && !MIDDLEWARE_CALLABLE_FORMS.includes(form)) {
+          fail(issues, `${at}.unresolved[].form`, "must be null or a documented callable form");
+          bad = true;
+          break;
+        }
+        unresolved.push({ reason: observation.reason, name, member, form });
+      }
+      if (bad) break;
+      unresolved.sort(compareByKeys(["reason", "name", "member"]));
+
+      registrations.push({
+        receiver: receiverName,
+        receiverKind: registration.receiverKind,
+        framework,
+        registration: registration.registration,
+        scope: registration.scope,
+        path: mountPath,
+        hook,
+        sequence,
+        conditional: registration.conditional === true,
+        middleware,
+        unresolved,
+      });
+    }
+    if (bad) continue;
+    registrations.sort(compareByKeys(["sequence", "receiver"]));
+
+    // ── Mounts ───────────────────────────────────────────────────────────
+    const mounts = [];
+    if (!Array.isArray(source.mounts)) {
+      fail(issues, `scanResult.middleware.files[${path}].mounts`, "must be an array");
+      continue;
+    }
+    if (source.mounts.length > MAX_MIDDLEWARE_MOUNTS) {
+      fail(issues, `scanResult.middleware.files[${path}].mounts`, "carries more mounts than allowed");
+      continue;
+    }
+    for (const mount of source.mounts) {
+      const parent = projectApiName(mount?.parent);
+      const child = projectApiName(mount?.child);
+      if (parent === null || child === null) {
+        fail(issues, `scanResult.middleware.files[${path}].mounts[]`, "must name two receivers");
+        bad = true;
+        break;
+      }
+      const mountPath =
+        mount.path === null || mount.path === undefined ? null : projectRoutePath(mount.path);
+      if (mount.path !== null && mount.path !== undefined && mountPath === null) {
+        fail(issues, `scanResult.middleware.files[${path}].mounts[].path`, "must be null or a mount path");
+        bad = true;
+        break;
+      }
+      const sequence =
+        Number.isInteger(mount.sequence) && mount.sequence >= 0 ? mount.sequence : null;
+      if (sequence === null) {
+        fail(issues, `scanResult.middleware.files[${path}].mounts[].sequence`, "must be a non-negative integer");
+        bad = true;
+        break;
+      }
+      mounts.push({ parent, child, path: mountPath, sequence });
+    }
+    if (bad) continue;
+    mounts.sort(compareByKeys(["sequence", "parent", "child"]));
+
+    // ── Problems and counters ────────────────────────────────────────────
+    const problemReasons = [];
+    if (!Array.isArray(source.problems)) {
+      fail(issues, `scanResult.middleware.files[${path}].problems`, "must be an array");
+      continue;
+    }
+    for (const problem of source.problems) {
+      if (!MIDDLEWARE_PROBLEM_REASONS.includes(problem)) {
+        fail(issues, `scanResult.middleware.files[${path}].problems[]`, "must be a documented problem");
+        bad = true;
+        break;
+      }
+      if (!problemReasons.includes(problem)) problemReasons.push(problem);
+    }
+    if (bad) continue;
+    problemReasons.sort();
+
+    if (
+      status !== "parsed" &&
+      (registrations.length > 0 || mounts.length > 0 || receivers.length > 0)
+    ) {
+      fail(
+        issues,
+        `scanResult.middleware.files[${path}]`,
+        "a source that was not scanned states no registration, mount or receiver",
+      );
+      continue;
+    }
+
+    const established = source.established === true && status === "parsed";
+    const bytesInspected =
+      Number.isInteger(source.bytesInspected) && source.bytesInspected >= 0
+        ? source.bytesInspected
+        : 0;
+    const truncated = source.truncated === true || status === "not-inspected";
+
+    let sourceMiddleware = 0;
+    let sourceUnresolved = 0;
+    for (const registration of registrations) {
+      sourceMiddleware += registration.middleware.length;
+      sourceUnresolved += registration.unresolved.length;
+    }
+
+    const evidenceId = record(
+      createMiddlewareSourceObservation({
+        path,
+        language,
+        status,
+        reason,
+        detail,
+        frameworks,
+        unsupportedFrameworks,
+        receivers: receivers.map((receiver) => receiver.name),
+        registrations: registrations.length,
+        mounts: mounts.length,
+        unresolved: sourceUnresolved,
+        problems: problemReasons,
+        established,
+        truncated,
+      }),
+    );
+
+    for (const framework of frameworks) frameworkSet.add(framework);
+    for (const framework of unsupportedFrameworks) unsupportedSet.add(framework);
+    registrationCount += registrations.length;
+    mountCount += mounts.length;
+    middlewareCount += sourceMiddleware;
+    unresolvedCount += sourceUnresolved;
+    if (established) establishedCount += 1;
+
+    sources.push({
+      path,
+      extension,
+      languageId: entityId(ENTITY_KINDS.LANGUAGE, language),
+      status,
+      reason,
+      detail,
+      bytesInspected,
+      truncated,
+      established,
+      frameworks,
+      unsupportedFrameworks,
+      receivers,
+      registrations,
+      mounts,
+      problems: problemReasons,
+      counts: {
+        tokens:
+          isPlainObject(source.counts) && Number.isInteger(source.counts.tokens)
+            ? Math.max(0, source.counts.tokens)
+            : 0,
+        registrations: registrations.length,
+        mounts: mounts.length,
+        middleware: sourceMiddleware,
+        unresolved: sourceUnresolved,
+      },
+      evidenceId,
+    });
+  }
+
+  return {
+    sources: sources.sort(compareByKeys(["path"])),
+    coverage: {
+      inspected: section.inspected === true,
+      complete: section.complete === true,
+      truncated: section.truncated === true,
+      sources: sources.length,
+      registrations: registrationCount,
+      mounts: mountCount,
+      middleware: middlewareCount,
+      unresolved: unresolvedCount,
+      established: establishedCount,
+      frameworks: [...frameworkSet].sort(),
+      unsupportedFrameworks: [...unsupportedSet].sort(),
+    },
+  };
+}
+
+/**
  * Project a symlink's recorded target into the model's closed vocabulary.
  *
  * The three kinds are exhaustive and a location is only ever recorded for `inside`
@@ -3127,6 +3695,18 @@ export function buildEntities(scanResult, repositoryIdValue) {
     record,
   );
 
+  // Phase 19 — the middleware acquisition section, projected by the same rules: a record
+  // about an unobserved path fails the build, every vocabulary is re-checked here, and the
+  // registrations, mounts and observations are kept exactly as the scanner established
+  // them. Whether a middleware name denotes a symbol is decided by `middleware-graph.js`
+  // against the symbol graph, never here.
+  const middlewareSection = projectMiddlewareSection(
+    scanResult.middleware,
+    observedFilePaths,
+    issues,
+    record,
+  );
+
   // ── Testing, frameworks, CI/CD, documentation, configuration ──────────────
 
   const tests = [];
@@ -3471,6 +4051,8 @@ export function buildEntities(scanResult, repositoryIdValue) {
     semanticsCoverage: semanticsSection.coverage,
     apiSources: apiSection.sources,
     apiCoverage: apiSection.coverage,
+    middlewareSources: middlewareSection.sources,
+    middlewareCoverage: middlewareSection.coverage,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

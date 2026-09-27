@@ -301,6 +301,60 @@ function apiSection(overrides = {}) {
   };
 }
 
+/**
+ * A minimal middleware section (Phase 19), so the `middleware` evidence subject is
+ * exercised: one established source that registers one middleware on the `app` receiver the
+ * file also binds.
+ */
+function middlewareSection(overrides = {}) {
+  return {
+    inspected: true,
+    complete: false,
+    truncated: false,
+    files: [
+      {
+        path: "src/app.ts",
+        extension: ".ts",
+        language: "typescript",
+        status: "parsed",
+        reason: null,
+        detail: null,
+        bytesInspected: 120,
+        truncated: false,
+        established: true,
+        frameworks: ["express"],
+        unsupportedFrameworks: [],
+        receivers: [{ name: "app", framework: "express", supported: true, kind: "app" }],
+        registrations: [
+          {
+            receiver: "app",
+            receiverKind: "app",
+            framework: "express",
+            registration: "use",
+            scope: "app",
+            path: null,
+            hook: null,
+            sequence: 0,
+            conditional: false,
+            middleware: [{ form: "reference", name: "run", member: null }],
+            unresolved: [],
+          },
+        ],
+        mounts: [],
+        problems: [],
+        counts: { tokens: 24, registrations: 1, mounts: 0, middleware: 1, unresolved: 0 },
+      },
+    ],
+    limits: {
+      maxFiles: 2000,
+      maxFileBytes: 262144,
+      maxTotalBytes: 33554432,
+      maxRegistrationsPerFile: 1024,
+    },
+    ...overrides,
+  };
+}
+
 function dependencyScan(overrides = {}) {
   return populatedScan({
     dependencies: {
@@ -811,6 +865,7 @@ describe("model: evidence", () => {
         imports: importsSection(),
         semantics: semanticsSection(),
         api: apiSection(),
+        middleware: middlewareSection(),
         content: {
           inspected: true,
           complete: false,

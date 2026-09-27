@@ -271,3 +271,38 @@ export {
   createApiAnalyzer,
   createApiRuleRegistry,
 } from "./api/index.js";
+
+// Phase 19 — the middleware rule pack. The minimum integration that proves the middleware &
+// authorization graph is consumable through the accepted Rule Engine: one informational
+// inventory rule, its own registry and analyzer adapter. Purely additive — the Rule Engine
+// is unchanged and every other pack is untouched.
+export {
+  MAX_MIDDLEWARE_FINDINGS,
+  MIDDLEWARE_ANALYZER_ID,
+  MIDDLEWARE_ANALYZER_NAME,
+  MIDDLEWARE_ANALYZER_SCOPE,
+  MIDDLEWARE_BASIS,
+  MIDDLEWARE_CATEGORY,
+  MIDDLEWARE_CLASSIFICATION_WORDING,
+  MIDDLEWARE_CONFIDENCE,
+  MIDDLEWARE_DESCRIBED_EDGE_TYPES,
+  MIDDLEWARE_DESCRIBED_UNRESOLVED_REASONS,
+  MIDDLEWARE_EDGE_TYPE_WORDING,
+  MIDDLEWARE_GRAPH_STATES,
+  MIDDLEWARE_PROTECTION_WORDING,
+  MIDDLEWARE_RULE_ID_PREFIX,
+  MIDDLEWARE_RULE_IDS,
+  MIDDLEWARE_RULE_PACK_VERSION,
+  MIDDLEWARE_RULE_VERSION,
+  MIDDLEWARE_UNRESOLVED_REASON_WORDING,
+  createMiddlewareAnalyzer,
+  createMiddlewareRuleRegistry,
+  middlewareAbsence,
+  middlewareCoverage,
+  middlewareInventoryRules,
+  middlewareNodes,
+  middlewareRouteViews,
+  middlewareRuleSetIssues,
+  middlewareRules,
+  middlewareUnresolved,
+} from "./middleware/index.js";

@@ -90,6 +90,12 @@ import {
   API_UNRESOLVED_KINDS,
   API_UNRESOLVED_REASON_VALUES,
 } from "./api-graph.js";
+import {
+  MIDDLEWARE_CLASSIFICATION_VALUES,
+  MIDDLEWARE_GRAPH_STATES,
+  MIDDLEWARE_PROTECTION_STATES,
+  MIDDLEWARE_UNRESOLVED_KINDS,
+} from "./middleware-graph.js";
 import { API_ROUTE_METHODS, SYMBOL_KINDS } from "./entities.js";
 import { isRepositoryRelativePath } from "./paths.js";
 import {
@@ -145,6 +151,18 @@ import {
   validateApiRouteQueryResult,
   validateApiServiceResult,
   validateApiUnresolvedRouteResult,
+  MIDDLEWARE_REGISTRATION_VALUES,
+  MIDDLEWARE_SCOPE_VALUES,
+  createMiddlewareChainResult,
+  createMiddlewareGraphResult,
+  createMiddlewareProtectedRouteResult,
+  createMiddlewareQueryResult,
+  createMiddlewareUnresolvedResult,
+  validateMiddlewareChainResult,
+  validateMiddlewareGraphResult,
+  validateMiddlewareProtectedRouteResult,
+  validateMiddlewareQueryResult,
+  validateMiddlewareUnresolvedResult,
   validateDependencyEdgeQueryResult,
   validateDependencyGraphResult,
   validateDependencyPathResult,
@@ -294,6 +312,36 @@ const API_ROUTE_FILTER_KEYS = Object.freeze([
 
 /** Criteria an unresolved-route list accepts. */
 const API_UNRESOLVED_FILTER_KEYS = Object.freeze(["path", "reason", "maxResults"]);
+
+/**
+ * Criteria a middleware-node list accepts.
+ *
+ * Every criterion is a fact the projection recorded about the node itself — where it is
+ * declared, its name, its classification, the scope and registration kinds it was
+ * registered with, and the receivers it was registered on — so a query can never ask a
+ * question the middleware graph did not answer.
+ */
+const MIDDLEWARE_FILTER_KEYS = Object.freeze([
+  "path",
+  "sourcePath",
+  "name",
+  "classification",
+  "scope",
+  "registration",
+  "receiver",
+  "maxResults",
+]);
+
+/** Criteria a middleware-chain list accepts. */
+const MIDDLEWARE_CHAIN_FILTER_KEYS = Object.freeze(["route", "maxResults"]);
+
+/** Criteria an unresolved-middleware list accepts. */
+const MIDDLEWARE_UNRESOLVED_FILTER_KEYS = Object.freeze([
+  "path",
+  "reason",
+  "kind",
+  "maxResults",
+]);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1107,6 +1155,89 @@ export function createRepositoryQuery(model) {
         limits: Object.freeze({}),
       }),
     });
+
+  // ── Middleware & authorization graph (Phase 19) ───────────────────────────
+  //
+  // Read from `model.middleware.graph` — a projection the builder already built and
+  // validated — and never recomputed here. A middleware node's id *is* a Phase 17 symbol
+  // id, and the routes it reaches are the API graph's own route ids, so both lookups go
+  // through the node maps above rather than through a second symbol or route table.
+  const middlewareGraph =
+    model.middleware?.graph ??
+    Object.freeze({
+      version: "1",
+      state: MIDDLEWARE_GRAPH_STATES.UNKNOWN,
+      established: false,
+      nodes: Object.freeze([]),
+      edges: Object.freeze([]),
+      routes: Object.freeze([]),
+      unresolved: Object.freeze([]),
+      coverage: Object.freeze({
+        state: MIDDLEWARE_GRAPH_STATES.UNKNOWN,
+        established: false,
+        complete: false,
+        truncated: false,
+        inspected: false,
+        middleware: 0,
+        edges: 0,
+        sources: 0,
+        registrations: 0,
+        mounts: 0,
+        declaringModules: 0,
+        protectsEdges: 0,
+        appliesToEdges: 0,
+        precedesEdges: 0,
+        registeredOnEdges: 0,
+        routes: 0,
+        protectedRoutes: 0,
+        unresolvedRoutes: 0,
+        unprotectedRoutes: 0,
+        unknownProtectionRoutes: 0,
+        classifications: Object.freeze({}),
+        parsed: 0,
+        unsupported: 0,
+        failed: 0,
+        notInspected: 0,
+        uninterpretedSources: 0,
+        uninterpretedExtensions: Object.freeze([]),
+        uninterpretedExtensionsTruncated: false,
+        unresolved: 0,
+        unresolvedReported: 0,
+        unresolvedByReason: Object.freeze({}),
+        unestablished: 0,
+        unestablishedSources: Object.freeze([]),
+        nodesTruncated: false,
+        edgesTruncated: false,
+        routesTruncated: false,
+        unresolvedTruncated: false,
+        limits: Object.freeze({}),
+      }),
+    });
+
+  const middlewareNodeById = new Map(middlewareGraph.nodes.map((node) => [node.id, node]));
+  const middlewareRouteById = new Map(
+    middlewareGraph.routes.map((route) => [route.route, route]),
+  );
+
+  /**
+   * The guarantee behind a middleware answer.
+   *
+   * `complete` is claimed only when the middleware graph is complete as well as the scan —
+   * the stricter of the two facts wins, so a caller is never told `complete` next to a
+   * `partial` state.
+   */
+  const middlewareCoverageState = () => ({
+    coverage:
+      model.scan.complete === true &&
+      model.scan.truncated !== true &&
+      middlewareGraph.state === MIDDLEWARE_GRAPH_STATES.COMPLETE
+        ? COVERAGE_GUARANTEES.COMPLETE
+        : COVERAGE_GUARANTEES.PARTIAL,
+    truncated: model.scan.truncated === true || middlewareGraph.coverage.truncated === true,
+  });
+
+  const middlewareNodeByIdOrNull = (id) =>
+    typeof id === "string" ? (middlewareNodeById.get(id) ?? null) : null;
 
   const apiNodeById = new Map(apiGraph.nodes.map((node) => [node.id, node]));
   const apiOutgoing = new Map();
@@ -3187,10 +3318,29 @@ export function createRepositoryQuery(model) {
     },
 
     /**
-     * The symbols a route lists as `middleware`.
+     * The symbols a route lists as `middleware`, the middleware the middleware graph
+     * establishes as applying to it, the occurrences that could not be established, and the
+     * route's structural protection state.
      *
-     * A middleware reference is a positional reading of the call, and the graph states
-     * it as such: this is not a claim about runtime ordering.
+     * One method rather than two, because they answer one question about one route and a
+     * caller that received two answers could read them as contradicting each other. The
+     * three parts are deliberately separate:
+     *
+     *   middleware    the route-scope references the API graph resolved from the route's own
+     *                 declaration (`router.get("/x", auth, handler)`), each with the edge
+     *                 that states it. A middleware reference is a positional reading of the
+     *                 call, and the graph states it as such: not a claim about ordering.
+     *   applied       the receiver-scope middleware the middleware graph established for the
+     *                 route — registrations on the receiver it is declared on, or inherited
+     *                 from a receiver it is mounted inside. Reported as middleware nodes,
+     *                 because they are not listed in the route's own call.
+     *   unresolved    the middleware-shaped occurrences that were *not* established. They are
+     *                 returned here so a route whose middleware could not be established can
+     *                 never be read as a route with no middleware.
+     *
+     * An unknown route is an ordinary miss (`route: null`, `protection: null`), never
+     * `none-observed`: an absent route alongside a `partial` state is exactly the case a
+     * caller must not read as an absence.
      */
     middlewareForRoute(routeId, options = {}) {
       requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "routeMiddlewareOptions");
@@ -3208,12 +3358,35 @@ export function createRepositoryQuery(model) {
               .slice()
               .sort(compareGraphEdges);
       const middleware = edges.slice(0, maxResults).map(symbolDetailOf).filter((entry) => entry !== null);
+
+      const middlewareRoute =
+        route === null ? null : (middlewareRouteById.get(route.id) ?? null);
+      const applied =
+        middlewareRoute === null
+          ? []
+          : middlewareRoute.middleware
+              .map((id) => middlewareNodeById.get(id))
+              .filter((node) => node !== undefined)
+              .slice(0, maxResults);
+      const allUnresolved =
+        middlewareRoute === null
+          ? []
+          : middlewareGraph.unresolved.filter((record) => record.route === middlewareRoute.route);
+
       const result = createApiRouteMiddlewareResult({
         route,
         middleware: frozenEntries(middleware),
+        applied: frozenEntries(applied.map((node) => ({ ...node }))),
+        unresolved: frozenEntries(
+          allUnresolved.slice(0, maxResults).map((record) => ({ ...record })),
+        ),
+        protection: middlewareRoute === null ? null : middlewareRoute.protection,
         ...apiCoverageState(),
         state: apiGraph.state,
-        limited: edges.length > maxResults,
+        limited:
+          edges.length > maxResults ||
+          applied.length > maxResults ||
+          allUnresolved.length > maxResults,
       });
       validateApiRouteMiddlewareResult(result);
       return Object.freeze(result);
@@ -3353,6 +3526,269 @@ export function createRepositoryQuery(model) {
         limited: matching.length > maxResults,
       });
       validateApiUnresolvedRouteResult(result);
+      return Object.freeze(result);
+    },
+
+    // ── Middleware & authorization graph (Phase 19) ────────────────────────
+    /**
+     * The whole middleware graph: the middleware nodes, the established edges and every
+     * route's structural protection state.
+     *
+     * `state` separates an established-but-empty graph (a repository that registers no
+     * middleware) from one that was never established, so an empty `nodes` list is never
+     * mistaken for "this repository protects nothing". The unresolved occurrences are *not*
+     * folded in here — they are not registrations, and a caller that received them together
+     * would read a non-fact as a fact. Ask for them with `unresolvedMiddleware`.
+     */
+    middlewareGraph() {
+      const result = createMiddlewareGraphResult({
+        nodes: frozenEntries([...middlewareGraph.nodes]),
+        edges: frozenEntries([...middlewareGraph.edges]),
+        routes: frozenEntries([...middlewareGraph.routes]),
+        ...middlewareCoverageState(),
+        state: middlewareGraph.state,
+        established: middlewareGraph.established,
+      });
+      validateMiddlewareGraphResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The five-way middleware-graph state, its per-reason unresolved counts, the sources
+     * whose registrations could not be established, the classification census and every
+     * bound that bit.
+     */
+    middlewareCoverage() {
+      return Object.freeze({ ...middlewareGraph.coverage });
+    },
+
+    /**
+     * Middleware nodes matching a `{ path, sourcePath, name, classification, scope,
+     * registration, receiver }` filter.
+     *
+     * `classification` and `scope` are checked against the recorded vocabularies, so a
+     * caller cannot ask for a classification this build never assigns and receive a
+     * plausible answer. Results are sorted by id and bounded by `maxResults`.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    middleware(criteria = {}) {
+      requireKeys(criteria, MIDDLEWARE_FILTER_KEYS, "middlewareCriteria");
+      if (
+        "classification" in criteria &&
+        !MIDDLEWARE_CLASSIFICATION_VALUES.includes(criteria.classification)
+      ) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "middlewareCriteria.classification",
+        });
+      }
+      for (const field of ["path", "sourcePath", "name", "scope", "registration", "receiver"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `middlewareCriteria.${field}`,
+          });
+        }
+      }
+      // `scope` and `registration` are closed vocabularies too, so a caller cannot ask for a
+      // scope or registration kind this build never records and receive an empty list that
+      // reads like "this repository has none of those".
+      for (const [field, vocabulary, label] of [
+        ["scope", MIDDLEWARE_SCOPE_VALUES, "middlewareCriteria.scope"],
+        ["registration", MIDDLEWARE_REGISTRATION_VALUES, "middlewareCriteria.registration"],
+      ]) {
+        if (field in criteria && !vocabulary.includes(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, { field: label });
+        }
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = middlewareGraph.nodes
+        .filter((node) => {
+          if ("path" in criteria && node.path !== criteria.path) return false;
+          if ("sourcePath" in criteria && !node.sourcePaths.includes(criteria.sourcePath)) {
+            return false;
+          }
+          if ("name" in criteria && node.name !== criteria.name) return false;
+          if ("classification" in criteria && node.classification !== criteria.classification) {
+            return false;
+          }
+          if ("scope" in criteria && !node.scopes.includes(criteria.scope)) return false;
+          if ("registration" in criteria && !node.registrations.includes(criteria.registration)) {
+            return false;
+          }
+          if ("receiver" in criteria && !node.receivers.includes(criteria.receiver)) return false;
+          return true;
+        })
+        .slice()
+        .sort(compareById);
+
+      const result = createMiddlewareQueryResult({
+        middleware: frozenEntries(matching.slice(0, maxResults)),
+        ...middlewareCoverageState(),
+        state: middlewareGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateMiddlewareQueryResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The routes a symbol's middleware structurally protects or applies to.
+     *
+     * Read from the graph's own route view — the same list the `protects` and `applies-to`
+     * edges were folded into — so a middleware's routes and a route's middleware can never
+     * disagree. A symbol that is not a middleware node is an ordinary miss.
+     */
+    routesProtectedBy(symbolId, options = {}) {
+      requireKeys(options, SYMBOL_CANDIDATE_OPTION_KEYS, "protectedRouteOptions");
+      const maxResults = requireLimit(options.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const symbol = middlewareNodeByIdOrNull(symbolId);
+      const matching =
+        symbol === null
+          ? []
+          : middlewareGraph.routes.filter((route) => route.middleware.includes(symbol.id));
+      const result = createMiddlewareProtectedRouteResult({
+        symbol,
+        routes: frozenEntries(matching.slice(0, maxResults)),
+        ...middlewareCoverageState(),
+        state: middlewareGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateMiddlewareProtectedRouteResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The middleware established for each route that has any: the receiver-scope middleware
+     * registered on a receiver the route is declared on (or mounted inside), plus the route's
+     * own middleware.
+     *
+     * Entries are ordered by middleware identity, which is the same deterministic order the
+     * route's own `middleware` list uses — never insertion order, so the answer never depends
+     * on a model internal. The **declared** registration sequence is a different fact and is
+     * stated by the graph's `precedes` edges, so this method does not imply one: a caller that
+     * needs the declaration order reads it there rather than inferring it from this list.
+     *
+     * The name is the chain's, not a verdict's: every entry carries its own classification,
+     * so a caller that wants only the `authentication` entries can filter them itself. This
+     * layer makes no claim that a chain authorizes anything, that its order is correct, or
+     * that it is sufficient — those are not facts the repository establishes.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query`.
+     */
+    authorizationChains(criteria = {}) {
+      requireKeys(criteria, MIDDLEWARE_CHAIN_FILTER_KEYS, "chainCriteria");
+      if ("route" in criteria && !isNonEmptyQueryString(criteria.route)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "chainCriteria.route",
+        });
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+
+      const matching = middlewareGraph.routes
+        .filter((route) => {
+          if ("route" in criteria && route.route !== criteria.route) return false;
+          return route.middleware.length > 0;
+        })
+        .slice()
+        .sort(compareByField("route"));
+
+      const chains = matching.slice(0, maxResults).map((route) =>
+        Object.freeze({
+          route: route.route,
+          method: route.method,
+          path: route.path,
+          protection: route.protection,
+          middleware: Object.freeze(
+            route.middleware
+              .map((id) => middlewareNodeById.get(id))
+              .filter((node) => node !== undefined)
+              .map((node) =>
+                Object.freeze({
+                  id: node.id,
+                  name: node.name,
+                  path: node.path,
+                  classification: node.classification,
+                  scopes: Object.freeze([...node.scopes]),
+                  registrations: Object.freeze([...node.registrations]),
+                }),
+              ),
+          ),
+          unresolvedCount: route.unresolvedCount,
+        }),
+      );
+
+      const result = createMiddlewareChainResult({
+        chains: frozenEntries(chains),
+        ...middlewareCoverageState(),
+        state: middlewareGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateMiddlewareChainResult(result);
+      return Object.freeze(result);
+    },
+
+    /**
+     * The middleware-shaped occurrences the repository does **not** establish as middleware.
+     *
+     * Kept separate from `middleware` on purpose: an occurrence that is a computed array, a
+     * spread, a conditional registration, a member access or a name this build does not
+     * establish as a module-scope binding is a different fact from a registered middleware,
+     * and a caller that received them together would read a non-fact as a fact.
+     */
+    unresolvedMiddleware(criteria = {}) {
+      requireKeys(criteria, MIDDLEWARE_UNRESOLVED_FILTER_KEYS, "unresolvedMiddlewareCriteria");
+      for (const field of ["path", "reason"]) {
+        if (field in criteria && !isNonEmptyQueryString(criteria[field])) {
+          throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+            field: `unresolvedMiddlewareCriteria.${field}`,
+          });
+        }
+      }
+      if ("kind" in criteria && !MIDDLEWARE_UNRESOLVED_KINDS.includes(criteria.kind)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "unresolvedMiddlewareCriteria.kind",
+        });
+      }
+      const maxResults = requireLimit(criteria.maxResults ?? QUERY_LIMITS.DEFAULT_RESULTS, {
+        field: "maxResults",
+        min: 1,
+        max: QUERY_LIMITS.MAX_RESULTS,
+      });
+      const matching = middlewareGraph.unresolved
+        .filter((record) => {
+          if ("path" in criteria && record.path !== criteria.path) return false;
+          if ("reason" in criteria && record.reason !== criteria.reason) return false;
+          if ("kind" in criteria && record.kind !== criteria.kind) return false;
+          return true;
+        })
+        .slice()
+        .sort((a, b) => {
+          if (a.path !== b.path) return a.path < b.path ? -1 : 1;
+          if (a.reason !== b.reason) return a.reason < b.reason ? -1 : 1;
+          const left = a.route ?? "";
+          const right = b.route ?? "";
+          return left < right ? -1 : left > right ? 1 : 0;
+        });
+      const result = createMiddlewareUnresolvedResult({
+        unresolved: frozenEntries(matching.slice(0, maxResults)),
+        ...middlewareCoverageState(),
+        state: middlewareGraph.state,
+        limited: matching.length > maxResults,
+      });
+      validateMiddlewareUnresolvedResult(result);
       return Object.freeze(result);
     },
 

@@ -324,6 +324,7 @@ export async function scanRepository(root, options = {}) {
     imports: detection.imports,
     semantics: detection.semantics,
     api: detection.api,
+    middleware: detection.middleware,
     statistics: {
       filesScanned: files.length,
       directoriesScanned: directories.length,

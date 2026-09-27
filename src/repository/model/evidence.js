@@ -49,6 +49,8 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   SYMBOL: "symbol",
   /** Phase 18 — an API route declaration observation. */
   API: "api",
+  /** Phase 19 — a middleware registration observation. */
+  MIDDLEWARE: "middleware",
 });
 
 /**
@@ -86,6 +88,10 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // endpoint the repository establishes between a path and a handler. Using it keeps
   // the Phase 7 vocabulary closed rather than inventing an "api" type.
   [EVIDENCE_SUBJECTS.API]: "graph",
+  // Same reasoning for a middleware registration: it is a connection the repository
+  // establishes between a receiver and a handler-shaped value, so the Core `graph` type
+  // is exactly right and the Phase 7 vocabulary stays closed.
+  [EVIDENCE_SUBJECTS.MIDDLEWARE]: "graph",
 });
 
 /**
@@ -628,6 +634,95 @@ export function createBuildContextObservation({ path, source, service, contextPa
       source,
       service,
       contextPath,
+    },
+  });
+}
+
+/**
+ * Build an observation for a scanner-reported signal in a non-inventory section.
+ *
+ * The evidence key is `signal:path`, matching the scan contract's own uniqueness
+ * (the scanner reports at most one entry per `(path, signal)` pair), so ids are
+ * unique by construction.
+ *
+ * @param {object} input
+ * @param {string} input.subject One of `EVIDENCE_SUBJECTS`.
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.signal Scanner signal id.
+ * @param {object} [input.data]
+ * @returns {object}
+ */
+/**
+ * Signals recorded on middleware observations (Phase 19).
+ *
+ * One record per module source, for the same reason the API subject records one per
+ * file: the model's per-file record already carries the registrations and the
+ * observations that could not be established, and duplicating each registration into the
+ * evidence list would multiply the model's size without adding a fact. The record states
+ * what the file was as a middleware source — which receivers it bound, how many
+ * registrations it declared and how many middleware-shaped occurrences it could not
+ * establish — and it is the provenance every registration from that file cites.
+ */
+export const MIDDLEWARE_SIGNALS = Object.freeze({
+  SOURCE: "middleware-source",
+});
+
+/**
+ * Build the observation for one module source's middleware scan.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path.
+ * @param {string} input.language Module language id (`javascript` / `typescript`).
+ * @param {string} input.status Parsed / unsupported / failed / not-inspected.
+ * @param {string|null} input.reason Bounded reason when not scanned.
+ * @param {string|null} input.detail Bounded detail token (a failure kind, an extension).
+ * @param {string[]} input.frameworks Supported frameworks the source established.
+ * @param {string[]} input.unsupportedFrameworks Recognised-but-unsupported frameworks.
+ * @param {string[]} input.receivers Receiver bindings the source established.
+ * @param {number} input.registrations Registrations established.
+ * @param {number} input.mounts Router mounts established.
+ * @param {number} input.unresolved Middleware-shaped occurrences that produced no candidate.
+ * @param {string[]} input.problems Bounded problem reason ids.
+ * @param {boolean} input.established Whether the source's registration set is trustworthy.
+ * @param {boolean} input.truncated Whether a byte or token budget cut the file short.
+ * @returns {object} A Core Evidence object.
+ */
+export function createMiddlewareSourceObservation({
+  path,
+  language,
+  status,
+  reason,
+  detail,
+  frameworks,
+  unsupportedFrameworks,
+  receivers,
+  registrations,
+  mounts,
+  unresolved,
+  problems,
+  established,
+  truncated,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.MIDDLEWARE,
+    key: `${MIDDLEWARE_SIGNALS.SOURCE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.MIDDLEWARE],
+    path,
+    data: {
+      signal: MIDDLEWARE_SIGNALS.SOURCE,
+      language,
+      status,
+      reason,
+      detail,
+      frameworks: [...frameworks],
+      unsupportedFrameworks: [...unsupportedFrameworks],
+      receivers: [...receivers],
+      registrations,
+      mounts,
+      unresolved,
+      problems: [...problems],
+      established,
+      truncated,
     },
   });
 }
