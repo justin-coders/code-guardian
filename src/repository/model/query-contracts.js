@@ -51,6 +51,13 @@ import {
   MIDDLEWARE_UNRESOLVED_KINDS as MIDDLEWARE_UNRESOLVED_KINDS_SOURCE,
   MIDDLEWARE_UNRESOLVED_REASON_VALUES as MIDDLEWARE_UNRESOLVED_REASON_VALUES_SOURCE,
 } from "./middleware-graph.js";
+import {
+  PRODUCTION_OBSERVATION_KINDS as PRODUCTION_OBSERVATION_KINDS_SOURCE,
+  PRODUCTION_REPORT_STATE_VALUES as PRODUCTION_REPORT_STATE_VALUES_SOURCE,
+  PRODUCTION_REPORT_VERSION,
+  PRODUCTION_SECTIONS as PRODUCTION_SECTIONS_SOURCE,
+  PRODUCTION_UNKNOWN_REASONS as PRODUCTION_UNKNOWN_REASONS_SOURCE,
+} from "./production-report.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -1550,6 +1557,307 @@ export function validateMiddlewareChainResult(value) {
     ["truncated", "limited"],
     MIDDLEWARE_GRAPH_STATE_VALUES_SOURCE,
   );
+}
+
+// ── Production report (Phase 20) ─────────────────────────────────────────────
+//
+// The production report is returned in full rather than wrapped: it *is* the projection,
+// and its `coverage` is the report's own structured statement — six domains cannot be
+// described by one guarantee string. Every method that hands a report or a section out
+// validates it first, so a consumer never receives a malformed document from this layer.
+
+/** Fields the production report declares. */
+export const PRODUCTION_REPORT_RESULT_FIELDS = Object.freeze([
+  "version",
+  "state",
+  "established",
+  "sections",
+  "coverage",
+]);
+
+/** Fields one production section declares. */
+export const PRODUCTION_SECTION_RESULT_FIELDS = Object.freeze([
+  "name",
+  "title",
+  "state",
+  "established",
+  "counts",
+  "observations",
+  "evidenceIds",
+  "unknown",
+  "coverage",
+]);
+
+/** Fields the report's structured coverage statement declares. */
+export const PRODUCTION_COVERAGE_RESULT_FIELDS = Object.freeze([
+  "state",
+  "established",
+  "complete",
+  "truncated",
+  "inspected",
+  "sections",
+  "observations",
+  "evidence",
+  "unknownReasons",
+  "limits",
+]);
+
+/** The six audit domains, re-exported so a caller reads them from one place. */
+export const PRODUCTION_SECTIONS = PRODUCTION_SECTIONS_SOURCE;
+
+/** The report's coverage vocabulary, re-exported for the same reason. */
+export const PRODUCTION_REPORT_STATE_VALUES = PRODUCTION_REPORT_STATE_VALUES_SOURCE;
+
+/** Build a structured production-coverage draft. */
+export function createProductionCoverageResult(input = {}) {
+  return createEnvelope(PRODUCTION_COVERAGE_RESULT_FIELDS, {
+    state: input.state,
+    established: input.established === true,
+    complete: input.complete === true,
+    truncated: input.truncated === true,
+    inspected: input.inspected === true,
+    sections: input.sections ?? 0,
+    observations: input.observations ?? 0,
+    evidence: input.evidence ?? 0,
+    unknownReasons: input.unknownReasons ?? {},
+    limits: input.limits ?? {},
+  });
+}
+
+/**
+ * Validate a structured production-coverage statement.
+ *
+ * The counts are checked as non-negative integers rather than merely present, because a
+ * coverage statement whose totals are wrong is exactly the kind of document that lets a
+ * reader believe a bounded list is a complete one.
+ */
+export function validateProductionCoverageResult(value) {
+  const contract = "ProductionCoverageResult";
+  requireProductionFields(value, contract, PRODUCTION_COVERAGE_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!PRODUCTION_REPORT_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  for (const field of ["established", "complete", "truncated", "inspected"]) {
+    if (typeof value[field] !== "boolean") fail(`${contract}.${field}`, "must be a boolean");
+  }
+  for (const field of ["sections", "observations", "evidence"]) {
+    if (!Number.isInteger(value[field]) || value[field] < 0) {
+      fail(`${contract}.${field}`, "must be a non-negative integer");
+    }
+  }
+  if (!isPlainObject(value.unknownReasons)) {
+    fail(`${contract}.unknownReasons`, "must be a plain object");
+  } else {
+    for (const key of Object.keys(value.unknownReasons)) {
+      const count = value.unknownReasons[key];
+      if (!Number.isInteger(count) || count < 0) {
+        fail(`${contract}.unknownReasons.${key}`, "must be a non-negative integer");
+      }
+    }
+  }
+  if (!isPlainObject(value.limits)) fail(`${contract}.limits`, "must be a plain object");
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a production-report draft. */
+export function createProductionReportResult(input = {}) {
+  return createEnvelope(PRODUCTION_REPORT_RESULT_FIELDS, {
+    version: input.version ?? PRODUCTION_REPORT_VERSION,
+    state: input.state,
+    established: input.established === true,
+    sections: input.sections ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/**
+ * Validate a production report.
+ *
+ * Structural only: whether the report's *facts* are true is the model's question and is
+ * answered by `validateRepositoryModelGraph`. What this contract enforces is that the
+ * document a query hands out is addressable — every declared field present, the six
+ * domains present and named, each observation carrying a kind its own domain declares and
+ * at least one evidence id, and a coverage statement for every section.
+ */
+export function validateProductionReportResult(value) {
+  const contract = "ProductionReportResult";
+  requireProductionFields(value, contract, PRODUCTION_REPORT_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (value.version !== PRODUCTION_REPORT_VERSION) {
+    fail(`${contract}.version`, "must be the report version this build produces");
+  }
+  if (!PRODUCTION_REPORT_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+
+  if (!Array.isArray(value.sections)) {
+    fail(`${contract}.sections`, "must be an array");
+  } else {
+    if (value.sections.length !== PRODUCTION_SECTIONS_SOURCE.length) {
+      fail(`${contract}.sections`, "must carry every audit domain exactly once");
+    }
+    value.sections.forEach((section, index) => {
+      try {
+        validateProductionSectionResult(section);
+      } catch (error) {
+        const reported = error?.details?.issues;
+        if (Array.isArray(reported)) {
+          issues.push(...reported.map((issue) => `${contract}.sections[${index}]: ${issue}`));
+        } else {
+          fail(`${contract}.sections[${index}]`, "must be a well-formed production section");
+        }
+      }
+    });
+  }
+
+  try {
+    validateProductionCoverageResult(value.coverage);
+  } catch (error) {
+    const reported = error?.details?.issues;
+    if (Array.isArray(reported)) issues.push(...reported);
+    else fail(`${contract}.coverage`, "must be a well-formed coverage statement");
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a production-section draft. */
+export function createProductionSectionResult(input = {}) {
+  return createEnvelope(PRODUCTION_SECTION_RESULT_FIELDS, {
+    name: input.name,
+    title: input.title,
+    state: input.state,
+    established: input.established === true,
+    counts: input.counts ?? {},
+    observations: input.observations ?? [],
+    evidenceIds: input.evidenceIds ?? [],
+    unknown: input.unknown ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/**
+ * Validate one production section.
+ *
+ * An observation with no evidence id is rejected rather than tolerated: the report's whole
+ * promise is that every statement resolves to an observation the repository made.
+ */
+export function validateProductionSectionResult(value) {
+  const contract = "ProductionSectionResult";
+  requireProductionFields(value, contract, PRODUCTION_SECTION_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!PRODUCTION_SECTIONS_SOURCE.includes(value.name)) {
+    fail(`${contract}.name`, "must be a declared audit domain");
+  }
+  if (typeof value.title !== "string" || value.title.trim() === "") {
+    fail(`${contract}.title`, "must be a non-empty title");
+  }
+  if (!PRODUCTION_REPORT_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+  if (!isPlainObject(value.counts)) fail(`${contract}.counts`, "must be a plain object");
+
+  const kinds = PRODUCTION_OBSERVATION_KINDS_SOURCE[value.name];
+  if (!Array.isArray(value.observations)) {
+    fail(`${contract}.observations`, "must be an array");
+  } else {
+    value.observations.forEach((observation, index) => {
+      const at = `${contract}.observations[${index}]`;
+      if (!isPlainObject(observation)) {
+        fail(at, "must be a plain object");
+        return;
+      }
+      if (Array.isArray(kinds) && !kinds.includes(observation.kind)) {
+        fail(`${at}.kind`, "must be an observation kind this domain declares");
+      }
+      if (typeof observation.key !== "string" || observation.key === "") {
+        fail(`${at}.key`, "must be a non-empty deterministic key");
+      }
+      if (!Array.isArray(observation.evidenceIds) || observation.evidenceIds.length === 0) {
+        fail(`${at}.evidenceIds`, "must cite at least one observation");
+      }
+    });
+  }
+
+  if (!Array.isArray(value.evidenceIds)) {
+    fail(`${contract}.evidenceIds`, "must be an array");
+  }
+
+  const reasons = PRODUCTION_UNKNOWN_REASONS_SOURCE[value.name];
+  if (!Array.isArray(value.unknown)) {
+    fail(`${contract}.unknown`, "must be an array");
+  } else {
+    value.unknown.forEach((record, index) => {
+      const at = `${contract}.unknown[${index}]`;
+      if (!isPlainObject(record)) {
+        fail(at, "must be a plain object");
+        return;
+      }
+      if (Array.isArray(reasons) && !reasons.includes(record.reason)) {
+        fail(`${at}.reason`, "must be a reason this domain declares");
+      }
+      if (!Number.isInteger(record.count) || record.count < 1) {
+        fail(`${at}.count`, "must be a positive integer");
+      }
+    });
+  }
+
+  if (!isPlainObject(value.coverage)) {
+    fail(`${contract}.coverage`, "must be a plain object");
+  } else {
+    if (value.coverage.state !== value.state) {
+      fail(`${contract}.coverage.state`, "must agree with the section state");
+    }
+    if (typeof value.coverage.truncated !== "boolean") {
+      fail(`${contract}.coverage.truncated`, "must be a boolean");
+    }
+    for (const field of ["observations", "evidence", "unknownReasons"]) {
+      if (!Number.isInteger(value.coverage[field]) || value.coverage[field] < 0) {
+        fail(`${contract}.coverage.${field}`, "must be a non-negative integer");
+      }
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Collect a required-field violation, throwing immediately on a non-object. */
+function requireProductionFields(value, contract, fields) {
+  if (!isPlainObject(value)) {
+    throw new ValidationError(`Invalid ${contract}`, {
+      details: { contract, issues: ["result: must be a plain object"] },
+    });
+  }
+  const missing = fields.filter((field) => !(field in value));
+  if (missing.length > 0) {
+    throw new ValidationError(`Invalid ${contract}`, {
+      details: { contract, issues: missing.map((field) => `${contract}.${field}: is required`) },
+    });
+  }
+}
+
+/** Throw the collected issues, if any. */
+function throwProductionIssues(contract, issues) {
+  if (issues.length > 0) {
+    throw new ValidationError(`Invalid ${contract}`, { details: { contract, issues } });
+  }
 }
 
 /** Validate a bounded unresolved-middleware list. */

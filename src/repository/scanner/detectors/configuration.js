@@ -20,13 +20,16 @@
 
 import { capEvidence, compareEvidence, SCAN_SIGNALS } from "../contracts.js";
 import { COMPOSE_FILENAMES } from "../policies/containers.js";
+// Phase 20 — the Dockerfile table is shared with the policy that reads a Dockerfile's
+// instructions, so the file this detector reports as a `dockerfile` signal is exactly the
+// file that policy reads. One table, no drift.
+import { DOCKERFILE_RULES } from "../policies/dockerfile.js";
 import { matchEntries } from "./match.js";
 
 /** Ordered configuration rules (most specific first). */
 export const CONFIGURATION_RULES = Object.freeze([
   // Containers.
-  { basenamePattern: "Dockerfile*", caseInsensitive: true, signal: SCAN_SIGNALS.DOCKERFILE },
-  { basenamePattern: "*.dockerfile", caseInsensitive: true, signal: SCAN_SIGNALS.DOCKERFILE },
+  ...DOCKERFILE_RULES,
   { basename: [".dockerignore"], signal: SCAN_SIGNALS.CONTAINER_IGNORE },
   // Shared with the container detector, so the file it reads for build declarations
   // is exactly the file this table reports as a Compose file.

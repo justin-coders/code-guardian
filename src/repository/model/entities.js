@@ -39,6 +39,8 @@ import {
   createDependencyDeclarationObservation,
   createDependencyResolutionObservation,
   createDependencySourceObservation,
+  createDockerfileStructureObservation,
+  createDockerfileUnparsedObservation,
   createApiSourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
@@ -76,6 +78,40 @@ export const GIT_HEAD_KINDS = Object.freeze({
   GITFILE: "gitfile",
   UNKNOWN: "unknown",
 });
+
+/**
+ * Why a Dockerfile's declared structure is not established (Phase 20).
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like
+ * `SYMLINK_TARGET_KINDS` below: the model must not depend on the scanner. A test in
+ * `tests/production-report.test.js` pins the two vocabularies together, so a rename on
+ * either side fails the suite instead of silently retiring a value.
+ */
+export const DOCKERFILE_STRUCTURE_REASONS = Object.freeze([
+  "read-failed",
+  "not-text",
+  "too-large",
+  "budget-exhausted",
+  "unsupported-syntax",
+]);
+
+/**
+ * The structure of a Dockerfile whose instructions declared none of the two facts this
+ * phase reads.
+ *
+ * A function rather than a shared constant, so a caller can never mutate one record's
+ * empty structure into another's.
+ */
+export function emptyDockerfileStructure() {
+  return {
+    stages: 0,
+    multiStage: false,
+    stageNames: [],
+    healthcheck: false,
+    healthcheckDisabled: false,
+    instructions: 0,
+  };
+}
 
 /**
  * Where a symlink target resolves. Re-declared here rather than imported from the
@@ -187,6 +223,12 @@ const MAX_CONTENT_CANDIDATES = 512;
 
 /** Maximum container build declarations a scan result may carry. */
 const MAX_CONTAINER_DECLARATIONS = 512;
+
+/** Maximum Dockerfile structure records a scan result may carry. */
+const MAX_DOCKERFILE_RECORDS = 64;
+
+/** Maximum build stages a Dockerfile structure record may state. */
+const MAX_DOCKERFILE_STAGES = 32;
 
 /** Bounded identifier text: letters, digits, `.`, `-`, `_`, `/` only. */
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._/-]{1,120}$/;
@@ -479,20 +521,22 @@ function projectContentSection(section, observedFilePaths, issues, record) {
  * @returns {void}
  */
 function projectContainerSection(section, observedFilePaths, issues, record) {
-  if (section === undefined || section === null) return;
+  if (section === undefined || section === null) return { dockerfileStructures: [] };
   if (!isPlainObject(section)) {
     fail(issues, "scanResult.containers", "must be a plain object");
-    return;
+    return { dockerfileStructures: [] };
   }
 
   if (!Array.isArray(section.declarations) || !Array.isArray(section.unparsed)) {
     fail(issues, "scanResult.containers", "must carry declarations and unparsed arrays");
-    return;
+    return { dockerfileStructures: [] };
   }
   if (section.declarations.length > MAX_CONTAINER_DECLARATIONS) {
     fail(issues, "scanResult.containers.declarations", "carries more declarations than a scan can report");
-    return;
+    return { dockerfileStructures: [] };
   }
+
+  const dockerfileStructures = [];
 
   for (const declaration of section.declarations) {
     if (!isPlainObject(declaration)) {
@@ -576,6 +620,145 @@ function projectContainerSection(section, observedFilePaths, issues, record) {
       }),
     );
   }
+
+  // ── Dockerfile structure (Phase 20) ────────────────────────────────────────
+  //
+  // One record per Dockerfile the inventory observed — always, including for a file
+  // whose structure could not be established — so a file that declares one stage and no
+  // healthcheck never becomes indistinguishable from one whose instructions were not read.
+  // A record about an unobserved file is rejected, because provenance that does not exist
+  // is exactly what a production report must never cite.
+  const records = Array.isArray(section.dockerfiles) ? section.dockerfiles : [];
+  if (records.length > MAX_DOCKERFILE_RECORDS) {
+    fail(
+      issues,
+      "scanResult.containers.dockerfiles",
+      "carries more Dockerfile records than a scan can report",
+    );
+  } else {
+    for (const entry of records) {
+      if (!isPlainObject(entry)) {
+        fail(issues, "scanResult.containers.dockerfiles[]", "must be a plain object");
+        continue;
+      }
+      const path = requireRepositoryRelativePath(
+        entry.path,
+        "scanResult.containers.dockerfiles[].path",
+      );
+      if (!observedFilePaths.has(path)) {
+        fail(
+          issues,
+          `scanResult.containers.dockerfiles[${path}]`,
+          "must name a Dockerfile the inventory observed",
+        );
+        continue;
+      }
+      if (typeof entry.parsed !== "boolean") {
+        fail(issues, `scanResult.containers.dockerfiles[${path}].parsed`, "must be a boolean");
+        continue;
+      }
+
+      if (entry.parsed === false) {
+        const reason = identifier(entry.reason);
+        if (reason === null || !DOCKERFILE_STRUCTURE_REASONS.includes(reason)) {
+          fail(
+            issues,
+            `scanResult.containers.dockerfiles[${path}].reason`,
+            "must be a documented refusal reason",
+          );
+          continue;
+        }
+        const detail =
+          entry.detail === null || entry.detail === undefined ? null : identifier(entry.detail);
+        if (entry.detail !== null && entry.detail !== undefined && detail === null) {
+          fail(
+            issues,
+            `scanResult.containers.dockerfiles[${path}].detail`,
+            "must be a bounded identifier",
+          );
+          continue;
+        }
+        const structureEvidenceId = record(
+          createDockerfileUnparsedObservation({ path, reason, detail }),
+        );
+        dockerfileStructures.push({
+          fileId: entityId(ENTITY_KINDS.FILE, path),
+          path,
+          parsed: false,
+          reason,
+          detail,
+          truncated: entry.truncated === true,
+          ...emptyDockerfileStructure(),
+          evidenceIds: [structureEvidenceId],
+        });
+        continue;
+      }
+
+      const stages = entry.stages;
+      const instructions = entry.instructions;
+      const stageNames = Array.isArray(entry.stageNames) ? entry.stageNames : [];
+      const names = [];
+      let namesValid = stageNames.length <= MAX_DOCKERFILE_STAGES;
+      for (const name of stageNames) {
+        const validated = identifier(name);
+        if (validated === null) {
+          namesValid = false;
+          break;
+        }
+        names.push(validated);
+      }
+      if (
+        !namesValid ||
+        !Number.isInteger(stages) ||
+        stages < 0 ||
+        stages > MAX_DOCKERFILE_STAGES ||
+        !Number.isInteger(instructions) ||
+        instructions < 0 ||
+        typeof entry.multiStage !== "boolean" ||
+        typeof entry.healthcheck !== "boolean" ||
+        typeof entry.healthcheckDisabled !== "boolean" ||
+        entry.multiStage !== stages > 1 ||
+        (entry.healthcheck === true && entry.healthcheckDisabled === true)
+      ) {
+        fail(
+          issues,
+          `scanResult.containers.dockerfiles[${path}]`,
+          "must state a coherent Dockerfile structure",
+        );
+        continue;
+      }
+
+      const structureEvidenceId = record(
+        createDockerfileStructureObservation({
+          path,
+          stages,
+          multiStage: entry.multiStage,
+          stageNames: names.sort(),
+          healthcheck: entry.healthcheck,
+          healthcheckDisabled: entry.healthcheckDisabled,
+          instructions,
+        }),
+      );
+      names.sort();
+      dockerfileStructures.push({
+        fileId: entityId(ENTITY_KINDS.FILE, path),
+        path,
+        parsed: true,
+        reason: null,
+        detail: null,
+        truncated: false,
+        stages,
+        multiStage: entry.multiStage,
+        stageNames: [...names],
+        healthcheck: entry.healthcheck,
+        healthcheckDisabled: entry.healthcheckDisabled,
+        instructions,
+        evidenceIds: [structureEvidenceId],
+      });
+    }
+  }
+
+  return { dockerfileStructures };
 }
 
 /**
@@ -3501,7 +3684,12 @@ export function buildEntities(scanResult, repositoryIdValue) {
 
   const observedFilePaths = new Set(files.map((file) => file.path));
   projectContentSection(scanResult.content, observedFilePaths, issues, record);
-  projectContainerSection(scanResult.containers, observedFilePaths, issues, record);
+  const containerSection = projectContainerSection(
+    scanResult.containers,
+    observedFilePaths,
+    issues,
+    record,
+  );
 
   // ── Languages ─────────────────────────────────────────────────────────────
 
@@ -4053,6 +4241,10 @@ export function buildEntities(scanResult, repositoryIdValue) {
     apiCoverage: apiSection.coverage,
     middlewareSources: middlewareSection.sources,
     middlewareCoverage: middlewareSection.coverage,
+    // Phase 20 — the declared structure of each observed Dockerfile, as a `fileId`-keyed
+    // annotation of the file entities rather than a second file-like entity, so no new
+    // identity is created inside a model whose ids are already the file's.
+    dockerfileStructures: containerSection.dockerfileStructures,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

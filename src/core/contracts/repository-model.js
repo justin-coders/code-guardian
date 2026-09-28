@@ -60,6 +60,15 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // default) because a consumer must be able to tell "this repository registers no
   // middleware" from "this model says nothing about middleware".
   "middleware",
+  // Phase 20 — the production-readiness substrate: the six-section, evidence-backed report
+  // the production auditor projects over the accepted graphs. A required area like every
+  // other one (the factory always emits it, with an `unknown` report by default) because a
+  // consumer must be able to tell "this repository establishes nothing in a domain" from
+  // "this model says nothing about production readiness at all". It carries no score, no
+  // grade, no readiness percentage and no traffic light: it carries observations, the
+  // evidence ids that prove them, a coverage state per section, and the reasons it
+  // abstained.
+  "production",
   "scan",
   "metadata",
 ]);
@@ -158,6 +167,7 @@ export function createRepositoryModel(overrides = {}) {
     symbols: overrides.symbols ?? {},
     api: overrides.api ?? {},
     middleware: overrides.middleware ?? {},
+    production: overrides.production ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

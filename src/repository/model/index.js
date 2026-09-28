@@ -82,6 +82,8 @@ export {
 } from "./evidence.js";
 
 export {
+  DOCKERFILE_STRUCTURE_REASONS,
+  emptyDockerfileStructure,
   DEPENDENCY_PROBLEM_REASONS,
   DEPENDENCY_SCOPES,
   DEPENDENCY_SOURCE_REASONS,
@@ -247,6 +249,36 @@ export {
   MIDDLEWARE_UNRESOLVED_REASONS as MIDDLEWARE_SOURCE_UNRESOLVED_REASONS,
 } from "./entities.js";
 
+// Phase 20 — the production-readiness report: its six domains, its closed observation and
+// abstention vocabularies, its bounds and its coverage-state reading, plus the projection
+// the builder materializes into `model.production.report`.
+//
+// The report is the one projection whose vocabulary is part of its interface: a consumer
+// switches on a section name, an observation kind, a coverage state and an abstention
+// reason, so all four are exported rather than reached for through the report object.
+export {
+  CI_PURPOSES,
+  ENVIRONMENT_CLASSES,
+  PRODUCTION_ENTRYPOINT_DIRECTORIES,
+  PRODUCTION_ENTRYPOINT_NAMES,
+  PRODUCTION_OBSERVATION_KINDS,
+  PRODUCTION_REPORT_BUILDER,
+  PRODUCTION_REPORT_LIMITS,
+  PRODUCTION_REPORT_STATES,
+  PRODUCTION_REPORT_STATE_VALUES,
+  PRODUCTION_REPORT_VERSION,
+  PRODUCTION_SECTIONS,
+  PRODUCTION_SECTION_TITLES,
+  PRODUCTION_UNKNOWN_REASONS,
+  PRODUCTION_UNKNOWN_REASON_VALUES,
+  buildProductionReport,
+  classifyEnvironmentArtifact,
+  classifyWorkflowName,
+  isEntrypointShapedPath,
+  isEnvironmentShapedName,
+  isEstablishedProductionState,
+} from "./production-report.js";
+
 export {
   GRAPH_ENTITY_KINDS,
   GRAPH_RELATIONSHIP_TYPES,
@@ -314,6 +346,15 @@ export {
 // Phase 11 — repository-intelligence query layer: contracts, errors and the
 // read-only semantic API. `createRepositoryQuery(model)` is the entry point.
 export {
+  PRODUCTION_COVERAGE_RESULT_FIELDS,
+  PRODUCTION_REPORT_RESULT_FIELDS,
+  PRODUCTION_SECTION_RESULT_FIELDS,
+  createProductionCoverageResult,
+  createProductionReportResult,
+  createProductionSectionResult,
+  validateProductionCoverageResult,
+  validateProductionReportResult,
+  validateProductionSectionResult,
   DEPENDENCY_EDGE_RESULT_FIELDS,
   DEPENDENCY_GRAPH_RESULT_FIELDS,
   DEPENDENCY_PATH_RESULT_FIELDS,

@@ -306,3 +306,39 @@ export {
   middlewareRules,
   middlewareUnresolved,
 } from "./middleware/index.js";
+
+// Phase 20 — the production rule pack. Six informational rules, one per audit domain of the
+// ProductionReport, proving the report is consumable through the accepted Rule Engine.
+// Purely additive — the Rule Engine is unchanged and every other pack is untouched.
+export {
+  MAX_PRODUCTION_FINDINGS,
+  PRODUCTION_ABSTENTION_WORDING,
+  PRODUCTION_ANALYZER_ID,
+  PRODUCTION_ANALYZER_NAME,
+  PRODUCTION_ANALYZER_SCOPE,
+  PRODUCTION_BASIS,
+  PRODUCTION_CATEGORY,
+  PRODUCTION_CONFIDENCE,
+  PRODUCTION_DESCRIBED_ABSTENTIONS,
+  PRODUCTION_DESCRIBED_OBSERVATIONS,
+  PRODUCTION_DESCRIBED_SECTIONS,
+  PRODUCTION_DESCRIBED_STATES,
+  PRODUCTION_OBSERVATION_WORDING,
+  PRODUCTION_RULE_ID_PREFIX,
+  PRODUCTION_RULE_IDS,
+  PRODUCTION_RULE_PACK_VERSION,
+  PRODUCTION_RULE_VERSION,
+  PRODUCTION_SECTIONS,
+  PRODUCTION_SECTION_TITLES,
+  PRODUCTION_SECTION_WORDING,
+  PRODUCTION_STATE_WORDING,
+  createProductionAnalyzer,
+  createProductionRuleRegistry,
+  productionAbsence,
+  productionCoverage,
+  productionInventoryRules,
+  productionRules,
+  productionRuleSetIssues,
+  productionSection,
+  productionSections,
+} from "./production/index.js";

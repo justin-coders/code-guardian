@@ -121,6 +121,17 @@ import {
   MIDDLEWARE_UNRESOLVED_REASON_VALUES,
   isEstablishedMiddlewareState,
 } from "./middleware-graph.js";
+import {
+  PRODUCTION_OBSERVATION_KINDS,
+  PRODUCTION_REPORT_LIMITS,
+  PRODUCTION_REPORT_STATES,
+  PRODUCTION_REPORT_STATE_VALUES,
+  PRODUCTION_REPORT_VERSION,
+  PRODUCTION_SECTIONS,
+  PRODUCTION_SECTION_TITLES,
+  PRODUCTION_UNKNOWN_REASONS,
+  isEstablishedProductionState,
+} from "./production-report.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -2965,6 +2976,417 @@ export function validateRepositoryModelGraph(model) {
         if (middlewareArea.coverage.unresolved !== middlewareArea.graph.coverage.unresolved) {
           fail("middleware.coverage.unresolved", "must agree with the graph it summarises");
         }
+      }
+    }
+  }
+
+  // ── Production report (Phase 20) ───────────────────────────────────────────
+  //
+  // The production report is the one projection whose *output* is itself the artifact a
+  // consumer reads, so it is validated as a document rather than merely as a shape. A
+  // malformed report is a **validation failure**, never a finding: a report that names a
+  // section twice, orders its observations non-deterministically, cites an observation the
+  // model does not carry, or claims more coverage than its own records support would let a
+  // rule report something the repository never established.
+  //
+  // Five invariants carry the weight:
+  //
+  //   - the six sections appear **exactly once each, in their declared order**, so a
+  //     consumer can address them positionally and no domain can be silently dropped;
+  //   - every observation's `kind` is in *its* section's vocabulary, so a kind cannot be
+  //     smuggled into a section it does not belong to;
+  //   - every cited evidence id resolves to an observation the model carries, which is the
+  //     whole point of the report: "what proves this?" always has an answer;
+  //   - observations are sorted by a unique key and unknown records by `(reason, detail)`,
+  //     so two reports of one repository state are byte-identical;
+  //   - a section's state agrees with its own coverage, its own evidence list and its own
+  //     counts, so `complete` can never sit next to a truncation or an evidence-less
+  //     observation.
+  if (isPlainObject(model.production)) {
+    const productionArea = model.production;
+    const report = productionArea.report;
+
+    if (!PRODUCTION_REPORT_STATE_VALUES.includes(productionArea.state)) {
+      fail("production.state", "must be a documented report state");
+    } else if (productionArea.established !== isEstablishedProductionState(productionArea.state)) {
+      fail("production.established", "must agree with the state it reports");
+    }
+
+    /** A bounded, control-character-free detail token (or `null`). */
+    const isBoundedDetail = (value) =>
+      value === null ||
+      (typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 120 &&
+        // eslint-disable-next-line no-control-regex
+        !/[\u0000-\u001f]/.test(value));
+
+    /** A `counts` value: a non-negative integer, a boolean, or a nested object of those. */
+    const countsIssue = (value, depth) => {
+      if (depth > 3) return "must stay within the report's count depth";
+      if (isPlainObject(value)) {
+        for (const key of Object.keys(value)) {
+          const issue = countsIssue(value[key], depth + 1);
+          if (issue !== null) return issue;
+        }
+        return null;
+      }
+      if (typeof value === "boolean") return null;
+      if (isNonNegativeInteger(value)) return null;
+      return "must be a non-negative integer, a boolean, or a nested object of those";
+    };
+
+    if (!isPlainObject(report)) {
+      fail("production.report", "must be a plain object");
+    } else {
+      if (report.version !== PRODUCTION_REPORT_VERSION) {
+        fail("production.report.version", "must be the report version this builder produces");
+      }
+      if (!PRODUCTION_REPORT_STATE_VALUES.includes(report.state)) {
+        fail("production.report.state", "must be a documented report state");
+      } else if (report.state !== productionArea.state) {
+        fail("production.report.state", "must agree with the area it belongs to");
+      }
+      if (report.established !== productionArea.established) {
+        fail("production.report.established", "must agree with the area it belongs to");
+      }
+
+      if (!Array.isArray(report.sections)) {
+        fail("production.report.sections", "must be an array");
+      } else {
+        if (report.sections.length !== PRODUCTION_SECTIONS.length) {
+          fail("production.report.sections", "must carry every audit domain exactly once");
+        }
+
+        report.sections.forEach((section, index) => {
+          const at = `production.report.sections[${index}]`;
+          if (!isPlainObject(section)) {
+            fail(at, "must be a plain object");
+            return;
+          }
+          if (!PRODUCTION_SECTIONS.includes(section.name)) {
+            fail(`${at}.name`, "must be a declared audit domain");
+            return;
+          }
+          // Declared order, and therefore uniqueness: the domain at a position must be the
+          // one that position declares, so a domain can neither appear twice nor move.
+          if (PRODUCTION_SECTIONS[index] !== section.name) {
+            fail("production.report.sections", "must be ordered by domain and carry each once");
+          }
+
+          if (section.title !== PRODUCTION_SECTION_TITLES[section.name]) {
+            fail(`${at}.title`, "must be the declared title of the domain it reports");
+          }
+          if (!PRODUCTION_REPORT_STATE_VALUES.includes(section.state)) {
+            fail(`${at}.state`, "must be a documented report state");
+          }
+          if (section.established !== isEstablishedProductionState(section.state)) {
+            fail(`${at}.established`, "must agree with the state it reports");
+          }
+
+          if (!isPlainObject(section.counts)) {
+            fail(`${at}.counts`, "must be a plain object");
+          } else {
+            const issue = countsIssue(section.counts, 0);
+            if (issue !== null) fail(`${at}.counts`, issue);
+          }
+
+          const kinds = PRODUCTION_OBSERVATION_KINDS[section.name];
+          const evidenceCited = new Set();
+          if (!Array.isArray(section.observations)) {
+            fail(`${at}.observations`, "must be an array");
+          } else {
+            if (section.observations.length > PRODUCTION_REPORT_LIMITS.maxObservationsPerSection) {
+              fail(`${at}.observations`, "must stay within the report's observation bound");
+            }
+            let previousKey = null;
+            section.observations.forEach((observation, position) => {
+              const where = `${at}.observations[${position}]`;
+              if (!isPlainObject(observation)) {
+                fail(where, "must be a plain object");
+                return;
+              }
+              if (!kinds.includes(observation.kind)) {
+                fail(`${where}.kind`, "must be an observation kind this domain declares");
+              }
+              if (!isNonEmptyString(observation.key)) {
+                fail(`${where}.key`, "must be a non-empty deterministic key");
+              } else if (previousKey !== null && !(previousKey < observation.key)) {
+                fail(`${at}.observations`, "must be sorted by key and carry each key once");
+              }
+              previousKey = observation.key;
+
+              if (!Array.isArray(observation.evidenceIds) || observation.evidenceIds.length === 0) {
+                fail(`${where}.evidenceIds`, "must cite at least one observation");
+                return;
+              }
+              if (
+                observation.evidenceIds.length >
+                PRODUCTION_REPORT_LIMITS.maxEvidencePerObservation
+              ) {
+                fail(`${where}.evidenceIds`, "must stay within the citation bound");
+              }
+              let previousEvidence = null;
+              for (const id of observation.evidenceIds) {
+                if (!evidenceIds.has(id)) {
+                  fail(`${where}.evidenceIds`, "must name observations the model carries");
+                }
+                if (previousEvidence !== null && !(previousEvidence < id)) {
+                  fail(`${where}.evidenceIds`, "must be sorted and unique");
+                }
+                previousEvidence = id;
+                evidenceCited.add(id);
+              }
+            });
+          }
+
+          if (!Array.isArray(section.evidenceIds)) {
+            fail(`${at}.evidenceIds`, "must be an array");
+          } else {
+            let previousEvidence = null;
+            for (const id of section.evidenceIds) {
+              if (!evidenceIds.has(id)) {
+                fail(`${at}.evidenceIds`, "must name observations the model carries");
+              }
+              if (previousEvidence !== null && !(previousEvidence < id)) {
+                fail(`${at}.evidenceIds`, "must be sorted and unique");
+              }
+              previousEvidence = id;
+            }
+            // The section's list is the union of its observations' citations — nothing more
+            // and nothing less, so a consumer can trust either view.
+            const declared = [...evidenceCited].sort();
+            if (declared.join("\u0000") !== section.evidenceIds.join("\u0000")) {
+              fail(`${at}.evidenceIds`, "must be the union of its observations' citations");
+            }
+          }
+
+          const reasons = PRODUCTION_UNKNOWN_REASONS[section.name];
+          const reasonCounts = new Map();
+          if (!Array.isArray(section.unknown)) {
+            fail(`${at}.unknown`, "must be an array");
+          } else {
+            if (
+              section.unknown.length >
+              PRODUCTION_REPORT_LIMITS.maxUnknownReasonsPerSection + 1
+            ) {
+              fail(`${at}.unknown`, "must stay within the report's abstention bound");
+            }
+            let previousRecord = null;
+            section.unknown.forEach((record, position) => {
+              const where = `${at}.unknown[${position}]`;
+              if (!isPlainObject(record)) {
+                fail(where, "must be a plain object");
+                return;
+              }
+              if (!reasons.includes(record.reason)) {
+                fail(`${where}.reason`, "must be a reason this domain declares");
+              }
+              if (!isBoundedDetail(record.detail)) {
+                fail(`${where}.detail`, "must be a bounded token or null");
+              }
+              if (!Number.isInteger(record.count) || record.count < 1) {
+                fail(`${where}.count`, "must be a positive integer");
+              } else {
+                reasonCounts.set(
+                  record.reason,
+                  (reasonCounts.get(record.reason) ?? 0) + record.count,
+                );
+              }
+              const key = `${record.reason}\u0000${record.detail ?? ""}`;
+              if (previousRecord !== null && !(previousRecord < key)) {
+                fail(`${at}.unknown`, "must be sorted by (reason, detail) and carry each once");
+              }
+              previousRecord = key;
+            });
+          }
+
+          const coverage = section.coverage;
+          if (!isPlainObject(coverage)) {
+            fail(`${at}.coverage`, "must be a plain object");
+            return;
+          }
+          if (coverage.state !== section.state) {
+            fail(`${at}.coverage.state`, "must agree with the section state");
+          }
+          if (coverage.established !== section.established) {
+            fail(`${at}.coverage.established`, "must agree with the section state");
+          }
+          if (coverage.observations !== (Array.isArray(section.observations) ? section.observations.length : -1)) {
+            fail(`${at}.coverage.observations`, "must count the observations the section carries");
+          }
+          if (coverage.evidence !== (Array.isArray(section.evidenceIds) ? section.evidenceIds.length : -1)) {
+            fail(`${at}.coverage.evidence`, "must count the evidence the section cites");
+          }
+          if (
+            coverage.unknownReasons !== (Array.isArray(section.unknown) ? section.unknown.length : -1)
+          ) {
+            fail(`${at}.coverage.unknownReasons`, "must count the abstentions the section carries");
+          }
+          if (typeof coverage.truncated !== "boolean") {
+            fail(`${at}.coverage.truncated`, "must be a boolean");
+          }
+
+          // State ↔ content agreement, which is what stops an empty section from reading as
+          // an answer and a cut-short section from reading as a complete one.
+          const observationCount = Array.isArray(section.observations)
+            ? section.observations.length
+            : -1;
+          if (section.state === PRODUCTION_REPORT_STATES.UNKNOWN && section.established !== false) {
+            fail(`${at}.state`, "cannot be unknown while the section claims an answer");
+          }
+          if (
+            section.state === PRODUCTION_REPORT_STATES.UNSUPPORTED &&
+            (section.established !== true || observationCount !== 0)
+          ) {
+            fail(`${at}.state`, "cannot be unsupported unless the domain was answered as empty");
+          }
+          if (
+            section.state === PRODUCTION_REPORT_STATES.COMPLETE &&
+            (section.established !== true || observationCount <= 0 || coverage.truncated === true)
+          ) {
+            fail(`${at}.state`, "cannot be complete without observations and full coverage");
+          }
+          if (
+            section.state === PRODUCTION_REPORT_STATES.PARTIAL &&
+            (section.established !== true || observationCount <= 0)
+          ) {
+            fail(`${at}.state`, "cannot be partial without an established, non-empty answer");
+          }
+          if (
+            section.state === PRODUCTION_REPORT_STATES.TRUNCATED &&
+            coverage.truncated !== true
+          ) {
+            fail(`${at}.state`, "cannot be truncated without a bound that bit");
+          }
+          // A bound that bit is *recorded*, and a recorded bound is what makes it real.
+          const sawTruncation = Array.isArray(section.unknown)
+            ? section.unknown.some((record) => record?.reason === "section-observations-truncated")
+            : false;
+          if (sawTruncation && observationCount !== PRODUCTION_REPORT_LIMITS.maxObservationsPerSection) {
+            fail(`${at}.unknown`, "cannot report truncation the section did not reach");
+          }
+        });
+      }
+
+      const reportCoverage = report.coverage;
+      if (!isPlainObject(reportCoverage)) {
+        fail("production.report.coverage", "must be a plain object");
+      } else if (Array.isArray(report.sections)) {
+        if (reportCoverage.state !== report.state) {
+          fail("production.report.coverage.state", "must agree with the report state");
+        }
+        if (reportCoverage.established !== report.established) {
+          fail("production.report.coverage.established", "must agree with the report state");
+        }
+        if (reportCoverage.complete !== (report.state === PRODUCTION_REPORT_STATES.COMPLETE)) {
+          fail("production.report.coverage.complete", "must agree with the report state");
+        }
+        if (typeof reportCoverage.truncated !== "boolean") {
+          fail("production.report.coverage.truncated", "must be a boolean");
+        }
+        if (reportCoverage.sections !== report.sections.length) {
+          fail("production.report.coverage.sections", "must count the sections the report carries");
+        }
+        const observations = report.sections.reduce(
+          (total, section) =>
+            total + (Array.isArray(section?.observations) ? section.observations.length : 0),
+          0,
+        );
+        if (reportCoverage.observations !== observations) {
+          fail("production.report.coverage.observations", "must count every observation");
+        }
+        if (
+          reportCoverage.inspected !== (observations > 0)
+        ) {
+          fail("production.report.coverage.inspected", "must say whether any observation was made");
+        }
+        const evidence = report.sections.reduce(
+          (total, section) =>
+            total + (Array.isArray(section?.evidenceIds) ? section.evidenceIds.length : 0),
+          0,
+        );
+        if (reportCoverage.evidence !== evidence) {
+          fail("production.report.coverage.evidence", "must count every cited observation");
+        }
+        // The census must be the sections' own abstentions, totalled, so the two views of
+        // one fact cannot disagree.
+        if (!isPlainObject(reportCoverage.unknownReasons)) {
+          fail("production.report.coverage.unknownReasons", "must be a plain object");
+        } else {
+          const expected = {};
+          for (const section of report.sections) {
+            for (const entry of Array.isArray(section?.unknown) ? section.unknown : []) {
+              if (!isPlainObject(entry) || typeof entry.reason !== "string") continue;
+              expected[entry.reason] = (expected[entry.reason] ?? 0) + (entry.count ?? 0);
+            }
+          }
+          const keys = Object.keys(reportCoverage.unknownReasons);
+          if (keys.join("\u0000") !== keys.slice().sort().join("\u0000")) {
+            fail("production.report.coverage.unknownReasons", "must be ordered by reason");
+          }
+          for (const key of keys) {
+            if (reportCoverage.unknownReasons[key] !== expected[key]) {
+              fail(
+                `production.report.coverage.unknownReasons.${key}`,
+                "must total the sections' own abstentions",
+              );
+            }
+          }
+          for (const key of Object.keys(expected)) {
+            if (!(key in reportCoverage.unknownReasons)) {
+              fail(
+                `production.report.coverage.unknownReasons.${key}`,
+                "must total the sections' own abstentions",
+              );
+            }
+          }
+        }
+        if (productionArea.detected !== observations > 0) {
+          fail("production.detected", "must say whether the report established anything");
+        }
+
+        // The report's own state must follow from its sections: complete only when every
+        // domain reached a final answer, unknown only when none did.
+        const states = report.sections.map((section) => section?.state);
+        const finalStates = states.every(
+          (state) =>
+            state === PRODUCTION_REPORT_STATES.COMPLETE ||
+            state === PRODUCTION_REPORT_STATES.UNSUPPORTED,
+        );
+        const truncatedStates = states.some(
+          (state) => state === PRODUCTION_REPORT_STATES.TRUNCATED,
+        );
+        const establishedStates = report.sections.filter(
+          (section) => section?.established === true,
+        ).length;
+        const expectedState = truncatedStates
+          ? PRODUCTION_REPORT_STATES.TRUNCATED
+          : finalStates
+            ? PRODUCTION_REPORT_STATES.COMPLETE
+            : establishedStates > 0
+              ? PRODUCTION_REPORT_STATES.PARTIAL
+              : PRODUCTION_REPORT_STATES.UNKNOWN;
+        if (report.state !== expectedState) {
+          fail("production.report.state", "must follow from the sections it summarises");
+        }
+      }
+    }
+
+    if (isPlainObject(productionArea.coverage) && isPlainObject(report?.coverage)) {
+      for (const field of ["state", "established", "complete", "truncated", "inspected"]) {
+        if (productionArea.coverage[field] !== report.coverage[field]) {
+          fail(`production.coverage.${field}`, "must agree with the report it summarises");
+        }
+      }
+      if (productionArea.coverage.sections !== report.coverage.sections) {
+        fail("production.coverage.sections", "must agree with the report it summarises");
+      }
+      if (productionArea.coverage.observations !== report.coverage.observations) {
+        fail("production.coverage.observations", "must agree with the report it summarises");
+      }
+      if (productionArea.coverage.evidence !== report.coverage.evidence) {
+        fail("production.coverage.evidence", "must agree with the report it summarises");
       }
     }
   }

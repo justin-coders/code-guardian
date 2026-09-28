@@ -208,6 +208,10 @@ function collectRepositoryModelIssues(value, ctx, path = "repositoryModel") {
     "symbols",
     "api",
     "middleware",
+    // Phase 20 — the production-readiness projection. Shape-validated here (the area must
+    // be a plain object); its internal meaning is validated by the model layer's graph
+    // contract, which is where the report's section, evidence and coverage invariants live.
+    "production",
     "metadata",
   ]) {
     if (field in value && !isPlainObject(value[field])) {

@@ -153,6 +153,10 @@ import {
   validateApiUnresolvedRouteResult,
   MIDDLEWARE_REGISTRATION_VALUES,
   MIDDLEWARE_SCOPE_VALUES,
+  createProductionCoverageResult,
+  validateProductionCoverageResult,
+  validateProductionReportResult,
+  validateProductionSectionResult,
   createMiddlewareChainResult,
   createMiddlewareGraphResult,
   createMiddlewareProtectedRouteResult,
@@ -187,6 +191,7 @@ import {
   validateSymbolUnresolvedQueryResult,
   validateTraversalResult,
 } from "./query-contracts.js";
+import { PRODUCTION_SECTIONS } from "./production-report.js";
 import { QUERY_ERROR_KINDS, RepositoryQueryError, safeQueryToken } from "./query-errors.js";
 
 const ENTITY_KIND_VALUES = Object.values(ENTITY_KINDS);
@@ -490,6 +495,18 @@ function matchesFramework(entity, framework) {
   if (entity.kind === ENTITY_KINDS.FRAMEWORK && entity.name === framework) return true;
   if (entity.kind === ENTITY_KINDS.TEST && entity.frameworkId === frameworkEntityId) return true;
   return false;
+}
+
+/**
+ * The model's production report, or `null` when it carries none.
+ *
+ * `null` is the honest answer for a model built without the production area (the contracted
+ * empty skeleton): it records nothing about production readiness, which is not the same as
+ * a report that established nothing.
+ */
+function productionReportOf(model) {
+  const report = model?.production?.report;
+  return report !== null && typeof report === "object" ? report : null;
 }
 
 /**
@@ -3790,6 +3807,69 @@ export function createRepositoryQuery(model) {
       });
       validateMiddlewareUnresolvedResult(result);
       return Object.freeze(result);
+    },
+
+    // ── Production readiness report (Phase 20) ──────────────────────────────
+    /**
+     * The whole production report: six evidence-backed sections, their coverage states and
+     * the reasons each abstained.
+     *
+     * Read from `model.production.report` — the projection the builder already made and
+     * validated — and never recomputed, so an answer cannot disagree with the model.
+     * `null` means this model carries no report at all (`production` is the contracted
+     * empty skeleton), which is a different thing from a report that established nothing:
+     * the latter is a report whose sections are `unsupported`, and it is returned.
+     *
+     * The report contains no score, grade, readiness percentage or traffic light, and the
+     * query layer adds none: a caller receives the observations, the evidence ids behind
+     * them, a coverage state per section and the abstentions, and decides for itself.
+     *
+     * @returns {object|null} A deeply frozen `ProductionReport`, or `null`.
+     */
+    productionReport() {
+      const report = productionReportOf(model);
+      if (report === null) return null;
+      validateProductionReportResult(report);
+      return report;
+    },
+
+    /**
+     * The report's structured coverage statement: its own state, the six section totals,
+     * the evidence count and the abstention census.
+     *
+     * A *copy*, frozen, so a caller cannot reach the model's own object through it.
+     */
+    productionCoverage() {
+      const report = productionReportOf(model);
+      if (report === null) return null;
+      const coverage = createProductionCoverageResult({ ...report.coverage });
+      validateProductionCoverageResult(coverage);
+      return Object.freeze({ ...coverage });
+    },
+
+    /**
+     * One audit domain's section: `environment`, `container`, `ci`, `api`, `dependencies`
+     * or `architecture`.
+     *
+     * The domain name is a closed vocabulary, so a typo throws rather than returning an
+     * empty section that a caller could read as "this repository establishes nothing here".
+     * A missing section in a well-formed report is impossible — the contract requires all
+     * six — so `null` here means only that the model carries no report at all.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` for an unknown domain name.
+     */
+    productionSection(name) {
+      if (typeof name !== "string" || !PRODUCTION_SECTIONS.includes(name)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "productionSection.name",
+        });
+      }
+      const report = productionReportOf(model);
+      if (report === null) return null;
+      const section = report.sections.find((entry) => entry.name === name) ?? null;
+      if (section === null) return null;
+      validateProductionSectionResult(section);
+      return section;
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

@@ -51,6 +51,7 @@ import { buildDependencyGraph } from "./dependency-graph.js";
 import { buildImportGraph, isInterpretedLanguage } from "./import-graph.js";
 import { buildSymbolGraph } from "./symbol-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
+import { buildProductionReport } from "./production-report.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 import { requireRepositoryRelativePath } from "./paths.js";
@@ -266,6 +267,34 @@ export function buildRepositoryModel(scanResult) {
     },
   });
 
+  // Phase 20 — the production-readiness report. A projection over the collections and the
+  // six graphs above, built here (rather than on demand) so the model stays the single
+  // frozen source of truth and so validation can reject a report that cites evidence the
+  // model does not carry. It reads nothing new: no file, no parser, no network, no clock.
+  const productionReport = buildProductionReport({
+    configuration: collections.configuration,
+    cicd: collections.cicd,
+    files: collections.files,
+    dockerfileStructures: collections.dockerfileStructures,
+    buildContexts: architectureGraph.buildContexts,
+    unestablishedComposeSources: architectureGraph.coverage.unestablishedSources,
+    dependencyEntities: collections.dependencies,
+    dependencySources: collections.dependencySources,
+    manifests: collections.manifests,
+    dependencyGraph,
+    architectureGraph,
+    apiGraph,
+    middlewareGraph,
+    importGraph,
+    symbolGraph,
+    evidence: collections.evidence,
+    // The model-shaped scan state, not the raw ScanResult: the report reads `complete`,
+    // `truncated` and the coverage statement, which live on the model's own `scan` area.
+    scan: { complete: scan.scan.complete, truncated: scan.scan.truncated, coverage },
+    configurationEvidenceTruncated: scan.configuration.evidenceTruncated === true,
+    ciEvidenceTruncated: scan.cicd.evidenceTruncated === true,
+  });
+
   // The Core factory supplies the contracted skeleton (every required area,
   // contract-shaped defaults including the optional areas). The model is then
   // assembled explicitly from that skeleton, so an area can never be omitted and
@@ -418,6 +447,20 @@ export function buildRepositoryModel(scanResult) {
       detected: scan.configuration.detected,
       entries: collections.configuration,
       evidenceTruncated: scan.configuration.evidenceTruncated === true,
+    },
+    // Phase 20 — the production-readiness substrate. `report` is the six-section,
+    // evidence-backed projection; `detected` says whether it established any observation at
+    // all, which is the same "the scan saw something to report" statement
+    // `dependencies.detected` makes. No score, grade, percentage or traffic light is
+    // attached to it, and none can be: the report records what the repository establishes
+    // and names what it could not.
+    production: {
+      ...skeleton.production,
+      detected: productionReport.coverage.observations > 0,
+      state: productionReport.state,
+      established: productionReport.established,
+      report: productionReport,
+      coverage: { ...productionReport.coverage },
     },
     git: {
       detected: scan.git.detected,

@@ -137,6 +137,13 @@ export const CONTENT_SIGNALS = Object.freeze({
 export const CONTAINER_SIGNALS = Object.freeze({
   BUILD_CONTEXT: "compose-build-context",
   UNPARSED: "compose-unparsed",
+  // Phase 20 — the container definition's own declared structure (stages, healthcheck).
+  // A *separate* signal from the configuration detector's `dockerfile` signal, which
+  // records presence: "this file is a Dockerfile" and "this Dockerfile declares two
+  // stages" are different observations, and collapsing them would make the second
+  // impossible to cite without also claiming the first.
+  DOCKERFILE: "dockerfile-structure",
+  DOCKERFILE_UNPARSED: "dockerfile-unparsed",
 });
 
 /**
@@ -635,6 +642,76 @@ export function createBuildContextObservation({ path, source, service, contextPa
       service,
       contextPath,
     },
+  });
+}
+
+/**
+ * Build a container-definition structure observation (Phase 20).
+ *
+ * The payload is the *structure* the file's own instructions declare: how many build
+ * stages, which of them are named, whether a healthcheck is declared or explicitly
+ * disabled, and how many instructions were examined. It is deliberately not the
+ * instructions themselves, not their arguments, not a base image, and not a verdict: a
+ * consumer can establish "this Dockerfile declares two stages and a healthcheck" and
+ * nothing more.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative Dockerfile path.
+ * @param {number} input.stages Build stages the file declares.
+ * @param {boolean} input.multiStage Whether it declares more than one.
+ * @param {string[]} input.stageNames Names stated by `FROM … AS <name>`.
+ * @param {boolean} input.healthcheck A `HEALTHCHECK` instruction is present.
+ * @param {boolean} input.healthcheckDisabled A `HEALTHCHECK NONE` is present.
+ * @param {number} input.instructions Instructions examined.
+ * @returns {object} A Core Evidence object.
+ */
+export function createDockerfileStructureObservation({
+  path,
+  stages,
+  multiStage,
+  stageNames,
+  healthcheck,
+  healthcheckDisabled,
+  instructions,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+    key: `${CONTAINER_SIGNALS.DOCKERFILE}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+    path,
+    data: {
+      signal: CONTAINER_SIGNALS.DOCKERFILE,
+      stages,
+      multiStage,
+      stageNames: [...stageNames],
+      healthcheck,
+      healthcheckDisabled,
+      instructions,
+    },
+  });
+}
+
+/**
+ * Build the observation for a Dockerfile whose structure could *not* be established.
+ *
+ * Recorded at the Dockerfile itself, with the bounded reason and detail, so a consumer
+ * can cite *why* the file's structure is unknown rather than treating the file as if it
+ * declared nothing. The record carries no structural claim at all — every count stays
+ * where the empty structure put it.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative Dockerfile path.
+ * @param {string} input.reason One of the scanner's Dockerfile refusal reasons.
+ * @param {string|null} input.detail Bounded cause token, or `null`.
+ * @returns {object} A Core Evidence object.
+ */
+export function createDockerfileUnparsedObservation({ path, reason, detail }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+    key: `${CONTAINER_SIGNALS.DOCKERFILE_UNPARSED}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+    path,
+    data: { signal: CONTAINER_SIGNALS.DOCKERFILE_UNPARSED, reason, detail },
   });
 }
 

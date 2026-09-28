@@ -28,12 +28,117 @@ import {
   isAbsoluteContainerReference,
   parseComposeBuildContexts,
 } from "../policies/containers.js";
+// Phase 20 — the container definition's own declared structure. Read through the same
+// detector because a Dockerfile and the Compose file that builds it are one subject:
+// "what does this repository's container configuration establish".
+import {
+  DOCKERFILE_DETAILS,
+  DOCKERFILE_INSPECTION_LIMITS,
+  DOCKERFILE_RULES,
+  DOCKERFILE_UNPARSED_REASONS,
+  parseDockerfileStructure,
+  unestablishedDockerfileStructure,
+} from "../policies/dockerfile.js";
 import { matchEntries } from "./match.js";
 
 /** Which inventory files are Compose files. Shared basenames, so no drift. */
 export const COMPOSE_RULES = Object.freeze([
   { basename: [...COMPOSE_FILENAMES], signal: "compose-file" },
 ]);
+
+/**
+ * Read the declared structure of every Dockerfile the inventory observed.
+ *
+ * One record per Dockerfile, always — including for a file whose structure could not
+ * be established. That is what lets a consumer distinguish "this Dockerfile declares
+ * one stage and no healthcheck" from "this Dockerfile was not read", which is the
+ * distinction the production report's container section refuses to collapse.
+ *
+ * Bounded by `DOCKERFILE_INSPECTION_LIMITS` on every axis, deterministic (records are
+ * sorted by path and stage names by name), and read-only: the file is opened through
+ * the Phase 8A boundary and never written.
+ *
+ * @param {object} view Repository view built by the scanner.
+ * @returns {Promise<object[]>} Structure records, sorted by path.
+ */
+async function detectDockerfileStructures(view) {
+  const matches = matchEntries(DOCKERFILE_RULES, view.files);
+  const records = [];
+  let inspected = 0;
+
+  for (const { entry } of matches) {
+    if (inspected >= DOCKERFILE_INSPECTION_LIMITS.maxFiles) {
+      records.push({
+        path: entry.path,
+        ...unestablishedDockerfileStructure(
+          DOCKERFILE_UNPARSED_REASONS.BUDGET_EXHAUSTED,
+          null,
+        ),
+      });
+      continue;
+    }
+
+    const result = await view.read(entry.path, {
+      maxBytes: DOCKERFILE_INSPECTION_LIMITS.maxFileBytes,
+    });
+
+    if (!result.ok) {
+      records.push({
+        path: entry.path,
+        // The classified reason is a bounded token, never a raw Node message: the
+        // field carries *why* the file is unread, not what the platform said.
+        ...unestablishedDockerfileStructure(
+          DOCKERFILE_UNPARSED_REASONS.READ_FAILED,
+          DOCKERFILE_DETAILS.UNREADABLE,
+        ),
+      });
+      continue;
+    }
+
+    inspected += 1;
+
+    if (result.truncated === true) {
+      // The read budget cut the file short, so the instructions after the cut were
+      // never seen: the structure is not established, and the *reason* says why.
+      records.push({
+        path: entry.path,
+        ...unestablishedDockerfileStructure(
+          DOCKERFILE_UNPARSED_REASONS.TOO_LARGE,
+          DOCKERFILE_DETAILS.TRUNCATED_READ,
+        ),
+      });
+      continue;
+    }
+
+    const text = typeof result.content === "string" ? result.content : "";
+    const parsed = parseDockerfileStructure(text);
+
+    records.push(
+      parsed.ok
+        ? {
+            path: entry.path,
+            parsed: true,
+            reason: null,
+            detail: null,
+            truncated: false,
+            stages: parsed.stages,
+            multiStage: parsed.multiStage,
+            stageNames: [...parsed.stageNames],
+            healthcheck: parsed.healthcheck,
+            healthcheckDisabled: parsed.healthcheckDisabled,
+            instructions: parsed.instructions,
+          }
+        : {
+            path: entry.path,
+            ...unestablishedDockerfileStructure(parsed.reason, parsed.detail),
+          },
+    );
+  }
+
+  records.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+
+  return { records, inspected };
+}
 
 /** The directory holding a repository-relative path (`.` at the root). */
 function parentDirectoryOf(path) {
@@ -157,7 +262,13 @@ function isWithinDirectory(directory, path) {
 }
 
 /**
- * Detect container build declarations.
+ * Detect container build declarations and Dockerfile structure.
+ *
+ * Two independent observations about one subject. The Compose declarations say which
+ * Dockerfile a service builds and from where; the structure records say what the
+ * Dockerfile's own instructions declare. Neither is inferred from the other, and a
+ * Dockerfile no Compose file mentions is still read, because "this repository has a
+ * container definition" does not depend on anything declaring that it is used.
  *
  * @param {object} view Repository view built by the scanner.
  * @returns {Promise<object>} The scan result's `containers` section.
@@ -260,10 +371,13 @@ export async function detectContainers(view) {
   });
   unparsed.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
 
+  const dockerfiles = await detectDockerfileStructures(view);
+
   return {
-    inspected: inspected > 0,
+    inspected: inspected > 0 || dockerfiles.inspected > 0,
     declarations,
     unparsed,
+    dockerfiles: dockerfiles.records,
     limits: { ...CONTAINER_DECLARATION_LIMITS },
   };
 }

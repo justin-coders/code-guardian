@@ -75,6 +75,11 @@ import {
   API_UNSUPPORTED_FRAMEWORKS,
 } from "./policies/api.js";
 import {
+  DOCKERFILE_DETAILS,
+  DOCKERFILE_INSPECTION_LIMITS,
+  DOCKERFILE_UNPARSED_REASONS,
+} from "./policies/dockerfile.js";
+import {
   MIDDLEWARE_FRAMEWORKS,
   MIDDLEWARE_PROBLEM_VALUES,
   MIDDLEWARE_REGISTRATION_VALUES,
@@ -140,6 +145,14 @@ export const CONTAINER_UNPARSED_REASONS = Object.freeze({
   BUDGET_EXHAUSTED: "budget-exhausted",
   AMBIGUOUS: "ambiguous",
 });
+
+/**
+ * Why a Dockerfile's declared structure is not established (Phase 20).
+ *
+ * Re-exported from the acquisition policy rather than re-declared, so the vocabulary a
+ * consumer validates against and the vocabulary the reader produces are one list.
+ */
+export { DOCKERFILE_DETAILS, DOCKERFILE_INSPECTION_LIMITS, DOCKERFILE_UNPARSED_REASONS };
 
 /**
  * Dependency source statuses, re-exported for consumers of the scan contract.
@@ -346,6 +359,11 @@ export function createScanResult(overrides = {}) {
       inspected: containers.inspected ?? false,
       declarations: containers.declarations ?? [],
       unparsed: containers.unparsed ?? [],
+      // Phase 20 — one record per Dockerfile the inventory observed, carrying the
+      // structure its own instructions declare. Empty by default, so a draft that
+      // declares nothing about Dockerfiles cannot look like one whose Dockerfiles were
+      // read and found to declare no stage.
+      dockerfiles: containers.dockerfiles ?? [],
       limits: containers.limits ?? {},
     },
     // `inspected` and `complete` default to `false`: a draft that declares nothing
@@ -658,6 +676,141 @@ function collectContainersIssues(section, ctx, path) {
   for (let index = 1; index < section.unparsed.length; index += 1) {
     if (section.unparsed[index - 1].source > section.unparsed[index].source) {
       ctx.fail(`${path}.unparsed[${index}]`, "must be sorted by source");
+      break;
+    }
+  }
+
+  collectDockerfileStructureIssues(section, ctx, path);
+}
+
+/**
+ * Validate one record's structure claims for internal coherence.
+ *
+ * The invariants that carry the weight, and why each is a contract rather than a
+ * comment:
+ *
+ *   - `parsed: true` carries **no** reason and is not `truncated`: a structure that was
+ *     established cannot also be an unestablished read;
+ *   - `parsed: false` carries a reason, and every structural count is the empty record —
+ *     so an unread Dockerfile can never present a stage or a healthcheck;
+ *   - `multiStage` **is** `stages > 1`, so the two fields cannot disagree;
+ *   - a healthcheck cannot be both declared and disabled.
+ *
+ * @param {object} record
+ * @param {object} ctx
+ * @param {string} at
+ */
+function collectDockerfileRecordIssues(record, ctx, at) {
+  if (!isPlainObject(record)) {
+    ctx.fail(at, "must be a plain object");
+    return;
+  }
+  if (!isNonEmptyString(record.path) || isAbsolutePath(record.path)) {
+    ctx.fail(`${at}.path`, "must be a repository-relative path");
+  }
+  if (typeof record.parsed !== "boolean") {
+    ctx.fail(`${at}.parsed`, "must be a boolean");
+  }
+  if (!isNonNegativeInteger(record.stages)) {
+    ctx.fail(`${at}.stages`, "must be a non-negative integer");
+  } else if (record.stages > DOCKERFILE_INSPECTION_LIMITS.maxStages) {
+    ctx.fail(`${at}.stages`, "must stay within the stage bound");
+  }
+  if (!isNonNegativeInteger(record.instructions)) {
+    ctx.fail(`${at}.instructions`, "must be a non-negative integer");
+  }
+  for (const field of ["multiStage", "healthcheck", "healthcheckDisabled", "truncated"]) {
+    if (typeof record[field] !== "boolean") {
+      ctx.fail(`${at}.${field}`, "must be a boolean");
+    }
+  }
+  if (!Array.isArray(record.stageNames)) {
+    ctx.fail(`${at}.stageNames`, "must be an array");
+  } else {
+    if (record.stageNames.length > DOCKERFILE_INSPECTION_LIMITS.maxStages) {
+      ctx.fail(`${at}.stageNames`, "must stay within the stage bound");
+    }
+    record.stageNames.forEach((name) => {
+      if (!isNonEmptyString(name)) ctx.fail(`${at}.stageNames`, "must carry stage names");
+    });
+    for (let index = 1; index < record.stageNames.length; index += 1) {
+      if (record.stageNames[index - 1] >= record.stageNames[index]) {
+        ctx.fail(`${at}.stageNames`, "must be sorted and unique");
+        break;
+      }
+    }
+  }
+
+  const reasons = Object.values(DOCKERFILE_UNPARSED_REASONS);
+  const details = Object.values(DOCKERFILE_DETAILS);
+
+  if (record.parsed === true) {
+    if (record.reason !== null) {
+      ctx.fail(`${at}.reason`, "must be null when the structure was established");
+    }
+    if (record.truncated === true) {
+      ctx.fail(`${at}.truncated`, "must be false when the structure was established");
+    }
+  } else {
+    if (!reasons.includes(record.reason)) {
+      ctx.fail(`${at}.reason`, `must be one of: ${reasons.join(", ")}`);
+    }
+    for (const field of ["stages", "instructions"]) {
+      if (record[field] !== 0) {
+        ctx.fail(`${at}.${field}`, "must be zero when the structure was not established");
+      }
+    }
+    for (const field of ["multiStage", "healthcheck", "healthcheckDisabled"]) {
+      if (record[field] !== false) {
+        ctx.fail(`${at}.${field}`, "must be false when the structure was not established");
+      }
+    }
+    if (Array.isArray(record.stageNames) && record.stageNames.length > 0) {
+      ctx.fail(`${at}.stageNames`, "must be empty when the structure was not established");
+    }
+  }
+
+  if (record.detail !== null && !details.includes(record.detail)) {
+    ctx.fail(`${at}.detail`, "must be a documented detail token or null");
+  }
+
+  if (typeof record.multiStage === "boolean" && typeof record.stages === "number") {
+    if (record.multiStage !== record.stages > 1) {
+      ctx.fail(`${at}.multiStage`, "must agree with the stage count");
+    }
+  }
+  if (record.healthcheck === true && record.healthcheckDisabled === true) {
+    ctx.fail(`${at}.healthcheck`, "cannot be declared and disabled at once");
+  }
+}
+
+/**
+ * Validate the Dockerfile structure records of the container section.
+ *
+ * One record per Dockerfile the inventory observed, sorted by path and unique, each
+ * internally coherent. The bound is the scan's file bound, so a section can never
+ * claim to have read more Dockerfiles than the acquisition could.
+ *
+ * @param {object} section
+ * @param {object} ctx
+ * @param {string} path
+ */
+function collectDockerfileStructureIssues(section, ctx, path) {
+  if (!Array.isArray(section.dockerfiles)) {
+    ctx.fail(`${path}.dockerfiles`, "must be an array");
+    return;
+  }
+  if (section.dockerfiles.length > DOCKERFILE_INSPECTION_LIMITS.maxFiles) {
+    ctx.fail(`${path}.dockerfiles`, "carries more records than a scan can report");
+  }
+  section.dockerfiles.forEach((record, index) => {
+    collectDockerfileRecordIssues(record, ctx, `${path}.dockerfiles[${index}]`);
+  });
+  for (let index = 1; index < section.dockerfiles.length; index += 1) {
+    const previous = section.dockerfiles[index - 1]?.path;
+    const current = section.dockerfiles[index]?.path;
+    if (typeof previous === "string" && typeof current === "string" && previous >= current) {
+      ctx.fail(`${path}.dockerfiles[${index}]`, "must be sorted by path and unique");
       break;
     }
   }

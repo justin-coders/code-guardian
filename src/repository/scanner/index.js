@@ -66,6 +66,20 @@ export {
   parseComposeBuildContexts,
 } from "./policies/containers.js";
 
+// Phase 20 — Dockerfile structure acquisition: the closed vocabularies, the shared
+// Dockerfile table and the bounded instruction reader.
+export {
+  DOCKERFILE_DETAILS,
+  DOCKERFILE_INSPECTION_LIMITS,
+  DOCKERFILE_RULES,
+  DOCKERFILE_SIGNAL,
+  DOCKERFILE_UNPARSED_REASONS,
+  emptyDockerfileStructure,
+  isDockerfileUnparsedReason,
+  parseDockerfileStructure,
+  unestablishedDockerfileStructure,
+} from "./policies/dockerfile.js";
+
 export {
   DEFAULT_IGNORED_DIRECTORIES,
   GITIGNORE_FILENAME,
