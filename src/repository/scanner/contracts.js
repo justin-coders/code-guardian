@@ -74,6 +74,7 @@ import {
   API_SOURCE_STATUS_VALUES,
   API_UNSUPPORTED_FRAMEWORKS,
 } from "./policies/api.js";
+import { CONTAINER_DECLARATION_LIMITS } from "./policies/containers.js";
 import {
   DOCKERFILE_DETAILS,
   DOCKERFILE_INSPECTION_LIMITS,
@@ -153,6 +154,15 @@ export const CONTAINER_UNPARSED_REASONS = Object.freeze({
  * consumer validates against and the vocabulary the reader produces are one list.
  */
 export { DOCKERFILE_DETAILS, DOCKERFILE_INSPECTION_LIMITS, DOCKERFILE_UNPARSED_REASONS };
+
+/**
+ * Container declaration bounds, re-exported from the acquisition policy (Phase 21).
+ *
+ * The contract validates the two Phase 21 lists against the same declaration budget the
+ * detector applies, so a list that is bounded at acquisition cannot be declared unbounded
+ * here.
+ */
+export { CONTAINER_DECLARATION_LIMITS };
 
 /**
  * Dependency source statuses, re-exported for consumers of the scan contract.
@@ -364,6 +374,12 @@ export function createScanResult(overrides = {}) {
       // declares nothing about Dockerfiles cannot look like one whose Dockerfiles were
       // read and found to declare no stage.
       dockerfiles: containers.dockerfiles ?? [],
+      // Phase 21 — build declarations naming a Dockerfile the inventory never observed,
+      // and the services that state an `image:` reference. Both default to empty for the
+      // same reason as the Dockerfile records: "nothing was declared" and "the files were
+      // read and declared nothing" are different answers.
+      unobserved: containers.unobserved ?? [],
+      images: containers.images ?? [],
       limits: containers.limits ?? {},
     },
     // `inspected` and `complete` default to `false`: a draft that declares nothing
@@ -677,6 +693,78 @@ function collectContainersIssues(section, ctx, path) {
     if (section.unparsed[index - 1].source > section.unparsed[index].source) {
       ctx.fail(`${path}.unparsed[${index}]`, "must be sorted by source");
       break;
+    }
+  }
+
+  // Phase 21 — declarations naming an unobserved Dockerfile. An entry is a repository fact
+  // about a file: which Compose file states it, which service states it, and the
+  // repository-relative path it names. All three are required, the path must be
+  // repository-relative, and the list is bounded and sorted like every other list here.
+  if (!Array.isArray(section.unobserved)) {
+    ctx.fail(`${path}.unobserved`, "must be an array");
+  } else {
+    if (section.unobserved.length > CONTAINER_DECLARATION_LIMITS.maxDeclarations) {
+      ctx.fail(`${path}.unobserved`, "must stay within the container declaration bound");
+    }
+    section.unobserved.forEach((entry, index) => {
+      const at = `${path}.unobserved[${index}]`;
+      if (!isPlainObject(entry)) {
+        ctx.fail(at, "must be a plain object");
+        return;
+      }
+      for (const field of ["source", "service", "dockerfile"]) {
+        if (!isNonEmptyString(entry[field])) {
+          ctx.fail(`${at}.${field}`, "must be a non-empty string");
+        } else if (field !== "service" && isAbsolutePath(entry[field])) {
+          ctx.fail(`${at}.${field}`, "must be a repository-relative path");
+        }
+      }
+    });
+    for (let index = 1; index < section.unobserved.length; index += 1) {
+      const previous = section.unobserved[index - 1];
+      const current = section.unobserved[index];
+      const key = (entry) => `${entry.source}\u0000${entry.service}\u0000${entry.dockerfile}`;
+      if (key(previous) > key(current)) {
+        ctx.fail(`${path}.unobserved[${index}]`, "must be sorted deterministically");
+        break;
+      }
+    }
+  }
+
+  // Phase 21 — the services that state an `image:` reference. A record states the Compose
+  // file, the service and whether that service also states a build; the reference itself is
+  // deliberately absent, because an image reference can name a registry host this model does
+  // not record.
+  if (!Array.isArray(section.images)) {
+    ctx.fail(`${path}.images`, "must be an array");
+  } else {
+    if (section.images.length > CONTAINER_DECLARATION_LIMITS.maxDeclarations) {
+      ctx.fail(`${path}.images`, "must stay within the container declaration bound");
+    }
+    section.images.forEach((entry, index) => {
+      const at = `${path}.images[${index}]`;
+      if (!isPlainObject(entry)) {
+        ctx.fail(at, "must be a plain object");
+        return;
+      }
+      if (!isNonEmptyString(entry.source) || isAbsolutePath(entry.source)) {
+        ctx.fail(`${at}.source`, "must be a repository-relative path");
+      }
+      if (!isNonEmptyString(entry.service)) {
+        ctx.fail(`${at}.service`, "must be a non-empty string");
+      }
+      if (typeof entry.build !== "boolean") {
+        ctx.fail(`${at}.build`, "must be a boolean");
+      }
+    });
+    for (let index = 1; index < section.images.length; index += 1) {
+      const previous = section.images[index - 1];
+      const current = section.images[index];
+      const key = (entry) => `${entry.source}\u0000${entry.service}`;
+      if (key(previous) > key(current)) {
+        ctx.fail(`${path}.images[${index}]`, "must be sorted deterministically");
+        break;
+      }
     }
   }
 

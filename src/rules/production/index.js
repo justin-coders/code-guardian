@@ -65,3 +65,9 @@ export { productionInventoryRules, productionRules } from "./rules/index.js";
 export { createProductionRuleRegistry, productionRuleSetIssues } from "./registry.js";
 
 export { createProductionAnalyzer } from "./analyzer.js";
+
+// Phase 21 — the `production.risk.*` sub-pack: the same domain, read for the engineering gaps
+// the inventory report's own evidence proves. It lives beside the inventory pack rather than
+// inside it so neither pack's rule set moves when the other grows; the rule namespace is still
+// one (`production.`), and both are wired through this module's boundary.
+export * from "./risk/index.js";

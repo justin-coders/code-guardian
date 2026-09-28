@@ -71,6 +71,16 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // observations, the evidence ids that prove them, a coverage state per section, and the
   // reasons it abstained.
   "production",
+  // Phase 21 — the production-risk substrate: the same six domains, read for the engineering
+  // gaps the inventory's own evidence proves. A required area like every other one (the
+  // factory emits it as an empty object, because every report is a projection and only a
+  // built model carries one) because a consumer must be able to tell "this repository's
+  // proven gaps are these four" from "this model says nothing about production risk at all".
+  // It is deliberately *not* one of `REPOSITORY_MODEL_JUDGMENT_AREAS`: it carries no verdict
+  // about the repository, no score, no percentage, no grade and no aggregate of any kind — it
+  // carries findings, each one a restatement of evidence the model already validated, with a
+  // severity drawn from a closed three-word table and the basis that severity rests on.
+  "productionRisk",
   "scan",
   "metadata",
 ]);
@@ -170,6 +180,7 @@ export function createRepositoryModel(overrides = {}) {
     api: overrides.api ?? {},
     middleware: overrides.middleware ?? {},
     production: overrides.production ?? {},
+    productionRisk: overrides.productionRisk ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

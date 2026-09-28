@@ -280,6 +280,36 @@ export {
   isEstablishedProductionState,
 } from "./production-report.js";
 
+// Phase 21 — the production **risk** report: the same six domains, read for the engineering
+// gaps the inventory's own evidence proves. Its six section names, its three-word severity
+// table, its four-word confidence vocabulary, its per-kind basis table, its abstention
+// vocabulary and its bounds are all part of its interface, so all of them are exported rather
+// than reached for through the report object.
+export {
+  PRODUCTION_RISK_BASIS_BY_KIND,
+  PRODUCTION_RISK_CONFIDENCE_BY_KIND,
+  PRODUCTION_RISK_CONFIDENCES,
+  PRODUCTION_RISK_CONFIDENCE_VALUES,
+  PRODUCTION_RISK_FINDING_KINDS,
+  PRODUCTION_RISK_REPORT_BUILDER,
+  PRODUCTION_RISK_REPORT_LIMITS,
+  PRODUCTION_RISK_REPORT_VERSION,
+  PRODUCTION_RISK_ROUTER_SCOPE,
+  PRODUCTION_RISK_SECTIONS,
+  PRODUCTION_RISK_SECTION_TITLES,
+  PRODUCTION_RISK_SEVERITIES,
+  PRODUCTION_RISK_SEVERITY_BY_KIND,
+  PRODUCTION_RISK_SEVERITY_VALUES,
+  PRODUCTION_RISK_STATES,
+  PRODUCTION_RISK_STATE_VALUES,
+  PRODUCTION_RISK_UNKNOWN_REASONS,
+  PRODUCTION_RISK_UNSUPPORTED_REASONS,
+  buildProductionRiskReport,
+  isEstablishedRiskState,
+  renderRiskRemediation,
+  renderRiskStatement,
+} from "./production-risk-report.js";
+
 export {
   GRAPH_ENTITY_KINDS,
   GRAPH_RELATIONSHIP_TYPES,
@@ -356,6 +386,16 @@ export {
   validateProductionCoverageResult,
   validateProductionReportResult,
   validateProductionSectionResult,
+  PRODUCTION_RISK_COVERAGE_RESULT_FIELDS,
+  PRODUCTION_RISK_FINDING_RESULT_FIELDS,
+  PRODUCTION_RISK_REPORT_RESULT_FIELDS,
+  PRODUCTION_RISK_SECTION_RESULT_FIELDS,
+  createProductionRiskCoverageResult,
+  createProductionRiskReportResult,
+  createProductionRiskSectionResult,
+  validateProductionRiskCoverageResult,
+  validateProductionRiskReportResult,
+  validateProductionRiskSectionResult,
   DEPENDENCY_EDGE_RESULT_FIELDS,
   DEPENDENCY_GRAPH_RESULT_FIELDS,
   DEPENDENCY_PATH_RESULT_FIELDS,

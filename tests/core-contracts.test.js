@@ -123,14 +123,15 @@ function validRepository(overrides = {}) {
     ci: {},
     architecture: {},
     // Phase 16 added the required `imports` area, Phase 17 the required `symbols` area,
-    // Phase 18 the required `api` area, Phase 19 the required `middleware` area and Phase 20
-    // the required `production` area; this literal spells out every required area, so it
-    // carries them too.
+    // Phase 18 the required `api` area, Phase 19 the required `middleware` area, Phase 20 the
+    // required `production` area and Phase 21 the required `productionRisk` area; this literal
+    // spells out every required area, so it carries them too.
     imports: {},
     symbols: {},
     api: {},
     middleware: {},
     production: {},
+    productionRisk: {},
     scan: {
       complete: true,
       truncated: false,

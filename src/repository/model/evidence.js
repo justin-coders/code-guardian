@@ -144,6 +144,13 @@ export const CONTAINER_SIGNALS = Object.freeze({
   // impossible to cite without also claiming the first.
   DOCKERFILE: "dockerfile-structure",
   DOCKERFILE_UNPARSED: "dockerfile-unparsed",
+  // Phase 21 — two more facts one Compose file states about itself, both recorded *at the
+  // Compose file* rather than at the artifact they name. That is not a stylistic choice:
+  // a declaration naming a Dockerfile this inventory never observed has no observed file to
+  // be located at, and an `image:` reference is deliberately never carried at all, so the
+  // Compose file is the only artifact the observation can honestly be about.
+  DECLARATION_UNOBSERVED: "compose-build-dockerfile-not-observed",
+  SERVICE_IMAGE: "compose-service-image",
 });
 
 /**
@@ -641,6 +648,67 @@ export function createBuildContextObservation({ path, source, service, contextPa
       source,
       service,
       contextPath,
+    },
+  });
+}
+
+/**
+ * Build the observation for a Compose declaration that names an unobserved Dockerfile
+ * (Phase 21).
+ *
+ * The fact is exactly what the file states: this service builds *this* Dockerfile, and the
+ * inventory contains no such file. The Dockerfile path is a repository-relative path the
+ * declaration resolved to — never the raw text — so no host location can travel with it, and
+ * the observation is located at the Compose file, because that is the artifact that states
+ * it and the only one of the two that exists.
+ *
+ * @param {object} input
+ * @param {string} input.source Compose file the declaration came from.
+ * @param {string} input.service Compose service that declares it.
+ * @param {string} input.dockerfile Repository-relative path the declaration names.
+ * @returns {object} A Core Evidence object.
+ */
+export function createUnobservedBuildDeclarationObservation({ source, service, dockerfile }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+    key: `${CONTAINER_SIGNALS.DECLARATION_UNOBSERVED}:${source}:${service}:${dockerfile}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+    path: source,
+    data: {
+      signal: CONTAINER_SIGNALS.DECLARATION_UNOBSERVED,
+      source,
+      service,
+      dockerfile,
+    },
+  });
+}
+
+/**
+ * Build the observation for a Compose service that states an `image:` reference (Phase 21).
+ *
+ * A key and a boolean, and nothing else. The reference's text is deliberately absent: an
+ * image reference can name a private registry host, and this model records no host location.
+ * `build` says whether the same service also states a build, which is the difference between
+ * "this service runs an artifact built elsewhere and this repository does not build it" and
+ * "this service states a reference alongside a build this repository can see".
+ *
+ * @param {object} input
+ * @param {string} input.source Compose file the service is declared in.
+ * @param {string} input.service Compose service that states the reference.
+ * @param {boolean} input.build The same service also states a build.
+ * @returns {object} A Core Evidence object.
+ */
+export function createServiceImageObservation({ source, service, build }) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.CONFIGURATION,
+    key: `${CONTAINER_SIGNALS.SERVICE_IMAGE}:${source}:${service}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.CONFIGURATION],
+    path: source,
+    data: {
+      signal: CONTAINER_SIGNALS.SERVICE_IMAGE,
+      source,
+      service,
+      build,
     },
   });
 }

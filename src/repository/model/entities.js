@@ -41,6 +41,8 @@ import {
   createDependencySourceObservation,
   createDockerfileStructureObservation,
   createDockerfileUnparsedObservation,
+  createServiceImageObservation,
+  createUnobservedBuildDeclarationObservation,
   createApiSourceObservation,
   createImportSourceObservation,
   createInventoryObservation,
@@ -226,6 +228,21 @@ const MAX_CONTAINER_DECLARATIONS = 512;
 
 /** Maximum Dockerfile structure records a scan result may carry. */
 const MAX_DOCKERFILE_RECORDS = 64;
+
+/**
+ * The empty container projection, for a section the scan result does not carry at all.
+ *
+ * Every key the projection can produce is present and empty, so a caller can never mistake
+ * "this scan said nothing about container declarations" for "this scan read the files and
+ * found none" by reaching for a missing field.
+ */
+function emptyContainerProjection() {
+  return {
+    dockerfileStructures: [],
+    unobservedBuildDeclarations: [],
+    serviceImageDeclarations: [],
+  };
+}
 
 /** Maximum build stages a Dockerfile structure record may state. */
 const MAX_DOCKERFILE_STAGES = 32;
@@ -521,22 +538,30 @@ function projectContentSection(section, observedFilePaths, issues, record) {
  * @returns {void}
  */
 function projectContainerSection(section, observedFilePaths, issues, record) {
-  if (section === undefined || section === null) return { dockerfileStructures: [] };
+  if (section === undefined || section === null) return emptyContainerProjection();
   if (!isPlainObject(section)) {
     fail(issues, "scanResult.containers", "must be a plain object");
-    return { dockerfileStructures: [] };
+    return emptyContainerProjection();
   }
 
   if (!Array.isArray(section.declarations) || !Array.isArray(section.unparsed)) {
     fail(issues, "scanResult.containers", "must carry declarations and unparsed arrays");
-    return { dockerfileStructures: [] };
+    return emptyContainerProjection();
   }
   if (section.declarations.length > MAX_CONTAINER_DECLARATIONS) {
     fail(issues, "scanResult.containers.declarations", "carries more declarations than a scan can report");
-    return { dockerfileStructures: [] };
+    return emptyContainerProjection();
   }
 
   const dockerfileStructures = [];
+  // Phase 21 — the two facts a Compose file states about itself beyond its build contexts:
+  // a declaration naming a Dockerfile the inventory never observed, and a service that
+  // states an `image:` reference (with whether it also states a build). Both are projected
+  // onto evidence located at the Compose file, because neither can be located at an artifact
+  // the model has, and both are fail-closed: an entry the model cannot be sure of is a
+  // malformed-section issue rather than a silently dropped observation.
+  const unobservedBuildDeclarations = [];
+  const serviceImageDeclarations = [];
 
   for (const declaration of section.declarations) {
     if (!isPlainObject(declaration)) {
@@ -619,6 +644,120 @@ function projectContainerSection(section, observedFilePaths, issues, record) {
         data: { signal: CONTAINER_SIGNALS.UNPARSED, reason, detail },
       }),
     );
+  }
+
+  // ── Unobserved build declarations (Phase 21) ──────────────────────────────
+  const unobserved = Array.isArray(section.unobserved) ? section.unobserved : [];
+  if (unobserved.length > MAX_CONTAINER_DECLARATIONS) {
+    fail(
+      issues,
+      "scanResult.containers.unobserved",
+      "carries more unobserved declarations than a scan can report",
+    );
+  } else {
+    for (const entry of unobserved) {
+      if (!isPlainObject(entry)) {
+        fail(issues, "scanResult.containers.unobserved[]", "must be a plain object");
+        continue;
+      }
+      const source = requireRepositoryRelativePath(
+        entry.source,
+        "scanResult.containers.unobserved[].source",
+      );
+      const service = identifier(entry.service);
+      if (service === null) {
+        fail(
+          issues,
+          `scanResult.containers.unobserved[${source}].service`,
+          "must be a bounded service name",
+        );
+        continue;
+      }
+      const dockerfilePath = requireRepositoryRelativePath(
+        entry.dockerfile,
+        "scanResult.containers.unobserved[].dockerfile",
+      );
+      // The one place the model deliberately accepts a path the inventory does not carry:
+      // the *point* of this record is that the declared Dockerfile was not observed, so
+      // requiring it to exist would reject the only fact the record states. It must still be
+      // a repository-relative path, and it must still be located at an observed Compose file.
+      if (!observedFilePaths.has(source)) {
+        fail(
+          issues,
+          `scanResult.containers.unobserved[${source}]`,
+          "must name a Compose file the inventory observed",
+        );
+        continue;
+      }
+      const evidenceId = record(
+        createUnobservedBuildDeclarationObservation({
+          source,
+          service,
+          dockerfile: dockerfilePath,
+        }),
+      );
+      unobservedBuildDeclarations.push({
+        fileId: entityId(ENTITY_KINDS.FILE, dockerfilePath),
+        source,
+        service,
+        path: dockerfilePath,
+        observed: false,
+        evidenceIds: [evidenceId],
+      });
+    }
+  }
+
+  // ── Service image declarations (Phase 21) ─────────────────────────────────
+  const images = Array.isArray(section.images) ? section.images : [];
+  if (images.length > MAX_CONTAINER_DECLARATIONS) {
+    fail(
+      issues,
+      "scanResult.containers.images",
+      "carries more image declarations than a scan can report",
+    );
+  } else {
+    for (const entry of images) {
+      if (!isPlainObject(entry)) {
+        fail(issues, "scanResult.containers.images[]", "must be a plain object");
+        continue;
+      }
+      const source = requireRepositoryRelativePath(
+        entry.source,
+        "scanResult.containers.images[].source",
+      );
+      const service = identifier(entry.service);
+      if (service === null) {
+        fail(
+          issues,
+          `scanResult.containers.images[${source}].service`,
+          "must be a bounded service name",
+        );
+        continue;
+      }
+      if (typeof entry.build !== "boolean") {
+        fail(
+          issues,
+          `scanResult.containers.images[${source}].build`,
+          "must say whether the service also declares a build",
+        );
+        continue;
+      }
+      if (!observedFilePaths.has(source)) {
+        fail(
+          issues,
+          `scanResult.containers.images[${source}]`,
+          "must name a Compose file the inventory observed",
+        );
+        continue;
+      }
+      const evidenceId = record(createServiceImageObservation({ source, service, build: entry.build }));
+      serviceImageDeclarations.push({
+        source,
+        service,
+        build: entry.build,
+        evidenceIds: [evidenceId],
+      });
+    }
   }
 
   // ── Dockerfile structure (Phase 20) ────────────────────────────────────────
@@ -758,7 +897,7 @@ function projectContainerSection(section, observedFilePaths, issues, record) {
     }
   }
 
-  return { dockerfileStructures };
+  return { dockerfileStructures, unobservedBuildDeclarations, serviceImageDeclarations };
 }
 
 /**
@@ -4245,6 +4384,12 @@ export function buildEntities(scanResult, repositoryIdValue) {
     // annotation of the file entities rather than a second file-like entity, so no new
     // identity is created inside a model whose ids are already the file's.
     dockerfileStructures: containerSection.dockerfileStructures,
+    // Phase 21 — the Compose file's two further statements: declarations naming a Dockerfile
+    // this inventory does not contain, and services that state an `image:` reference. Both
+    // are annotations of an *observed* configuration file, so no identity is created for a
+    // file the inventory never saw.
+    unobservedBuildDeclarations: containerSection.unobservedBuildDeclarations,
+    serviceImageDeclarations: containerSection.serviceImageDeclarations,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

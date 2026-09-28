@@ -133,6 +133,24 @@ import {
   PRODUCTION_UNSUPPORTED_REASONS,
   isEstablishedProductionState,
 } from "./production-report.js";
+import {
+  PRODUCTION_RISK_BASIS_BY_KIND,
+  PRODUCTION_RISK_CONFIDENCE_VALUES,
+  PRODUCTION_RISK_FINDING_KINDS,
+  PRODUCTION_RISK_REPORT_LIMITS,
+  PRODUCTION_RISK_REPORT_VERSION,
+  PRODUCTION_RISK_SECTIONS,
+  PRODUCTION_RISK_SEVERITY_BY_KIND,
+  PRODUCTION_RISK_SEVERITY_VALUES,
+  PRODUCTION_RISK_SECTION_TITLES,
+  PRODUCTION_RISK_STATES,
+  PRODUCTION_RISK_STATE_VALUES,
+  PRODUCTION_RISK_UNKNOWN_REASONS,
+  PRODUCTION_RISK_UNSUPPORTED_REASONS,
+  isEstablishedRiskState,
+  renderRiskRemediation,
+  renderRiskStatement,
+} from "./production-risk-report.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -3403,6 +3421,559 @@ export function validateRepositoryModelGraph(model) {
       }
       if (productionArea.coverage.evidence !== report.coverage.evidence) {
         fail("production.coverage.evidence", "must agree with the report it summarises");
+      }
+    }
+  }
+
+  // ── Production risk report (Phase 21) ──────────────────────────────────────
+  //
+  // The second report-shaped projection, validated as a document for the same reason the
+  // first one is: its findings are what a consumer acts on, so a report that repeats a
+  // finding, orders them non-deterministically, cites an observation the model does not
+  // carry, states a severity its own kind does not declare, or renders prose that disagrees
+  // with its data must be a **validation failure** rather than a finding.
+  //
+  // Six invariants carry the weight:
+  //
+  //   - the six domains appear **exactly once each, in their declared order**;
+  //   - every finding's `kind` is in *its* section's vocabulary, and its severity, confidence
+  //     and basis are the ones the kind's own tables declare — so a severity can never be
+  //     invented for a kind, and there is no `high` or `critical` anywhere;
+  //   - every finding's `statement` and `remediation` are **recomputed** here from its own
+  //     record and must match, so a sentence cannot drift from the evidence it claims;
+  //   - every cited evidence id resolves to an observation the model carries;
+  //   - findings are ordered by a key unique within their section, and abstentions by
+  //     `(reason, detail)`, so two reports of one repository state are byte-identical;
+  //   - the report's own lists are the sections' lists, its coverage totals are the sections'
+  //     totals, and its state follows from its sections — never the other way round.
+  if (isPlainObject(model.productionRisk)) {
+    const riskArea = model.productionRisk;
+    const riskReport = riskArea.report;
+
+    if (!PRODUCTION_RISK_STATE_VALUES.includes(riskArea.state)) {
+      fail("productionRisk.state", "must be a documented report state");
+    } else if (riskArea.established !== isEstablishedRiskState(riskArea.state)) {
+      fail("productionRisk.established", "must agree with the state it reports");
+    }
+
+    /** A bounded, control-character-free detail token (or `null`). */
+    const isRiskDetail = (value) =>
+      value === null ||
+      (typeof value === "string" &&
+        value.length > 0 &&
+        value.length <= 120 &&
+        // eslint-disable-next-line no-control-regex
+        !/[\u0000-\u001f]/.test(value));
+
+    if (!isPlainObject(riskReport)) {
+      fail("productionRisk.report", "must be a plain object");
+    } else {
+      if (riskReport.version !== PRODUCTION_RISK_REPORT_VERSION) {
+        fail("productionRisk.report.version", "must be the report version this builder produces");
+      }
+      if (!PRODUCTION_RISK_STATE_VALUES.includes(riskReport.state)) {
+        fail("productionRisk.report.state", "must be a documented report state");
+      } else if (riskReport.state !== riskArea.state) {
+        fail("productionRisk.report.state", "must agree with the area it belongs to");
+      }
+      if (riskReport.established !== riskArea.established) {
+        fail("productionRisk.report.established", "must agree with the area it belongs to");
+      }
+
+      /** Every finding id the report carries, for the uniqueness check. */
+      const findingIds = new Set();
+
+      if (!Array.isArray(riskReport.sections)) {
+        fail("productionRisk.report.sections", "must be an array");
+      } else {
+        if (riskReport.sections.length !== PRODUCTION_RISK_SECTIONS.length) {
+          fail("productionRisk.report.sections", "must carry every audit domain exactly once");
+        }
+
+        riskReport.sections.forEach((section, index) => {
+          const at = `productionRisk.report.sections[${index}]`;
+          if (!isPlainObject(section)) {
+            fail(at, "must be a plain object");
+            return;
+          }
+          if (!PRODUCTION_RISK_SECTIONS.includes(section.name)) {
+            fail(`${at}.name`, "must be a declared audit domain");
+            return;
+          }
+          if (PRODUCTION_RISK_SECTIONS[index] !== section.name) {
+            fail("productionRisk.report.sections", "must be ordered by domain and carry each once");
+          }
+          if (section.title !== PRODUCTION_RISK_SECTION_TITLES[section.name]) {
+            fail(`${at}.title`, "must be the declared title of the domain it reports");
+          }
+          if (!PRODUCTION_RISK_STATE_VALUES.includes(section.state)) {
+            fail(`${at}.state`, "must be a documented report state");
+          }
+          if (section.established !== isEstablishedRiskState(section.state)) {
+            fail(`${at}.established`, "must agree with the state it reports");
+          }
+
+          const kinds = PRODUCTION_RISK_FINDING_KINDS[section.name] ?? [];
+          const evidenceCited = new Set();
+          if (!Array.isArray(section.findings)) {
+            fail(`${at}.findings`, "must be an array");
+          } else {
+            if (section.findings.length > PRODUCTION_RISK_REPORT_LIMITS.maxFindingsPerSection) {
+              fail(`${at}.findings`, "must stay within the report's finding bound");
+            }
+            let previousKey = null;
+            section.findings.forEach((finding, position) => {
+              const where = `${at}.findings[${position}]`;
+              if (!isPlainObject(finding)) {
+                fail(where, "must be a plain object");
+                return;
+              }
+              if (finding.section !== section.name) {
+                fail(`${where}.section`, "must be the section it is reported in");
+              }
+              if (!kinds.includes(finding.kind)) {
+                fail(`${where}.kind`, "must be a finding kind this domain declares");
+              }
+              if (!isNonEmptyString(finding.key)) {
+                fail(`${where}.key`, "must be a non-empty deterministic key");
+              } else if (previousKey !== null && !(previousKey < finding.key)) {
+                fail(`${at}.findings`, "must be sorted by key and carry each key once");
+              }
+              previousKey = isNonEmptyString(finding.key) ? finding.key : previousKey;
+              if (finding.id !== `${section.name}:${finding.kind}:${finding.key}`) {
+                fail(`${where}.id`, "must be derived from the section, kind and key");
+              } else if (findingIds.has(finding.id)) {
+                fail(`${where}.id`, "must be unique within the report");
+              } else {
+                findingIds.add(finding.id);
+              }
+
+              // The three closed tables, each pinned to the kind rather than trusted.
+              if (!PRODUCTION_RISK_SEVERITY_VALUES.includes(finding.severity)) {
+                fail(`${where}.severity`, "must be a severity this report declares");
+              } else if (finding.severity !== PRODUCTION_RISK_SEVERITY_BY_KIND[finding.kind]) {
+                fail(`${where}.severity`, "must be the severity its kind declares");
+              }
+              if (!PRODUCTION_RISK_CONFIDENCE_VALUES.includes(finding.confidence)) {
+                fail(`${where}.confidence`, "must be a confidence this report declares");
+              }
+              if (!isNonEmptyString(finding.basis)) {
+                fail(`${where}.basis`, "must name what was read");
+              } else if (finding.basis !== PRODUCTION_RISK_BASIS_BY_KIND[finding.kind]) {
+                fail(`${where}.basis`, "must be the basis its kind declares");
+              }
+
+              // Prose is a pure function of the record: it is recomputed and compared, so a
+              // sentence that claims more than its own data supports cannot survive.
+              if (finding.statement !== renderRiskStatement(finding.kind, finding)) {
+                fail(`${where}.statement`, "must be the statement its own record renders");
+              }
+              if (finding.remediation !== renderRiskRemediation(finding.kind, finding)) {
+                fail(`${where}.remediation`, "must be the remediation its own record renders");
+              }
+              if (
+                finding.remediation !== null &&
+                (typeof finding.remediation !== "string" ||
+                  finding.remediation.length > PRODUCTION_RISK_REPORT_LIMITS.maxRemediationLength)
+              ) {
+                fail(`${where}.remediation`, "must be null or a bounded sentence");
+              }
+
+              if (!Array.isArray(finding.evidenceIds) || finding.evidenceIds.length === 0) {
+                fail(`${where}.evidenceIds`, "must cite at least one observation");
+                return;
+              }
+              if (finding.evidenceIds.length > PRODUCTION_RISK_REPORT_LIMITS.maxEvidencePerFinding) {
+                fail(`${where}.evidenceIds`, "must stay within the citation bound");
+              }
+              let previousEvidence = null;
+              for (const id of finding.evidenceIds) {
+                if (!evidenceIds.has(id)) {
+                  fail(`${where}.evidenceIds`, "must name observations the model carries");
+                }
+                if (previousEvidence !== null && !(previousEvidence < id)) {
+                  fail(`${where}.evidenceIds`, "must be sorted and unique");
+                }
+                previousEvidence = id;
+                evidenceCited.add(id);
+              }
+
+              // Every optional domain field a finding may carry is checked for the shape its
+              // statement's own rendering depends on: a count is a count, a bounded path list
+              // says whether the bound bit, and a `class`, `detail` or `ecosystem` is a token.
+              if ("count" in finding && !isNonNegativeInteger(finding.count)) {
+                fail(`${where}.count`, "must be a non-negative integer");
+              }
+              if ("pathsTruncated" in finding && typeof finding.pathsTruncated !== "boolean") {
+                fail(`${where}.pathsTruncated`, "must be a boolean");
+              }
+              if ("paths" in finding) {
+                if (!Array.isArray(finding.paths)) {
+                  fail(`${where}.paths`, "must be an array");
+                } else if (finding.paths.length > PRODUCTION_RISK_REPORT_LIMITS.maxPathsPerFinding) {
+                  fail(`${where}.paths`, "must stay within the path bound");
+                }
+              }
+            });
+          }
+
+          if (!isPlainObject(section.counts)) {
+            fail(`${at}.counts`, "must be a plain object");
+          } else {
+            const findings = Array.isArray(section.findings) ? section.findings : [];
+            if (section.counts.findings !== findings.length) {
+              fail(`${at}.counts.findings`, "must count the findings the section carries");
+            }
+            const expectedKinds = {};
+            for (const kind of [...new Set(findings.map((entry) => entry?.kind))].sort()) {
+              if (typeof kind !== "string") continue;
+              expectedKinds[kind] = findings.filter((entry) => entry?.kind === kind).length;
+            }
+            if (
+              JSON.stringify(section.counts.byKind ?? {}) !== JSON.stringify(expectedKinds)
+            ) {
+              fail(`${at}.counts.byKind`, "must census the findings the section carries");
+            }
+            const severities = section.counts.bySeverity;
+            if (!isPlainObject(severities)) {
+              fail(`${at}.counts.bySeverity`, "must be a plain object");
+            } else {
+              const keys = Object.keys(severities);
+              if (keys.join("\u0000") !== [...PRODUCTION_RISK_SEVERITY_VALUES].join("\u0000")) {
+                fail(`${at}.counts.bySeverity`, "must census every severity this report declares");
+              }
+              for (const severity of PRODUCTION_RISK_SEVERITY_VALUES) {
+                if (!isNonNegativeInteger(severities[severity])) {
+                  fail(`${at}.counts.bySeverity.${severity}`, "must be a non-negative integer");
+                } else if (
+                  severities[severity] !==
+                  findings.filter((entry) => entry?.severity === severity).length
+                ) {
+                  fail(`${at}.counts.bySeverity.${severity}`, "must census the findings it names");
+                }
+              }
+            }
+          }
+
+          if (!Array.isArray(section.evidenceIds)) {
+            fail(`${at}.evidenceIds`, "must be an array");
+          } else {
+            let previousEvidence = null;
+            for (const id of section.evidenceIds) {
+              if (!evidenceIds.has(id)) {
+                fail(`${at}.evidenceIds`, "must name observations the model carries");
+              }
+              if (previousEvidence !== null && !(previousEvidence < id)) {
+                fail(`${at}.evidenceIds`, "must be sorted and unique");
+              }
+              previousEvidence = id;
+            }
+            const declared = [...evidenceCited].sort();
+            if (declared.join("\u0000") !== section.evidenceIds.join("\u0000")) {
+              fail(`${at}.evidenceIds`, "must be the union of its findings' citations");
+            }
+          }
+
+          // The abstention vocabulary is the inventory section's own, plus the reasons this
+          // report may add — so a risk section can neither invent a reason nor lose the
+          // knowledge gaps it inherited.
+          const reasons = [
+            ...(PRODUCTION_UNKNOWN_REASONS[section.name] ?? []),
+            ...(PRODUCTION_RISK_UNKNOWN_REASONS[section.name] ?? []),
+          ];
+          if (!Array.isArray(section.unknown)) {
+            fail(`${at}.unknown`, "must be an array");
+          } else {
+            if (section.unknown.length > PRODUCTION_RISK_REPORT_LIMITS.maxUnknownReasonsPerSection) {
+              fail(`${at}.unknown`, "must stay within the report's abstention bound");
+            }
+            let previousRecord = null;
+            section.unknown.forEach((record, position) => {
+              const where = `${at}.unknown[${position}]`;
+              if (!isPlainObject(record)) {
+                fail(where, "must be a plain object");
+                return;
+              }
+              if (!reasons.includes(record.reason)) {
+                fail(`${where}.reason`, "must be a reason this domain declares");
+              }
+              if (!isRiskDetail(record.detail)) {
+                fail(`${where}.detail`, "must be a bounded token or null");
+              }
+              if (!Number.isInteger(record.count) || record.count < 1) {
+                fail(`${where}.count`, "must be a positive integer");
+              }
+              const key = `${record.reason}\u0000${record.detail ?? ""}`;
+              if (previousRecord !== null && !(previousRecord < key)) {
+                fail(`${at}.unknown`, "must be sorted by (reason, detail) and carry each once");
+              }
+              previousRecord = key;
+            });
+          }
+
+          const coverage = section.coverage;
+          if (!isPlainObject(coverage)) {
+            fail(`${at}.coverage`, "must be a plain object");
+            return;
+          }
+          if (coverage.state !== section.state) {
+            fail(`${at}.coverage.state`, "must agree with the section state");
+          }
+          if (coverage.established !== section.established) {
+            fail(`${at}.coverage.established`, "must agree with the section state");
+          }
+          if (
+            coverage.findings !== (Array.isArray(section.findings) ? section.findings.length : -1)
+          ) {
+            fail(`${at}.coverage.findings`, "must count the findings the section carries");
+          }
+          if (
+            coverage.evidence !== (Array.isArray(section.evidenceIds) ? section.evidenceIds.length : -1)
+          ) {
+            fail(`${at}.coverage.evidence`, "must count the evidence the section cites");
+          }
+          if (
+            coverage.unknownReasons !== (Array.isArray(section.unknown) ? section.unknown.length : -1)
+          ) {
+            fail(`${at}.coverage.unknownReasons`, "must count the abstentions the section carries");
+          }
+          if (typeof coverage.truncated !== "boolean") {
+            fail(`${at}.coverage.truncated`, "must be a boolean");
+          }
+
+          // State ↔ content agreement. `unsupported` and `unknown` are the two states that
+          // mean no answer, for two different reasons, and both need a basis: `unsupported`
+          // names the uninterpreted domain, `unknown` names what was not established. A
+          // `complete` section may carry zero findings — "this repository's evidence shows no
+          // gap in this domain" is an answer, and it is exactly what a detection that found
+          // nothing must read as.
+          if (section.state === PRODUCTION_RISK_STATES.UNKNOWN && section.established !== false) {
+            fail(`${at}.state`, "cannot be unknown while the section claims an answer");
+          }
+          if (section.state === PRODUCTION_RISK_STATES.UNSUPPORTED) {
+            if (section.established !== false) {
+              fail(`${at}.state`, "cannot be unsupported while the section claims an answer");
+            }
+            const basis = [
+              ...(PRODUCTION_UNSUPPORTED_REASONS[section.name] ?? []),
+              ...(PRODUCTION_RISK_UNSUPPORTED_REASONS[section.name] ?? []),
+            ];
+            const named = Array.isArray(section.unknown)
+              ? section.unknown.some((record) => basis.includes(record?.reason))
+              : false;
+            if (!named) {
+              fail(`${at}.unknown`, "cannot be unsupported without naming the unread domain");
+            }
+          }
+          if (
+            section.state === PRODUCTION_RISK_STATES.COMPLETE &&
+            (section.established !== true || coverage.truncated === true)
+          ) {
+            fail(`${at}.state`, "cannot be complete unless it answered an untruncated reading");
+          }
+          if (
+            section.state === PRODUCTION_RISK_STATES.PARTIAL &&
+            section.established !== true
+          ) {
+            fail(`${at}.state`, "cannot be partial without an established answer");
+          }
+          if (
+            section.state === PRODUCTION_RISK_STATES.TRUNCATED &&
+            coverage.truncated !== true
+          ) {
+            fail(`${at}.state`, "cannot be truncated without a bound that bit");
+          }
+          const sawTruncation = Array.isArray(section.unknown)
+            ? section.unknown.some((record) => record?.reason === "risk-findings-truncated")
+            : false;
+          if (
+            sawTruncation &&
+            (!Array.isArray(section.findings) ||
+              section.findings.length !== PRODUCTION_RISK_REPORT_LIMITS.maxFindingsPerSection)
+          ) {
+            fail(`${at}.unknown`, "cannot report truncation the section did not reach");
+          }
+        });
+      }
+
+      // The report's own lists are the sections' lists, one level up: the flat `findings`,
+      // `evidenceIds` and `unknowns` a consumer may read directly cannot disagree with the
+      // sections they came from.
+      if (Array.isArray(riskReport.sections)) {
+        const flatFindings = riskReport.sections.flatMap((section) =>
+          Array.isArray(section?.findings) ? section.findings : [],
+        );
+        if (!Array.isArray(riskReport.findings)) {
+          fail("productionRisk.report.findings", "must be an array");
+        } else if (riskReport.findings.length !== flatFindings.length) {
+          fail("productionRisk.report.findings", "must carry every section's findings");
+        } else {
+          for (let index = 0; index < flatFindings.length; index += 1) {
+            if (riskReport.findings[index]?.id !== flatFindings[index]?.id) {
+              fail("productionRisk.report.findings", "must be the sections' findings in order");
+              break;
+            }
+          }
+        }
+
+        const flatEvidence = [
+          ...new Set(
+            riskReport.sections.flatMap((section) =>
+              Array.isArray(section?.evidenceIds) ? section.evidenceIds : [],
+            ),
+          ),
+        ].sort();
+        if (!Array.isArray(riskReport.evidenceIds)) {
+          fail("productionRisk.report.evidenceIds", "must be an array");
+        } else if (riskReport.evidenceIds.join("\u0000") !== flatEvidence.join("\u0000")) {
+          fail("productionRisk.report.evidenceIds", "must be every citation the sections make");
+        }
+
+        const flatUnknowns = riskReport.sections.flatMap((section) =>
+          (Array.isArray(section?.unknown) ? section.unknown : []).map((record) => ({
+            section: section.name,
+            reason: record.reason,
+            detail: record.detail ?? null,
+            count: record.count,
+          })),
+        );
+        if (!Array.isArray(riskReport.unknowns)) {
+          fail("productionRisk.report.unknowns", "must be an array");
+        } else if (
+          JSON.stringify(riskReport.unknowns) !== JSON.stringify(flatUnknowns)
+        ) {
+          fail("productionRisk.report.unknowns", "must be the sections' own abstentions");
+        }
+
+        const coverageReport = riskReport.coverage;
+        if (!isPlainObject(coverageReport)) {
+          fail("productionRisk.report.coverage", "must be a plain object");
+        } else {
+          if (coverageReport.state !== riskReport.state) {
+            fail("productionRisk.report.coverage.state", "must agree with the report state");
+          }
+          if (coverageReport.established !== riskReport.established) {
+            fail("productionRisk.report.coverage.established", "must agree with the report state");
+          }
+          if (
+            coverageReport.complete !== (riskReport.state === PRODUCTION_RISK_STATES.COMPLETE)
+          ) {
+            fail("productionRisk.report.coverage.complete", "must agree with the report state");
+          }
+          if (typeof coverageReport.truncated !== "boolean") {
+            fail("productionRisk.report.coverage.truncated", "must be a boolean");
+          }
+          if (coverageReport.sections !== riskReport.sections.length) {
+            fail("productionRisk.report.coverage.sections", "must count the sections it carries");
+          }
+          if (coverageReport.findings !== flatFindings.length) {
+            fail("productionRisk.report.coverage.findings", "must count every finding");
+          }
+          const sectionEvidence = riskReport.sections.reduce(
+            (total, section) =>
+              total + (Array.isArray(section?.evidenceIds) ? section.evidenceIds.length : 0),
+            0,
+          );
+          if (coverageReport.evidence !== sectionEvidence) {
+            fail("productionRisk.report.coverage.evidence", "must count every citation");
+          }
+          if (
+            coverageReport.sectionsWithFindings !==
+            riskReport.sections.filter((section) => (section?.findings?.length ?? 0) > 0).length
+          ) {
+            fail(
+              "productionRisk.report.coverage.sectionsWithFindings",
+              "must count the sections that carry a finding",
+            );
+          }
+          const severities = coverageReport.severities;
+          if (!isPlainObject(severities)) {
+            fail("productionRisk.report.coverage.severities", "must be a plain object");
+          } else {
+            for (const severity of PRODUCTION_RISK_SEVERITY_VALUES) {
+              if (severities[severity] !== flatFindings.filter((e) => e?.severity === severity).length) {
+                fail(
+                  `productionRisk.report.coverage.severities.${severity}`,
+                  "must census the findings the report carries",
+                );
+              }
+            }
+          }
+          const unknownReasons = coverageReport.unknownReasons;
+          if (!isPlainObject(unknownReasons)) {
+            fail("productionRisk.report.coverage.unknownReasons", "must be a plain object");
+          } else {
+            const expected = {};
+            for (const record of riskReport.unknowns ?? []) {
+              if (!isPlainObject(record) || typeof record.reason !== "string") continue;
+              expected[record.reason] = (expected[record.reason] ?? 0) + (record.count ?? 0);
+            }
+            const keys = Object.keys(unknownReasons);
+            if (keys.join("\u0000") !== keys.slice().sort().join("\u0000")) {
+              fail("productionRisk.report.coverage.unknownReasons", "must be ordered by reason");
+            }
+            for (const key of [...new Set([...keys, ...Object.keys(expected)])]) {
+              if (unknownReasons[key] !== expected[key]) {
+                fail(
+                  `productionRisk.report.coverage.unknownReasons.${key}`,
+                  "must total the sections' own abstentions",
+                );
+              }
+            }
+          }
+          if (!isPlainObject(coverageReport.limits)) {
+            fail("productionRisk.report.coverage.limits", "must be a plain object");
+          }
+
+          // The report's state follows from its sections, exactly as the inventory report's
+          // does: complete only when every domain answered, unknown only when none did.
+          const states = riskReport.sections.map((section) => section?.state);
+          const truncatedStates = states.some(
+            (state) => state === PRODUCTION_RISK_STATES.TRUNCATED,
+          );
+          const expectedState = truncatedStates
+            ? PRODUCTION_RISK_STATES.TRUNCATED
+            : states.every((state) => state === PRODUCTION_RISK_STATES.COMPLETE)
+              ? PRODUCTION_RISK_STATES.COMPLETE
+              : riskReport.sections.some((section) => section?.established === true)
+                ? PRODUCTION_RISK_STATES.PARTIAL
+                : PRODUCTION_RISK_STATES.UNKNOWN;
+          if (riskReport.state !== expectedState) {
+            fail("productionRisk.report.state", "must follow from the sections it summarises");
+          }
+          if (coverageReport.truncated !== truncatedStates) {
+            fail(
+              "productionRisk.report.coverage.truncated",
+              "must agree with the sections it summarises",
+            );
+          }
+          if (riskArea.detected !== flatFindings.length > 0) {
+            fail("productionRisk.detected", "must say whether the report established a gap");
+          }
+        }
+      }
+    }
+
+    if (isPlainObject(riskArea.coverage) && isPlainObject(riskReport?.coverage)) {
+      for (const field of [
+        "state",
+        "established",
+        "complete",
+        "truncated",
+        "sections",
+        "findings",
+        "evidence",
+        "sectionsWithFindings",
+      ]) {
+        if (riskArea.coverage[field] !== riskReport.coverage[field]) {
+          fail(`productionRisk.coverage.${field}`, "must agree with the report it summarises");
+        }
+      }
+      if (
+        JSON.stringify(riskArea.coverage.severities ?? {}) !==
+        JSON.stringify(riskReport.coverage.severities ?? {})
+      ) {
+        fail("productionRisk.coverage.severities", "must agree with the report it summarises");
       }
     }
   }

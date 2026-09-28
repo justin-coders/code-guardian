@@ -212,6 +212,10 @@ function collectRepositoryModelIssues(value, ctx, path = "repositoryModel") {
     // be a plain object); its internal meaning is validated by the model layer's graph
     // contract, which is where the report's section, evidence and coverage invariants live.
     "production",
+    // Phase 21 — the production-risk projection, validated the same way and for the same
+    // reason: the area's *shape* belongs to Core, and the meaning of its findings, severities,
+    // evidence citations and coverage states belongs to the model layer's graph contract.
+    "productionRisk",
     "metadata",
   ]) {
     if (field in value && !isPlainObject(value[field])) {

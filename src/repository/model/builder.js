@@ -52,6 +52,7 @@ import { buildImportGraph, isInterpretedLanguage } from "./import-graph.js";
 import { buildSymbolGraph } from "./symbol-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
 import { buildProductionReport } from "./production-report.js";
+import { buildProductionRiskReport } from "./production-risk-report.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 import { requireRepositoryRelativePath } from "./paths.js";
@@ -295,6 +296,23 @@ export function buildRepositoryModel(scanResult) {
     ciEvidenceTruncated: scan.cicd.evidenceTruncated === true,
   });
 
+  // Phase 21 — the production **risk** report. A projection over the report above and three
+  // of the graphs, built here for the same reasons: the model stays the single frozen source
+  // of truth, and validation can reject a finding that cites evidence the model does not
+  // carry. It states engineering gaps, each one backed by the observations that prove it, with
+  // a severity from a closed three-word table and no aggregate of any kind.
+  const productionRiskReport = buildProductionRiskReport({
+    report: productionReport,
+    evidence: collections.evidence,
+    unobservedBuildDeclarations: collections.unobservedBuildDeclarations,
+    serviceImageDeclarations: collections.serviceImageDeclarations,
+    unestablishedComposeSources: architectureGraph.coverage.unestablishedSources,
+    middlewareGraph,
+    apiGraph,
+    architectureGraph,
+    importGraph,
+  });
+
   // The Core factory supplies the contracted skeleton (every required area,
   // contract-shaped defaults including the optional areas). The model is then
   // assembled explicitly from that skeleton, so an area can never be omitted and
@@ -461,6 +479,19 @@ export function buildRepositoryModel(scanResult) {
       established: productionReport.established,
       report: productionReport,
       coverage: { ...productionReport.coverage },
+    },
+    // Phase 21 — the production-risk substrate: the same six domains, read for the engineering
+    // gaps the inventory's own evidence proves. `detected` says whether it established any
+    // finding at all. There is no score, no percentage, no grade and no aggregate: it carries
+    // findings (each with its evidence ids, its closed severity and the basis it rests on),
+    // the domains' coverage states, and the reasons each domain withheld a detection.
+    productionRisk: {
+      ...skeleton.productionRisk,
+      detected: productionRiskReport.coverage.findings > 0,
+      state: productionRiskReport.state,
+      established: productionRiskReport.established,
+      report: productionRiskReport,
+      coverage: { ...productionRiskReport.coverage },
     },
     git: {
       detected: scan.git.detected,

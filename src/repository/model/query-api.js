@@ -157,6 +157,10 @@ import {
   validateProductionCoverageResult,
   validateProductionReportResult,
   validateProductionSectionResult,
+  createProductionRiskCoverageResult,
+  validateProductionRiskCoverageResult,
+  validateProductionRiskReportResult,
+  validateProductionRiskSectionResult,
   createMiddlewareChainResult,
   createMiddlewareGraphResult,
   createMiddlewareProtectedRouteResult,
@@ -192,6 +196,7 @@ import {
   validateTraversalResult,
 } from "./query-contracts.js";
 import { PRODUCTION_SECTIONS } from "./production-report.js";
+import { PRODUCTION_RISK_SECTIONS } from "./production-risk-report.js";
 import { QUERY_ERROR_KINDS, RepositoryQueryError, safeQueryToken } from "./query-errors.js";
 
 const ENTITY_KIND_VALUES = Object.values(ENTITY_KINDS);
@@ -506,6 +511,18 @@ function matchesFramework(entity, framework) {
  */
 function productionReportOf(model) {
   const report = model?.production?.report;
+  return report !== null && typeof report === "object" ? report : null;
+}
+
+/**
+ * The model's production **risk** report, or `null` when it carries none.
+ *
+ * `null` means the same thing it means one level up: this model records nothing about
+ * production risk at all. A model that was built and found no gap carries a report whose
+ * sections are `complete` with no findings, and that report is returned.
+ */
+function productionRiskReportOf(model) {
+  const report = model?.productionRisk?.report;
   return report !== null && typeof report === "object" ? report : null;
 }
 
@@ -3869,6 +3886,68 @@ export function createRepositoryQuery(model) {
       const section = report.sections.find((entry) => entry.name === name) ?? null;
       if (section === null) return null;
       validateProductionSectionResult(section);
+      return section;
+    },
+
+    // ── Production risk report (Phase 21) ───────────────────────────────────
+    /**
+     * The whole production risk report: the engineering gaps the repository's own evidence
+     * proves, in six sections, with a coverage state and an abstention list each.
+     *
+     * Read from `model.productionRisk.report` — the projection the builder already made and
+     * validated — and never recomputed, so an answer cannot disagree with the model. `null`
+     * means this model carries no report at all.
+     *
+     * The report contains no score, no grade, no readiness percentage and no aggregate of any
+     * kind, and the query layer adds none: a caller receives the findings, the evidence ids
+     * behind each one, the closed severity its kind declares, the basis it rests on, and the
+     * reasons a domain withheld a detection, and decides for itself.
+     *
+     * @returns {object|null} A deeply frozen `ProductionRiskReport`, or `null`.
+     */
+    productionRiskReport() {
+      const report = productionRiskReportOf(model);
+      if (report === null) return null;
+      validateProductionRiskReportResult(report);
+      return report;
+    },
+
+    /**
+     * The risk report's structured coverage statement: its own state, the section and finding
+     * totals, the severity census of the findings it contains and the abstention census.
+     *
+     * A *copy*, frozen, so a caller cannot reach the model's own object through it.
+     */
+    productionRiskCoverage() {
+      const report = productionRiskReportOf(model);
+      if (report === null) return null;
+      const coverage = createProductionRiskCoverageResult({ ...report.coverage });
+      validateProductionRiskCoverageResult(coverage);
+      return Object.freeze({ ...coverage, severities: Object.freeze({ ...coverage.severities }) });
+    },
+
+    /**
+     * One domain's risk section: `environment`, `container`, `ci`, `api`, `dependencies` or
+     * `architecture`.
+     *
+     * The domain name is a closed vocabulary, so a typo throws rather than returning an empty
+     * section that a caller could read as "this repository's evidence shows no gap here". A
+     * missing section in a well-formed report is impossible — the contract requires all six —
+     * so `null` here means only that the model carries no risk report at all.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` for an unknown domain name.
+     */
+    productionRiskSection(name) {
+      if (typeof name !== "string" || !PRODUCTION_RISK_SECTIONS.includes(name)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "productionRiskSection.name",
+        });
+      }
+      const report = productionRiskReportOf(model);
+      if (report === null) return null;
+      const section = report.sections.find((entry) => entry.name === name) ?? null;
+      if (section === null) return null;
+      validateProductionRiskSectionResult(section);
       return section;
     },
 

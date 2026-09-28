@@ -58,6 +58,14 @@ import {
   PRODUCTION_SECTIONS as PRODUCTION_SECTIONS_SOURCE,
   PRODUCTION_UNKNOWN_REASONS as PRODUCTION_UNKNOWN_REASONS_SOURCE,
 } from "./production-report.js";
+import {
+  PRODUCTION_RISK_FINDING_KINDS as PRODUCTION_RISK_FINDING_KINDS_SOURCE,
+  PRODUCTION_RISK_REPORT_VERSION,
+  PRODUCTION_RISK_SECTIONS as PRODUCTION_RISK_SECTIONS_SOURCE,
+  PRODUCTION_RISK_SEVERITY_VALUES as PRODUCTION_RISK_SEVERITY_VALUES_SOURCE,
+  PRODUCTION_RISK_STATE_VALUES as PRODUCTION_RISK_STATE_VALUES_SOURCE,
+  PRODUCTION_RISK_UNKNOWN_REASONS as PRODUCTION_RISK_UNKNOWN_REASONS_SOURCE,
+} from "./production-risk-report.js";
 import { COVERAGE_GUARANTEES } from "./query.js";
 
 /** Re-exported so callers read the coverage vocabulary from one place. */
@@ -1858,6 +1866,369 @@ function throwProductionIssues(contract, issues) {
   if (issues.length > 0) {
     throw new ValidationError(`Invalid ${contract}`, { details: { contract, issues } });
   }
+}
+
+// ── Production risk report (Phase 21) ────────────────────────────────────────
+//
+// The risk report is handed out in full for the same reason the inventory report is: it *is*
+// the projection, and its `coverage` is its own structured statement. These validators are
+// structural — whether a finding's *facts* are true is the model's question, answered by
+// `validateRepositoryModelGraph` — and they enforce that the document is addressable: every
+// field present, every section a declared domain, every finding a kind its own domain
+// declares with a severity from the closed table and at least one evidence id, and a coverage
+// statement for every section.
+
+/** Fields the production risk report declares. */
+export const PRODUCTION_RISK_REPORT_RESULT_FIELDS = Object.freeze([
+  "version",
+  "state",
+  "established",
+  "sections",
+  "findings",
+  "evidenceIds",
+  "unknowns",
+  "coverage",
+]);
+
+/** Fields one production risk section declares. */
+export const PRODUCTION_RISK_SECTION_RESULT_FIELDS = Object.freeze([
+  "name",
+  "title",
+  "state",
+  "established",
+  "counts",
+  "findings",
+  "evidenceIds",
+  "unknown",
+  "coverage",
+]);
+
+/** Fields one risk finding declares. Prose and vocabulary fields are required too. */
+export const PRODUCTION_RISK_FINDING_RESULT_FIELDS = Object.freeze([
+  "id",
+  "section",
+  "kind",
+  "severity",
+  "confidence",
+  "basis",
+  "key",
+  "statement",
+  "evidenceIds",
+]);
+
+/** Fields the risk report's structured coverage statement declares. */
+export const PRODUCTION_RISK_COVERAGE_RESULT_FIELDS = Object.freeze([
+  "state",
+  "established",
+  "complete",
+  "truncated",
+  "sections",
+  "findings",
+  "evidence",
+  "sectionsWithFindings",
+  "severities",
+  "unknownReasons",
+  "limits",
+]);
+
+/** The report's coverage vocabulary, re-exported so a caller reads it from one place. */
+export const PRODUCTION_RISK_STATE_VALUES = PRODUCTION_RISK_STATE_VALUES_SOURCE;
+
+/** The severity vocabulary, re-exported for the same reason. */
+export const PRODUCTION_RISK_SEVERITY_VALUES = PRODUCTION_RISK_SEVERITY_VALUES_SOURCE;
+
+/** The six audit domains, re-exported for the same reason. */
+export const RISK_SECTIONS = PRODUCTION_RISK_SECTIONS_SOURCE;
+
+/** Build a risk-coverage draft. */
+export function createProductionRiskCoverageResult(input = {}) {
+  return createEnvelope(PRODUCTION_RISK_COVERAGE_RESULT_FIELDS, {
+    state: input.state,
+    established: input.established === true,
+    complete: input.complete === true,
+    truncated: input.truncated === true,
+    sections: input.sections ?? 0,
+    findings: input.findings ?? 0,
+    evidence: input.evidence ?? 0,
+    sectionsWithFindings: input.sectionsWithFindings ?? 0,
+    severities: input.severities ?? {},
+    unknownReasons: input.unknownReasons ?? {},
+    limits: input.limits ?? {},
+  });
+}
+
+/**
+ * Validate a risk-coverage statement.
+ *
+ * The counts are checked as non-negative integers rather than merely present, because a
+ * coverage statement whose totals are wrong is exactly the document that lets a reader believe
+ * a bounded finding list is a complete one. `severities` is a census of findings, not a score,
+ * and it is validated as a census: three keys, each a count of the severity it names.
+ */
+export function validateProductionRiskCoverageResult(value) {
+  const contract = "ProductionRiskCoverageResult";
+  requireProductionFields(value, contract, PRODUCTION_RISK_COVERAGE_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!PRODUCTION_RISK_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  for (const field of ["established", "complete", "truncated"]) {
+    if (typeof value[field] !== "boolean") fail(`${contract}.${field}`, "must be a boolean");
+  }
+  for (const field of ["sections", "findings", "evidence", "sectionsWithFindings"]) {
+    if (!Number.isInteger(value[field]) || value[field] < 0) {
+      fail(`${contract}.${field}`, "must be a non-negative integer");
+    }
+  }
+  if (!isPlainObject(value.severities)) {
+    fail(`${contract}.severities`, "must be a plain object");
+  } else {
+    for (const severity of PRODUCTION_RISK_SEVERITY_VALUES_SOURCE) {
+      const total = value.severities[severity];
+      if (!Number.isInteger(total) || total < 0) {
+        fail(`${contract}.severities.${severity}`, "must be a non-negative integer");
+      }
+    }
+  }
+  if (!isPlainObject(value.unknownReasons)) {
+    fail(`${contract}.unknownReasons`, "must be a plain object");
+  } else {
+    for (const key of Object.keys(value.unknownReasons)) {
+      const total = value.unknownReasons[key];
+      if (!Number.isInteger(total) || total < 0) {
+        fail(`${contract}.unknownReasons.${key}`, "must be a non-negative integer");
+      }
+    }
+  }
+  if (!isPlainObject(value.limits)) fail(`${contract}.limits`, "must be a plain object");
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a risk-report draft. */
+export function createProductionRiskReportResult(input = {}) {
+  return createEnvelope(PRODUCTION_RISK_REPORT_RESULT_FIELDS, {
+    version: input.version ?? PRODUCTION_RISK_REPORT_VERSION,
+    state: input.state,
+    established: input.established === true,
+    sections: input.sections ?? [],
+    findings: input.findings ?? [],
+    evidenceIds: input.evidenceIds ?? [],
+    unknowns: input.unknowns ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/** Validate a production risk report. */
+export function validateProductionRiskReportResult(value) {
+  const contract = "ProductionRiskReportResult";
+  requireProductionFields(value, contract, PRODUCTION_RISK_REPORT_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (value.version !== PRODUCTION_RISK_REPORT_VERSION) {
+    fail(`${contract}.version`, "must be the report version this build produces");
+  }
+  if (!PRODUCTION_RISK_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+
+  if (!Array.isArray(value.sections)) {
+    fail(`${contract}.sections`, "must be an array");
+  } else {
+    if (value.sections.length !== PRODUCTION_RISK_SECTIONS_SOURCE.length) {
+      fail(`${contract}.sections`, "must carry every audit domain exactly once");
+    }
+    value.sections.forEach((section, index) => {
+      try {
+        validateProductionRiskSectionResult(section);
+      } catch (error) {
+        const reported = error?.details?.issues;
+        if (Array.isArray(reported)) {
+          issues.push(...reported.map((issue) => `${contract}.sections[${index}]: ${issue}`));
+        } else {
+          fail(`${contract}.sections[${index}]`, "must be a well-formed risk section");
+        }
+      }
+    });
+  }
+
+  if (!Array.isArray(value.findings)) {
+    fail(`${contract}.findings`, "must be an array");
+  } else {
+    value.findings.forEach((finding, index) => {
+      try {
+        validateRiskFinding(finding);
+      } catch (error) {
+        const reported = error?.details?.issues;
+        if (Array.isArray(reported)) {
+          issues.push(...reported.map((issue) => `${contract}.findings[${index}]: ${issue}`));
+        } else {
+          fail(`${contract}.findings[${index}]`, "must be a well-formed risk finding");
+        }
+      }
+    });
+  }
+
+  if (!Array.isArray(value.evidenceIds)) fail(`${contract}.evidenceIds`, "must be an array");
+  if (!Array.isArray(value.unknowns)) fail(`${contract}.unknowns`, "must be an array");
+
+  try {
+    validateProductionRiskCoverageResult(value.coverage);
+  } catch (error) {
+    const reported = error?.details?.issues;
+    if (Array.isArray(reported)) issues.push(...reported);
+    else fail(`${contract}.coverage`, "must be a well-formed coverage statement");
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a risk-section draft. */
+export function createProductionRiskSectionResult(input = {}) {
+  return createEnvelope(PRODUCTION_RISK_SECTION_RESULT_FIELDS, {
+    name: input.name,
+    title: input.title,
+    state: input.state,
+    established: input.established === true,
+    counts: input.counts ?? {},
+    findings: input.findings ?? [],
+    evidenceIds: input.evidenceIds ?? [],
+    unknown: input.unknown ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/**
+ * Validate one risk section.
+ *
+ * A finding with no evidence id is rejected rather than tolerated: the whole promise of this
+ * report is that every statement resolves to an observation the repository made. The
+ * abstention vocabulary is the inventory domain's own plus the reasons this report may add, so
+ * a section can neither invent a reason nor lose the knowledge gaps it inherited.
+ */
+export function validateProductionRiskSectionResult(value) {
+  const contract = "ProductionRiskSectionResult";
+  requireProductionFields(value, contract, PRODUCTION_RISK_SECTION_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!PRODUCTION_RISK_SECTIONS_SOURCE.includes(value.name)) {
+    fail(`${contract}.name`, "must be a declared audit domain");
+  }
+  if (typeof value.title !== "string" || value.title.trim() === "") {
+    fail(`${contract}.title`, "must be a non-empty title");
+  }
+  if (!PRODUCTION_RISK_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented report state");
+  }
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+  if (!isPlainObject(value.counts)) fail(`${contract}.counts`, "must be a plain object");
+
+  const kinds = PRODUCTION_RISK_FINDING_KINDS_SOURCE[value.name];
+  if (!Array.isArray(value.findings)) {
+    fail(`${contract}.findings`, "must be an array");
+  } else {
+    value.findings.forEach((finding, index) => {
+      const at = `${contract}.findings[${index}]`;
+      if (Array.isArray(kinds) && !kinds.includes(finding?.kind)) {
+        fail(`${at}.kind`, "must be a finding kind this domain declares");
+      }
+    });
+  }
+
+  if (!Array.isArray(value.evidenceIds)) {
+    fail(`${contract}.evidenceIds`, "must be an array");
+  }
+
+  const reasons = [
+    ...(PRODUCTION_UNKNOWN_REASONS_SOURCE[value.name] ?? []),
+    ...(PRODUCTION_RISK_UNKNOWN_REASONS_SOURCE[value.name] ?? []),
+  ];
+  if (!Array.isArray(value.unknown)) {
+    fail(`${contract}.unknown`, "must be an array");
+  } else {
+    value.unknown.forEach((record, index) => {
+      const at = `${contract}.unknown[${index}]`;
+      if (!isPlainObject(record)) {
+        fail(at, "must be a plain object");
+        return;
+      }
+      if (!reasons.includes(record.reason)) {
+        fail(`${at}.reason`, "must be a reason this domain declares");
+      }
+      if (!Number.isInteger(record.count) || record.count < 1) {
+        fail(`${at}.count`, "must be a positive integer");
+      }
+    });
+  }
+
+  if (!isPlainObject(value.coverage)) {
+    fail(`${contract}.coverage`, "must be a plain object");
+  } else {
+    if (value.coverage.state !== value.state) {
+      fail(`${contract}.coverage.state`, "must agree with the section state");
+    }
+    if (typeof value.coverage.truncated !== "boolean") {
+      fail(`${contract}.coverage.truncated`, "must be a boolean");
+    }
+    for (const field of ["findings", "evidence", "unknownReasons"]) {
+      if (!Number.isInteger(value.coverage[field]) || value.coverage[field] < 0) {
+        fail(`${contract}.coverage.${field}`, "must be a non-negative integer");
+      }
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/**
+ * Validate one risk finding's addressable shape.
+ *
+ * The severity must be one of the three closed words and the basis non-empty, so a consumer
+ * can switch on both without defensively guessing; the statement must be a non-empty sentence
+ * and the remediation `null` or a bounded sentence, so "a finding may carry advice it did not
+ * imply" is not expressible here either.
+ */
+export function validateRiskFinding(value) {
+  const contract = "ProductionRiskFindingResult";
+  requireProductionFields(value, contract, PRODUCTION_RISK_FINDING_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!PRODUCTION_RISK_SECTIONS_SOURCE.includes(value.section)) {
+    fail(`${contract}.section`, "must be a declared audit domain");
+  }
+  if (!PRODUCTION_RISK_SEVERITY_VALUES_SOURCE.includes(value.severity)) {
+    fail(`${contract}.severity`, "must be one of the report's closed severities");
+  }
+  if (typeof value.basis !== "string" || value.basis.trim() === "") {
+    fail(`${contract}.basis`, "must name what was read");
+  }
+  if (typeof value.statement !== "string" || value.statement.trim() === "") {
+    fail(`${contract}.statement`, "must state the finding");
+  }
+  if (!Array.isArray(value.evidenceIds) || value.evidenceIds.length === 0) {
+    fail(`${contract}.evidenceIds`, "must cite at least one observation");
+  }
+  if ("remediation" in value && value.remediation !== null) {
+    if (typeof value.remediation !== "string" || value.remediation.trim() === "") {
+      fail(`${contract}.remediation`, "must be null or a non-empty sentence");
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
 }
 
 /** Validate a bounded unresolved-middleware list. */

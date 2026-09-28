@@ -8,11 +8,23 @@
  * stop inferring a context it cannot know.
  *
  * The detector records *facts about the file*, never a verdict: a declaration whose
- * context escapes the repository, or whose Dockerfile is not an observed file, is
- * dropped rather than reinterpreted (there is no observed artifact for it to be about,
- * and the affected Dockerfile simply stays unestablished). A Compose file the parser
- * cannot interpret is recorded as unparsed *with its reason*, so the rule can say
- * "unknown" instead of treating the file as if it declared nothing.
+ * context escapes the repository is dropped rather than reinterpreted (there is no
+ * observed artifact for it to be about, and the affected Dockerfile simply stays
+ * unestablished). A Compose file the parser cannot interpret is recorded as unparsed
+ * *with its reason*, so the rule can say "unknown" instead of treating the file as if it
+ * declared nothing.
+ *
+ * Phase 21 adds two more recordings of the same file, and neither changes anything a
+ * consumer already reads:
+ *
+ *   - `unobserved` — a declaration that resolved inside the repository but names a
+ *     Dockerfile the inventory never observed. It is still *not* a build context (there is
+ *     no observed artifact to attach one to, so `declarations` is unchanged), but "this
+ *     service builds a Dockerfile this repository does not contain" is a fact the file
+ *     states, and the production risk auditor reports it as one.
+ *   - `images` — which services state an `image:` reference and whether they also state a
+ *     build. Read by the parser as a key only, so no image reference and no registry host
+ *     ever leaves the file.
  *
  * Reads are bounded by `CONTAINER_DECLARATION_LIMITS`, go through `view.read` (the
  * Phase 8A boundary, so containment and symlink policy apply), and nothing is ever
@@ -138,6 +150,11 @@ async function detectDockerfileStructures(view) {
   records.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   return { records, inspected };
+}
+
+/** A total, deterministic ordering over two strings. */
+function compareText(a, b) {
+  return a === b ? 0 : a < b ? -1 : 1;
 }
 
 /** The directory holding a repository-relative path (`.` at the root). */
@@ -278,6 +295,11 @@ export async function detectContainers(view) {
   const observedFiles = new Set(view.files.map((file) => file.path));
 
   const declarations = [];
+  // Phase 21 — declarations naming a Dockerfile this inventory never observed, and the
+  // services that state an `image:` reference. Both are bounded by the same declaration
+  // budget as `declarations`, because both are read from the same declarations.
+  const unobserved = [];
+  const images = [];
   const unparsed = [];
   let inspected = 0;
 
@@ -344,9 +366,25 @@ export async function detectContainers(view) {
         continue;
       }
       // A declaration about a Dockerfile the inventory never observed describes a file
-      // this model cannot make a claim about.
-      if (!observedFiles.has(result.declaration.dockerfile)) continue;
+      // this model cannot make a claim about *as a build context* — so it is still not a
+      // declaration. It is recorded separately instead of dropped, because the service's
+      // own build statement is a fact about the repository either way.
+      if (!observedFiles.has(result.declaration.dockerfile)) {
+        unobserved.push({
+          source: entry.path,
+          service: result.declaration.service,
+          dockerfile: result.declaration.dockerfile,
+        });
+        continue;
+      }
       declarations.push(result.declaration);
+    }
+
+    for (const image of parsed.images) {
+      // The service name is already validated by the parser (it is a plain mapping key);
+      // the value never reaches this list, so nothing that could be a registry host does.
+      if (typeof image.service !== "string" || image.service === "") continue;
+      images.push({ source: entry.path, service: image.service, build: image.build === true });
     }
 
     if (unresolvedDetail !== null) {
@@ -370,6 +408,20 @@ export async function detectContainers(view) {
     return left === right ? 0 : left < right ? -1 : 1;
   });
   unparsed.sort((a, b) => (a.source < b.source ? -1 : a.source > b.source ? 1 : 0));
+  // Same shape of deterministic order the contract validates: by source, then service, then
+  // the Dockerfile the declaration names. The bound is the declaration budget, applied
+  // after sorting so the retained prefix is stable across runs.
+  unobserved.sort(
+    (a, b) =>
+      compareText(a.source, b.source) ||
+      compareText(a.service, b.service) ||
+      compareText(a.dockerfile, b.dockerfile),
+  );
+  images.sort(
+    (a, b) => compareText(a.source, b.source) || compareText(a.service, b.service),
+  );
+  const boundedUnobserved = unobserved.slice(0, CONTAINER_DECLARATION_LIMITS.maxDeclarations);
+  const boundedImages = images.slice(0, CONTAINER_DECLARATION_LIMITS.maxDeclarations);
 
   const dockerfiles = await detectDockerfileStructures(view);
 
@@ -378,6 +430,8 @@ export async function detectContainers(view) {
     declarations,
     unparsed,
     dockerfiles: dockerfiles.records,
+    unobserved: boundedUnobserved,
+    images: boundedImages,
     limits: { ...CONTAINER_DECLARATION_LIMITS },
   };
 }

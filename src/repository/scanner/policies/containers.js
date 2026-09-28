@@ -111,8 +111,8 @@ export function isAbsoluteContainerReference(value) {
   );
 }
 
-function parsed(declarations) {
-  return { ok: true, declarations };
+function parsed(declarations, images = []) {
+  return { ok: true, declarations, images };
 }
 
 function ambiguous(detail) {
@@ -180,8 +180,25 @@ function parseKey(text) {
  * `dockerfile` values are exactly as written. Path resolution belongs to the caller,
  * which owns the repository root.
  *
+ * ### Phase 21: the service's `image:` key, read without ever refusing
+ *
+ * A service that declares `image:` and no `build:` is running an artifact this repository
+ * does not build from a Dockerfile it contains — a structural fact the production risk
+ * auditor reports as inventory. That fact needs the *key*, not its value, so the second
+ * list this function returns records only `{ service, build }`: which services state an
+ * image reference, and whether the same service also stated a `build`.
+ *
+ * The value is deliberately **not** carried, for the same reason an absolute `context` is
+ * not: an image reference can name a private registry host, and this model records no host
+ * location. The listing is read **leniently and independently** of the build reading: an
+ * `image:` key whose value is a flow mapping, a block scalar or an empty scalar records the
+ * key and nothing else, and *never* turns the file into an `ambiguous` refusal. A refusal
+ * there would change what the file establishes about its build declarations, which is
+ * another consumer's answer (the Phase 12 container rule) and must not move.
+ *
  * @param {unknown} text Compose file contents.
- * @returns {{ok: true, declarations: Array<{service: string, context: string, dockerfile: string|null}>}
+ * @returns {{ok: true, declarations: Array<{service: string, context: string, dockerfile: string|null}>,
+ *   images: Array<{service: string, build: boolean}>}
  *   | {ok: false, reason: string, detail: string}}
  */
 export function parseComposeBuildContexts(text) {
@@ -208,11 +225,16 @@ export function parseComposeBuildContexts(text) {
   if (servicesAt.length > 1) return ambiguous("duplicate-key");
 
   const declarations = [];
+  // Phase 21 — services that state an `image:` reference, with whether they also state a
+  // build. One entry per service, appended in the order the services close, which is the
+  // order they are declared; the detector sorts the list before it leaves this module.
+  const images = [];
   const seenServices = new Set();
   let serviceIndent = null;
   let keyIndent = null;
   let service = null;
   let seenBuild = false;
+  let seenImage = false;
   let build = null;
 
   /** Finish the open build block, keeping the service it belongs to. */
@@ -228,8 +250,12 @@ export function parseComposeBuildContexts(text) {
 
   const closeService = () => {
     closeBuild();
+    if (service !== null && seenImage) {
+      images.push({ service, build: seenBuild });
+    }
     service = null;
     seenBuild = false;
+    seenImage = false;
     keyIndent = null;
   };
 
@@ -299,7 +325,15 @@ export function parseComposeBuildContexts(text) {
     const hidden = hiddenStructure(entry.text);
     if (hidden !== null) return ambiguous(hidden);
     const parsedKey = parseKey(entry.text);
-    if (parsedKey === null || parsedKey.key !== "build") continue;
+    if (parsedKey === null) continue;
+    if (parsedKey.key !== "build") {
+      // Phase 21 — the service's own `image:` key, recorded as a key and read no further.
+      // Every other key at this level keeps being skipped exactly as before, and an
+      // unreadable `image:` value refuses nothing: this listing is inventory only, so an
+      // uninterpreted value costs it one record and never the file's build declarations.
+      if (parsedKey.key === "image") seenImage = true;
+      continue;
+    }
     if (seenBuild) return ambiguous("duplicate-key");
     seenBuild = true;
 
@@ -314,5 +348,5 @@ export function parseComposeBuildContexts(text) {
   }
   closeService();
 
-  return parsed(declarations);
+  return parsed(declarations, images);
 }
