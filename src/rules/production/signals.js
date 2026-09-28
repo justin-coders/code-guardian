@@ -108,8 +108,10 @@ export function productionCoverage(query) {
  *
  * Three separate things have to hold, and none of them is inferred from an empty
  * observation list: a report must exist, the section must have actually been established
- * (`unknown` is not "nothing here", it is "no answer"), and — when the reason is a bounded
- * list — the section must not have abstained in a way that leaves its answer open.
+ * (neither `unknown` nor `unsupported` is "nothing here" — both are "no answer", for two
+ * different reasons), and — when the reason is a bounded list — the section must not have
+ * abstained in a way that leaves its answer open. An established, empty section is the case
+ * that *is* an answer, and the section's own `complete` state is what says so.
  *
  * @param {object} query
  * @param {string} name

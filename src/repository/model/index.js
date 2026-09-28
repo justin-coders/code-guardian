@@ -271,6 +271,7 @@ export {
   PRODUCTION_SECTION_TITLES,
   PRODUCTION_UNKNOWN_REASONS,
   PRODUCTION_UNKNOWN_REASON_VALUES,
+  PRODUCTION_UNSUPPORTED_REASONS,
   buildProductionReport,
   classifyEnvironmentArtifact,
   classifyWorkflowName,

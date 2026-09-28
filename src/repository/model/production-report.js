@@ -67,7 +67,11 @@ import {
   ARCHITECTURE_GRAPH_STATES,
   REPOSITORY_NODE_KIND,
 } from "./architecture-graph.js";
-import { API_GRAPH_EDGE_TYPES, API_GRAPH_STATES } from "./api-graph.js";
+import {
+  API_GRAPH_EDGE_TYPES,
+  API_GRAPH_STATES,
+  API_UNRESOLVED_REASONS,
+} from "./api-graph.js";
 import { DEPENDENCY_GRAPH_STATES } from "./dependency-graph.js";
 import { IMPORT_GRAPH_EDGE_TYPES, IMPORT_GRAPH_STATES } from "./import-graph.js";
 import { MIDDLEWARE_GRAPH_STATES, MIDDLEWARE_PROTECTION_STATES } from "./middleware-graph.js";
@@ -81,18 +85,25 @@ export const PRODUCTION_REPORT_BUILDER = "phase-20-production-report";
 /**
  * The report's coverage states.
  *
- * The same five-way vocabulary every accepted graph uses, with the same meaning for the
- * first four and one precisely stated reading of `unsupported`:
+ * The same five-way vocabulary every accepted graph uses, with each value meaning exactly
+ * one thing. The distinction that matters most is between an *empty* answer and an
+ * *uninterpretable* one:
  *
- *   complete     every input this section reads was read, and the section's own
- *                observations were not cut short
- *   partial      an answer exists, but an input was cut short or a contributing graph
- *                was only partly established
- *   unsupported  the section's question was answered, and the answer is that this
- *                repository establishes **nothing** in this domain — an observed empty
- *                result, never a missing one
- *   unknown      no answer: the scan or the graph behind the section was not established
- *   truncated    a bounded resource stopped the reading
+ *   complete     the section's inputs were inspected successfully and it established its
+ *                answer — including a legitimately **empty** answer. "This repository
+ *                declares no environment artifact" is an answer, so a section that read
+ *                everything and found nothing is `complete`, with zero observations
+ *   partial      the section established an answer, but some relevant input was not fully
+ *                established (an incomplete scan, an ignore policy that excluded a path, a
+ *                source it could not interpret, a graph that was only partly built)
+ *   unsupported  the section cannot answer because the relevant domain is not interpreted
+ *                by this implementation — a named-but-uninterpreted framework, or a
+ *                manifest/lockfile format this build does not read. Never inferred from an
+ *                empty observation list: an unsupported section names the basis in its own
+ *                abstentions, and cannot have established an answer
+ *   unknown      the section could not establish an answer at all: the scan did not cover
+ *                the repository, or nothing behind the section was built
+ *   truncated    a declared bound stopped the section
  */
 export const PRODUCTION_REPORT_STATES = Object.freeze({
   COMPLETE: "complete",
@@ -207,6 +218,8 @@ export const PRODUCTION_UNKNOWN_REASONS = Object.freeze({
     "route-occurrence-not-established",
     "route-middleware-not-established",
     "handler-not-established",
+    "api-framework-not-interpreted",
+    "api-source-not-interpreted",
     "section-observations-truncated",
     "repository-scan-not-complete",
   ]),
@@ -215,6 +228,7 @@ export const PRODUCTION_UNKNOWN_REASONS = Object.freeze({
     "dependency-source-not-established",
     "no-dependency-declaration-observed",
     "dependency-declarations-not-observed",
+    "dependency-format-not-interpreted",
     "section-observations-truncated",
     "repository-scan-not-complete",
   ]),
@@ -226,6 +240,40 @@ export const PRODUCTION_UNKNOWN_REASONS = Object.freeze({
     "section-observations-truncated",
     "repository-scan-not-complete",
   ]),
+});
+
+/**
+ * The abstention that makes a section genuinely `unsupported`.
+ *
+ * `unsupported` is a statement about *this implementation*, not about the repository: it says
+ * the relevant domain is not interpreted here, so no answer exists. The validator therefore
+ * refuses the state unless the section names the uninterpreted domain with one of these
+ * reasons — an empty observation list is not a basis, and a section that read everything and
+ * found nothing is `complete` instead.
+ *
+ * Two domains can reach it today, each from a fact the accepted graphs already state:
+ *
+ *   api           the graph reports no readable source (`api-source-not-interpreted`), or
+ *                 every declared endpoint is in a framework this build does not read and no
+ *                 route was established (`api-framework-not-interpreted`)
+ *   dependencies  every dependency source is a format this build does not interpret
+ *                 (`dependency-format-not-interpreted`), so nothing the repository declares
+ *                 is established
+ *
+ * Environment, container and CI classification are name- and instruction-based with no
+ * uninterpreted case, and the architecture chapter's four statements are always
+ * interpretable — its graph reports `unsupported` when a complete scan finds no entity to
+ * relate, which is the domain's *empty* answer, and the chapter answers `complete` for it.
+ * Their lists are empty rather than absent, so a section that claimed `unsupported` without a
+ * basis would be rejected rather than quietly allowed.
+ */
+export const PRODUCTION_UNSUPPORTED_REASONS = Object.freeze({
+  environment: Object.freeze([]),
+  container: Object.freeze([]),
+  ci: Object.freeze([]),
+  api: Object.freeze(["api-framework-not-interpreted", "api-source-not-interpreted"]),
+  dependencies: Object.freeze(["dependency-format-not-interpreted"]),
+  architecture: Object.freeze([]),
 });
 
 /** Every reason, keyed the other way round, for validation and tests. */
@@ -393,13 +441,16 @@ export function isEntrypointShapedPath(path, name) {
  * own `established` flag disagree with its sections' — exactly the inconsistency this
  * contract exists to reject.
  *
- * `unknown` is the one state that means no answer.
+ * `unknown` and `unsupported` are the two states that mean no answer, for two different
+ * reasons: `unknown` is "nothing behind this section was established", and `unsupported` is
+ * "this implementation does not interpret the domain". Neither is an answer, so neither is
+ * established — and an empty answer is not one of them: a section that read everything and
+ * found nothing is `complete`.
  */
 export function isEstablishedProductionState(state) {
   return (
     state === PRODUCTION_REPORT_STATES.COMPLETE ||
     state === PRODUCTION_REPORT_STATES.PARTIAL ||
-    state === PRODUCTION_REPORT_STATES.UNSUPPORTED ||
     state === PRODUCTION_REPORT_STATES.TRUNCATED
   );
 }
@@ -499,17 +550,30 @@ function mergeAbstentions(records) {
 /**
  * The coverage state of one section.
  *
+ * Four questions, in this order, and the observation count is deliberately not one of them:
+ *
+ *   1. did a declared bound stop the reading?            → `truncated`
+ *   2. does this implementation interpret the domain?     → `unsupported` when it does not
+ *   3. did the section establish an answer at all?        → `unknown` when it did not
+ *   4. was every input it reads read in full?             → `complete`, else `partial`
+ *
+ * An established, fully-inspected section with zero observations is `complete`: "this
+ * repository declares nothing in this domain" is the answer the repository gave, and
+ * reporting it as `unsupported` (an admission that the domain could not be interpreted)
+ * would be a different, false statement. `unsupported` is reachable only through the
+ * explicit `supported` flag a section sets when its domain is genuinely not interpreted.
+ *
  * @param {object} input
+ * @param {boolean} input.supported This implementation interprets the domain.
  * @param {boolean} input.established The section's own question has an answer.
  * @param {boolean} input.complete Every input it reads was read in full.
  * @param {boolean} input.truncated A bound stopped the reading.
- * @param {number} input.observations Retained observations.
  * @returns {string} One of `PRODUCTION_REPORT_STATES`.
  */
-function sectionState({ established, complete, truncated, observations }) {
+function sectionState({ supported, established, complete, truncated }) {
   if (truncated) return PRODUCTION_REPORT_STATES.TRUNCATED;
+  if (!supported) return PRODUCTION_REPORT_STATES.UNSUPPORTED;
   if (!established) return PRODUCTION_REPORT_STATES.UNKNOWN;
-  if (observations === 0) return PRODUCTION_REPORT_STATES.UNSUPPORTED;
   if (complete) return PRODUCTION_REPORT_STATES.COMPLETE;
   return PRODUCTION_REPORT_STATES.PARTIAL;
 }
@@ -522,7 +586,15 @@ function sectionState({ established, complete, truncated, observations }) {
  * `coverage.truncated` and as an abstention. Abstentions are merged, sorted and cut to
  * `maxUnknownReasonsPerSection`.
  */
-function assembleSection({ name, observations, unknown, counts, established, complete }) {
+function assembleSection({
+  name,
+  observations,
+  unknown,
+  counts,
+  established,
+  complete,
+  supported = true,
+}) {
   const sorted = [...observations].sort(compareByKeys(["key"]));
   const capped = sorted.length > PRODUCTION_REPORT_LIMITS.maxObservationsPerSection;
   const retained = capped
@@ -545,24 +617,27 @@ function assembleSection({ name, observations, unknown, counts, established, com
     : unknownRecords;
 
   const state = sectionState({
+    supported,
     established,
     truncated: capped || truncatedReasons,
     complete,
-    observations: retained.length,
   });
+  // Derived from the state rather than taken on trust, so the contract's
+  // `established === isEstablishedProductionState(state)` can never disagree with itself.
+  const answered = isEstablishedProductionState(state);
 
   return {
     name,
     title: PRODUCTION_SECTION_TITLES[name],
     state,
-    established,
+    established: answered,
     counts: { ...counts },
     observations: retained,
     evidenceIds: evidence,
     unknown: records,
     coverage: {
       state,
-      established,
+      established: answered,
       observations: retained.length,
       evidence: evidence.length,
       truncated: capped || truncatedReasons,
@@ -756,7 +831,7 @@ function buildEnvironmentSection({
   });
 }
 
-// ─── Container readiness ─────────────────────────────────────────────────────
+// ─── Container configuration ────────────────────────────────────────────────
 
 /**
  * The container chapter.
@@ -929,7 +1004,7 @@ function buildContainerSection({
   });
 }
 
-// ─── CI readiness ────────────────────────────────────────────────────────────
+// ─── CI configuration ───────────────────────────────────────────────────────
 
 /**
  * The CI chapter.
@@ -1137,9 +1212,39 @@ function buildApiSection({ apiGraph, middlewareGraph, symbolGraph, cite }) {
     routesWithoutHandler: routesWithoutHandler.length,
   };
 
-  // No "no routes" abstention: an established graph with no route is `unsupported`, which
-  // is a positive answer ("this repository declares no endpoint"), not a gap. The
-  // abstention list is reserved for what the report could not read.
+  // The API domain is genuinely uninterpreted by this build in exactly two cases, and each is
+  // stated with its own reason rather than inferred from an empty route list:
+  //
+  //   - the graph itself reports that no source could be read (module files in languages this
+  //     build does not read), so nothing about their endpoints is established;
+  //   - every route-shaped occurrence the repository declares was refused *because its
+  //     framework is not read*, and no route was established at all — the repository states
+  //     an API surface in a framework this build does not interpret, which is a different
+  //     fact, and must not be reported as one: "this repository declares no endpoint" is the
+  //     empty answer, not the uninterpreted one.
+  //
+  // A repository that mixes an unread framework with routes this build *can* establish keeps
+  // its established routes and stays `partial`: only the whole domain being unread makes the
+  // section `unsupported`.
+  const frameworkUnsupported = apiGraph.unresolved.filter(
+    (record) => record.reason === API_UNRESOLVED_REASONS.FRAMEWORK_UNSUPPORTED,
+  ).length;
+  const frameworkOnly =
+    apiGraph.nodes.length === 0 &&
+    frameworkUnsupported > 0 &&
+    frameworkUnsupported === apiGraph.unresolved.length;
+  const uninterpreted = apiGraph.state === API_GRAPH_STATES.UNSUPPORTED || frameworkOnly;
+  if (apiGraph.state === API_GRAPH_STATES.UNSUPPORTED) {
+    unknown.push(abstention("api-source-not-interpreted", null, 1));
+  }
+  if (frameworkOnly) {
+    unknown.push(abstention("api-framework-not-interpreted", null, frameworkUnsupported));
+  }
+
+  // No "no routes" abstention: an established graph with no route is the domain's *empty*
+  // answer ("this repository declares no endpoint"), which the section reports as `complete` —
+  // a positive answer, not a gap. The abstention list is reserved for what the report could
+  // not read or could not interpret.
   if (apiGraph.established !== true) {
     unknown.push(abstention("api-graph-not-established", null, 1));
   }
@@ -1163,6 +1268,7 @@ function buildApiSection({ apiGraph, middlewareGraph, symbolGraph, cite }) {
     observations,
     unknown,
     counts,
+    supported: !uninterpreted,
     established: apiGraph.established === true,
     complete:
       apiGraph.state === API_GRAPH_STATES.COMPLETE &&
@@ -1313,8 +1419,15 @@ function buildDependenciesSection({
     graphEdges: dependencyGraph.edges.length,
   };
 
-  // An established graph with no dependency is `unsupported` — "this repository declares no
-  // dependency" — which is an answer, not a gap.
+  // Every dependency source being a format this build does not interpret is the one case
+  // where the domain is not *interpretable*, and it is stated with an explicit reason rather
+  // than inferred from an empty list. An established graph with no dependency is a different
+  // answer — "this repository declares no dependency" — which the section reports as
+  // `complete`, and the section's own test pins both cases apart.
+  const uninterpreted = dependencyGraph.state === DEPENDENCY_GRAPH_STATES.UNSUPPORTED;
+  if (uninterpreted) {
+    unknown.push(abstention("dependency-format-not-interpreted", null, 1));
+  }
   if (dependencyGraph.established !== true) {
     unknown.push(abstention("dependency-graph-not-established", null, 1));
   }
@@ -1324,6 +1437,7 @@ function buildDependenciesSection({
     observations,
     unknown,
     counts,
+    supported: !uninterpreted,
     established: dependencyGraph.established === true,
     complete: dependencyGraph.state === DEPENDENCY_GRAPH_STATES.COMPLETE,
   });
@@ -1342,13 +1456,7 @@ function buildDependenciesSection({
  * is no coupling score, no cohesion metric, no circular-dependency verdict and no
  * dead-code claim anywhere in it.
  */
-function buildArchitectureSection({
-  architectureGraph,
-  importGraph,
-  files,
-  cite,
-  importEvidenceIds,
-}) {
+function buildArchitectureSection({ architectureGraph, importGraph, files, cite, scanComplete }) {
   const observations = [];
   const unknown = [];
 
@@ -1477,7 +1585,17 @@ function buildArchitectureSection({
     nodeKinds: kinds,
   };
 
-  if (architectureGraph.established !== true) {
+  // The architecture graph reports `unsupported` in exactly one case: a complete scan whose
+  // inventory establishes no architectural entity to relate. That is not "this implementation
+  // cannot interpret the domain" — the four statements this chapter makes are all
+  // interpretable, and this build interprets them — it is the domain's **empty** answer, and
+  // it is only reachable on a scan that finished. The chapter therefore treats it as an
+  // established, complete, observation-less answer rather than inheriting the graph's word.
+  const emptyInventory =
+    architectureGraph.state === ARCHITECTURE_GRAPH_STATES.UNSUPPORTED && scanComplete === true;
+  const established = architectureGraph.established === true || emptyInventory;
+
+  if (!established) {
     unknown.push(abstention("architecture-graph-not-established", null, 1));
   }
   if (importGraph.established !== true) {
@@ -1495,9 +1613,10 @@ function buildArchitectureSection({
     observations,
     unknown,
     counts,
-    established: architectureGraph.established === true,
+    established,
     complete:
-      architectureGraph.state === ARCHITECTURE_GRAPH_STATES.COMPLETE &&
+      established &&
+      (architectureGraph.state === ARCHITECTURE_GRAPH_STATES.COMPLETE || emptyInventory) &&
       importGraph.state === IMPORT_GRAPH_STATES.COMPLETE,
   });
 }
@@ -1577,6 +1696,7 @@ export function buildProductionReport(input) {
       importGraph: importGraph ?? emptyGraph(),
       files,
       cite,
+      scanComplete,
     }),
   ];
 
@@ -1591,11 +1711,12 @@ export function buildProductionReport(input) {
 
   const states = sections.map((section) => section.state);
   const established = sections.some((section) => section.established === true);
-  const final = states.every(
-    (state) =>
-      state === PRODUCTION_REPORT_STATES.COMPLETE ||
-      state === PRODUCTION_REPORT_STATES.UNSUPPORTED,
-  );
+  // "Complete" means every domain reached a final answer — and an *answer* is what `complete`
+  // is: a section that could not answer (a domain this build does not interpret, or a
+  // section with no established input) leaves the report with something it could not say, so
+  // the report is `partial` when at least one section answered and `unknown` when none did.
+  // This is the same rule as a section's own coverage, one level up.
+  const final = states.every((state) => state === PRODUCTION_REPORT_STATES.COMPLETE);
   const truncated = states.some((state) => state === PRODUCTION_REPORT_STATES.TRUNCATED);
 
   const state = truncated

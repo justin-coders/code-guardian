@@ -130,6 +130,7 @@ import {
   PRODUCTION_SECTIONS,
   PRODUCTION_SECTION_TITLES,
   PRODUCTION_UNKNOWN_REASONS,
+  PRODUCTION_UNSUPPORTED_REASONS,
   isEstablishedProductionState,
 } from "./production-report.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
@@ -3235,23 +3236,38 @@ export function validateRepositoryModelGraph(model) {
           if (section.state === PRODUCTION_REPORT_STATES.UNKNOWN && section.established !== false) {
             fail(`${at}.state`, "cannot be unknown while the section claims an answer");
           }
-          if (
-            section.state === PRODUCTION_REPORT_STATES.UNSUPPORTED &&
-            (section.established !== true || observationCount !== 0)
-          ) {
-            fail(`${at}.state`, "cannot be unsupported unless the domain was answered as empty");
+          // `unsupported` is a statement about *this implementation*, so it needs a basis: the
+          // section must name the domain it cannot interpret, and it cannot have answered.
+          // An empty observation list is deliberately **not** a basis — a section that read
+          // everything and found nothing is `complete` — and observations are not disqualifying
+          // either: observing that a file exists is a different statement from interpreting it,
+          // so a section may report the artifacts it observed while refusing to answer.
+          if (section.state === PRODUCTION_REPORT_STATES.UNSUPPORTED) {
+            if (section.established !== false) {
+              fail(`${at}.state`, "cannot be unsupported while the section claims an answer");
+            }
+            const basis = PRODUCTION_UNSUPPORTED_REASONS[section.name] ?? [];
+            const named = Array.isArray(section.unknown)
+              ? section.unknown.some((record) => basis.includes(record?.reason))
+              : false;
+            if (!named) {
+              fail(`${at}.unknown`, "cannot be unsupported without naming the unread domain");
+            }
           }
+          // `complete` may legitimately carry zero observations: an inspected, empty domain is
+          // an answer ("this repository declares nothing here"), and calling it unsupported
+          // would be the conflation this contract exists to reject.
           if (
             section.state === PRODUCTION_REPORT_STATES.COMPLETE &&
-            (section.established !== true || observationCount <= 0 || coverage.truncated === true)
+            (section.established !== true || coverage.truncated === true)
           ) {
-            fail(`${at}.state`, "cannot be complete without observations and full coverage");
+            fail(`${at}.state`, "cannot be complete unless it answered an untruncated reading");
           }
           if (
             section.state === PRODUCTION_REPORT_STATES.PARTIAL &&
-            (section.established !== true || observationCount <= 0)
+            section.established !== true
           ) {
-            fail(`${at}.state`, "cannot be partial without an established, non-empty answer");
+            fail(`${at}.state`, "cannot be partial without an established answer");
           }
           if (
             section.state === PRODUCTION_REPORT_STATES.TRUNCATED &&
@@ -3347,12 +3363,12 @@ export function validateRepositoryModelGraph(model) {
         }
 
         // The report's own state must follow from its sections: complete only when every
-        // domain reached a final answer, unknown only when none did.
+        // domain answered, unknown only when none did. A section that could not answer (an
+        // uninterpreted domain, or nothing established behind it) keeps the report `partial`
+        // rather than letting it claim a completeness one of its domains does not have.
         const states = report.sections.map((section) => section?.state);
         const finalStates = states.every(
-          (state) =>
-            state === PRODUCTION_REPORT_STATES.COMPLETE ||
-            state === PRODUCTION_REPORT_STATES.UNSUPPORTED,
+          (state) => state === PRODUCTION_REPORT_STATES.COMPLETE,
         );
         const truncatedStates = states.some(
           (state) => state === PRODUCTION_REPORT_STATES.TRUNCATED,

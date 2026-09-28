@@ -92,9 +92,10 @@ export const PRODUCTION_SECTION_WORDING = Object.freeze({
 
 /** How each report coverage state reads in a finding's metadata. */
 export const PRODUCTION_STATE_WORDING = Object.freeze({
-  complete: "every input this section reads was read in full",
-  partial: "an answer exists, but an input was cut short or only partly established",
-  unsupported: "the section's question was answered, and the answer is that nothing is declared",
+  complete: "every input this section reads was inspected, so the section established its answer — including an empty one",
+  partial: "an answer exists, but an input was cut short, excluded or only partly established",
+  unsupported:
+    "the section has no answer: this implementation does not interpret the relevant domain",
   unknown: "the section has no answer: the scan or the graph behind it was not established",
   truncated: "a bound stopped the reading",
 });
@@ -179,6 +180,10 @@ export const PRODUCTION_ABSTENTION_WORDING = Object.freeze({
     "a route's middleware-shaped occurrence was not established",
   "handler-not-established":
     "a declared route has no handler this build resolved",
+  "api-framework-not-interpreted":
+    "the repository declares an API framework this build does not read, so none of its endpoints is established",
+  "api-source-not-interpreted":
+    "module files in languages this build does not read were observed, so no endpoint of theirs is established",
   "section-observations-truncated":
     "the section's observation list reached its bound, so it is not the complete list",
   "dependency-graph-not-established":
@@ -189,6 +194,8 @@ export const PRODUCTION_ABSTENTION_WORDING = Object.freeze({
     "the scan covered the repository and observed no dependency declaration",
   "dependency-declarations-not-observed":
     "the scan did not cover the repository completely, so dependency declarations cannot be ruled out",
+  "dependency-format-not-interpreted":
+    "every dependency source is a format this build does not interpret, so nothing the repository declares is established",
   "architecture-graph-not-established":
     "no architecture graph was established, so the repository's structure is not established",
   "isolated-modules-not-established":

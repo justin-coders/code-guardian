@@ -497,7 +497,7 @@ describe("production: environment configuration", () => {
   });
 });
 
-// ─── Container readiness ─────────────────────────────────────────────────────
+// ─── Container configuration ────────────────────────────────────────────────
 
 describe("production: container readiness", () => {
   it("records a container definition, an ignore file and a composition file", async () => {
@@ -600,10 +600,15 @@ describe("production: container readiness", () => {
     assert.equal(section.coverage.state, PRODUCTION_REPORT_STATES.PARTIAL);
   });
 
-  it("reports an established repository with no container configuration as unsupported", async () => {
+  it("reports an inspected repository with no container configuration as complete", async () => {
     const { report } = await scanOf({ "package.json": pkg(), "main.js": "export default 1;\n" });
     const section = sectionOf(report, "container");
-    assert.equal(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    // An inspected, empty domain is an answer — "this repository declares no container
+    // configuration" — so it is `complete`. `unsupported` would claim this build cannot read
+    // the domain, which is a different and false statement.
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.COMPLETE);
+    assert.equal(section.established, true);
+    assert.equal(section.coverage.truncated, false);
     assert.deepEqual(section.observations, []);
     assert.equal(section.counts.definitions, 0);
     assert.equal(
@@ -613,7 +618,7 @@ describe("production: container readiness", () => {
   });
 });
 
-// ─── CI readiness ────────────────────────────────────────────────────────────
+// ─── CI configuration ───────────────────────────────────────────────────────
 
 describe("production: CI readiness", () => {
   const ciOf = (report) => sectionOf(report, "ci");
@@ -688,10 +693,12 @@ describe("production: CI readiness", () => {
     );
   });
 
-  it("reports an established repository with no CI configuration as unsupported", async () => {
+  it("reports an inspected repository with no CI configuration as complete", async () => {
     const { report } = await scanOf({ "package.json": pkg(), "main.js": "export default 1;\n" });
     const section = ciOf(report);
-    assert.equal(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.COMPLETE);
+    assert.equal(section.established, true);
+    assert.deepEqual(section.observations, []);
     assert.equal(
       section.unknown.some((record) => record.reason === "no-ci-configuration-observed"),
       true,
@@ -986,6 +993,236 @@ describe("production: architecture inventory", () => {
   });
 });
 
+// ─── An empty answer is not an uninterpreted domain ──────────────────────────
+
+/**
+ * The distinction this suite exists for.
+ *
+ * A section whose inputs were inspected and which establishes **nothing** has answered: the
+ * repository declares nothing in that domain. That is `complete`. `unsupported` means
+ * something else entirely — this implementation cannot interpret the domain — and must never
+ * be produced by an empty observation list.
+ */
+describe("production: empty answers versus uninterpreted domains", () => {
+  const UNRELATED_REPO = {
+    "README.md": "# demo\n",
+    "LICENSE": "MIT\n",
+    "docs/notes.txt": "prose, not source\n",
+  };
+  const CLEAN_REPO = { "package.json": pkg(), "src/app.js": "export const value = 1;\n" };
+  const NO_MANIFEST_REPO = { "src/app.js": "export const value = 1;\n" };
+  const UNREAD_LANGUAGE_REPO = {
+    "package.json": pkg(),
+    "src/routes.rb": 'get "/rb" do\nend\n',
+    "src/routes.php": "<?php Route::get('/php', f());\n",
+  };
+  const UNSUPPORTED_FRAMEWORK_REPO = {
+    "package.json": pkg(),
+    "src/koa.js": [
+      'import Koa from "koa";',
+      "const app = new Koa();",
+      'app.get("/koa-route", handler);',
+      "function handler() {}\n",
+    ].join("\n"),
+  };
+
+  /** An inspected, empty answer: complete, established, nothing observed, nothing hidden. */
+  const assertEmptyAnswer = (section) => {
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.COMPLETE, section.name);
+    assert.equal(section.established, true, section.name);
+    assert.deepEqual(section.observations, [], section.name);
+    assert.deepEqual(section.evidenceIds, [], section.name);
+    assert.equal(section.coverage.truncated, false, section.name);
+    assert.equal(section.coverage.state, PRODUCTION_REPORT_STATES.COMPLETE, section.name);
+    assert.equal(
+      section.unknown.some((record) =>
+        ["section-observations-truncated", "repository-scan-not-complete"].includes(record.reason),
+      ),
+      false,
+      section.name,
+    );
+  };
+
+  it("an empty repository answers all six domains as complete", async () => {
+    const { model, report } = await scanOf({});
+    // The architecture graph's own word for "a complete scan found no entity to relate" is
+    // `unsupported`. The report does not inherit that word: the domain *was* interpreted, and
+    // the honest answer is an empty one.
+    assert.equal(model.architecture.graph.state, "unsupported");
+    for (const name of PRODUCTION_SECTIONS) assertEmptyAnswer(sectionOf(report, name));
+    assert.equal(report.state, PRODUCTION_REPORT_STATES.COMPLETE);
+    assert.equal(report.established, true);
+    assert.equal(report.coverage.observations, 0);
+    assert.equal(report.coverage.inspected, false);
+  });
+
+  it("a repository of unrelated files answers every domain", async () => {
+    const { report } = await scanOf(UNRELATED_REPO);
+    for (const name of PRODUCTION_SECTIONS) {
+      assert.equal(sectionOf(report, name).state, PRODUCTION_REPORT_STATES.COMPLETE, name);
+    }
+    for (const name of ["environment", "container", "ci", "api", "dependencies"]) {
+      assertEmptyAnswer(sectionOf(report, name));
+    }
+    assert.equal(report.state, PRODUCTION_REPORT_STATES.COMPLETE);
+  });
+
+  it("a complete scan with no environment artifact is complete, not unsupported", async () => {
+    const { report } = await scanOf(CLEAN_REPO);
+    const section = sectionOf(report, "environment");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.examples, 0);
+    assert.equal(section.counts.templates, 0);
+    assert.equal(
+      section.unknown.some((record) => record.reason === "no-environment-configuration-observed"),
+      true,
+    );
+  });
+
+  it("a complete scan with no container artifact is complete, not unsupported", async () => {
+    const { report } = await scanOf(CLEAN_REPO);
+    const section = sectionOf(report, "container");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.definitions, 0);
+    assert.equal(section.counts.compositions, 0);
+  });
+
+  it("a complete scan with no CI artifact is complete, not unsupported", async () => {
+    const { report } = await scanOf(CLEAN_REPO);
+    const section = sectionOf(report, "ci");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.workflows, 0);
+    assert.equal(section.counts.providers, 0);
+  });
+
+  it("a complete scan with no API route is complete, not unsupported", async () => {
+    const { model, report } = await scanOf(CLEAN_REPO);
+    assert.equal(model.api.graph.state, "complete");
+    assert.equal(model.api.graph.coverage.routes, 0);
+    const section = sectionOf(report, "api");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.routes, 0);
+    assert.equal(section.counts.handlers, 0);
+  });
+
+  it("a complete scan with no dependency declaration is complete, not unsupported", async () => {
+    const { model, report } = await scanOf(NO_MANIFEST_REPO);
+    assert.equal(model.dependencies.graph.state, "complete");
+    assert.equal(model.dependencies.graph.established, true);
+    const section = sectionOf(report, "dependencies");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.sources, 0);
+    assert.equal(section.counts.ecosystems, 0);
+  });
+
+  it("a complete scan with no architectural relationship is complete, not unsupported", async () => {
+    const { model, report } = await scanOf({});
+    // Nothing to relate: the graph carries no containment edge at all.
+    assert.equal(model.architecture.graph.edges.length, 0);
+    const section = sectionOf(report, "architecture");
+    assertEmptyAnswer(section);
+    assert.equal(section.counts.containmentEdges, 0);
+    assert.equal(section.counts.modules, 0);
+    assert.equal(section.counts.entrypoints, 0);
+    assert.equal(section.counts.isolatedFiles, 0);
+  });
+
+  it("never infers unsupported from an empty observation list", async () => {
+    const reports = await Promise.all(
+      [{}, UNRELATED_REPO, CLEAN_REPO, NO_MANIFEST_REPO].map(async (fixture) =>
+        (await scanOf(fixture)).report,
+      ),
+    );
+    for (const report of reports) {
+      for (const name of PRODUCTION_SECTIONS) {
+        const section = sectionOf(report, name);
+        assert.notEqual(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED, name);
+      }
+    }
+  });
+
+  it("reports an unsupported framework as unsupported, with its basis", async () => {
+    const { model, report } = await scanOf(UNSUPPORTED_FRAMEWORK_REPO);
+    const section = sectionOf(report, "api");
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    assert.equal(section.established, false);
+    assert.deepEqual(section.observations, []);
+    assert.equal(section.counts.routes, 0);
+    assert.equal(
+      section.unknown.some((record) => record.reason === "api-framework-not-interpreted"),
+      true,
+    );
+    // The graph established what it could see; the *domain* is what this build cannot read.
+    assert.equal(model.api.graph.unresolved[0].reason, "framework-unsupported");
+    assert.equal(report.established, true);
+    assert.equal(report.state, PRODUCTION_REPORT_STATES.PARTIAL);
+  });
+
+  it("reports unread source languages as unsupported, with their own basis", async () => {
+    const { model, report } = await scanOf(UNREAD_LANGUAGE_REPO);
+    assert.equal(model.api.graph.state, "unsupported");
+    const section = sectionOf(report, "api");
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    assert.equal(section.established, false);
+    assert.equal(
+      section.unknown.some((record) => record.reason === "api-source-not-interpreted"),
+      true,
+    );
+  });
+
+  it("reports an uninterpreted dependency format as unsupported, with its basis", async () => {
+    const { model, report } = await scanOf({ "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" });
+    assert.equal(model.dependencies.graph.state, "unsupported");
+    const section = sectionOf(report, "dependencies");
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    assert.equal(section.established, false);
+    assert.equal(
+      section.unknown.some((record) => record.reason === "dependency-format-not-interpreted"),
+      true,
+    );
+    // The artifact the inventory *did* observe is still reported with its own evidence:
+    // observing a file is a different statement from interpreting it.
+    assert.equal(
+      section.observations.some((entry) => entry.path === "pnpm-lock.yaml"),
+      true,
+    );
+    assert.equal(report.state, PRODUCTION_REPORT_STATES.PARTIAL);
+  });
+
+  it("keeps a partly unread domain partial rather than unsupported", async () => {
+    const { report } = await scanOf({
+      "package.json": pkg(),
+      "src/app.js": [
+        'import express from "express";',
+        "const app = express();",
+        'app.get("/users", listUsers);',
+        "function listUsers(req, res) {}",
+        "",
+      ].join("\n"),
+      "src/koa.js": [
+        'import Koa from "koa";',
+        "const koa = new Koa();",
+        'koa.get("/koa-route", handler);',
+        "function handler() {}",
+        "",
+      ].join("\n"),
+    });
+    const section = sectionOf(report, "api");
+    // This build read the Express routes, so the domain *is* interpreted: the unread
+    // framework is a gap inside the answer, not a reason to refuse it.
+    assert.equal(section.state, PRODUCTION_REPORT_STATES.PARTIAL);
+    assert.equal(section.established, true);
+    assert.equal(
+      section.observations.some((entry) => entry.kind === "api-route"),
+      true,
+    );
+    assert.equal(
+      section.unknown.some((record) => record.reason === "route-occurrence-not-established"),
+      true,
+    );
+  });
+});
+
 // ─── Report shape, model, query API and engines ──────────────────────────────
 
 describe("production report: model and query API", () => {
@@ -1198,9 +1435,12 @@ describe("production report: model and query API", () => {
     ]);
     assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.COMPLETE), true);
     assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.PARTIAL), true);
-    assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.UNSUPPORTED), true);
     assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.TRUNCATED), true);
+    // The two states that mean "no answer", for two different reasons: nothing was
+    // established, or the domain is not interpreted by this build. An *empty* answer is
+    // neither — it is `complete`.
     assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.UNKNOWN), false);
+    assert.equal(isEstablishedProductionState(PRODUCTION_REPORT_STATES.UNSUPPORTED), false);
   });
 
   it("bounds every collection and records a bound that bit", async () => {
@@ -1361,9 +1601,36 @@ describe("production rule pack", () => {
     const { run } = await runOf({ "package.json": pkg(), "main.js": "export default 1;\n" });
     const container = ruleOf(run, PRODUCTION_RULE_IDS.CONTAINER_INVENTORY);
     assert.deepEqual(container.findings, []);
-    assert.equal(container.metadata.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    // The domain was inspected and is empty: a `complete`, established answer, so the rule
+    // passes on it.
+    assert.equal(container.metadata.state, PRODUCTION_REPORT_STATES.COMPLETE);
     assert.equal(container.metadata.established, true);
     assert.equal(container.status, RULE_OUTCOME_STATUSES.PASS);
+  });
+
+  it("abstains for a domain this build does not interpret", async () => {
+    const { run } = await runOf({
+      "package.json": pkg(),
+      "src/koa.js": [
+        'import Koa from "koa";',
+        "const app = new Koa();",
+        'app.get("/koa-route", handler);',
+        "function handler() {}",
+        "",
+      ].join("\n"),
+    });
+    const api = ruleOf(run, PRODUCTION_RULE_IDS.API_INVENTORY);
+    assert.deepEqual(api.findings, []);
+    assert.equal(api.metadata.state, PRODUCTION_REPORT_STATES.UNSUPPORTED);
+    assert.equal(api.metadata.established, false);
+    assert.equal(api.status, RULE_OUTCOME_STATUSES.UNKNOWN);
+    assert.equal(api.applicability.coverage, APPLICABILITY_COVERAGE.UNKNOWN);
+    assert.equal(
+      api.metadata.abstentions.some(
+        (record) => record.reason === "api-framework-not-interpreted",
+      ),
+      true,
+    );
   });
 
   it("caps a large section and says that it did", async () => {
@@ -1540,6 +1807,38 @@ describe("production report contract", () => {
     assert.equal(
       issuesOfValidate(model).includes(
         "production.report.state: must agree with the area it belongs to",
+      ),
+      true,
+    );
+  });
+
+  it("accepts an inspected, empty section as complete", async () => {
+    // The conflation this contract must not make: an established answer of "nothing here"
+    // is `complete`, and a section is allowed to carry zero observations while saying so.
+    const { model } = await scanOf({
+      "package.json": pkg(),
+      "src/app.js": "export const value = 1;\n",
+    });
+    assert.deepEqual(issuesOfValidate(model), null);
+    const container = sectionOf(model.production.report, "container");
+    assert.equal(container.state, PRODUCTION_REPORT_STATES.COMPLETE);
+    assert.equal(container.established, true);
+    assert.equal(container.observations.length, 0);
+  });
+
+  it("rejects an unsupported section that names no uninterpreted domain", () => {
+    const model = base();
+    // Index 3 is the API domain, whose section answered this repository's routes.
+    const section = model.production.report.sections[3];
+    assert.equal(section.name, "api");
+    section.state = PRODUCTION_REPORT_STATES.UNSUPPORTED;
+    section.coverage.state = PRODUCTION_REPORT_STATES.UNSUPPORTED;
+    section.established = false;
+    // Nothing in this section says the *domain* cannot be interpreted, so the state is an
+    // unsupported claim rather than an unsupported fact.
+    assert.equal(
+      issuesOfValidate(model).includes(
+        "production.report.sections[3].unknown: cannot be unsupported without naming the unread domain",
       ),
       true,
     );
