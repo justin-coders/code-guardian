@@ -12,10 +12,11 @@
  *     file, never a parser, never a container runtime, never a registry;
  *   - every finding cites the evidence the report itself cites, so provenance survives
  *     fingerprinting and "what proves this?" always has an answer;
- *   - every finding carries **its own** closed severity from the report's per-kind table, the
- *     basis it rests on, and the report's own `confidence` word — so the rule's declared
- *     severity is a summary of the strongest statement it can make, never a substitute for the
- *     finding's;
+ *   - every finding carries **its own** classification and closed severity from the report's
+ *     per-kind tables, the basis it rests on, and the report's own `confidence` word — so a
+ *     finding the report classified as an `observation` is never reported as a defect, the
+ *     rule's declared severity is a summary of the strongest statement it can make, and neither
+ *     is a substitute for the finding's own;
  *   - the abstentions the report recorded are carried in the detection's metadata, and a domain
  *     the report could not establish makes the rule abstain rather than pass — so "this
  *     domain's evidence shows no gap" is never claimed over a domain that was not read;
@@ -29,9 +30,12 @@
  *
  * No score, no grade, no percentage, no traffic light, no severity above `medium`, no
  * vulnerability lookup, no CVE, no package audit, no outdated-version check, no licence check,
- * no runtime claim and no comparison against any environment. A finding here states a gap the
- * repository's own evidence proves, the evidence behind it, the basis it rests on, and — in
- * the same breath — what the report could not establish.
+ * no runtime claim and no comparison against any environment. A finding here states the
+ * condition the repository's own evidence establishes, whether it claims a defect, the evidence
+ * behind it, the basis it rests on, and — in the same breath — what the report could not
+ * establish. A missing healthcheck, a release path with no test-shaped name beside it, a manifest
+ * with no lockfile and an entrypoint-shaped file nothing imports are all reported as the
+ * structural observations they are, because no policy in this architecture makes them wrong.
  */
 
 import { createRule } from "../../../../core/index.js";
@@ -43,6 +47,7 @@ import {
   MAX_PRODUCTION_RISK_FINDINGS,
   PRODUCTION_RISK_BASIS,
   PRODUCTION_RISK_CATEGORY,
+  PRODUCTION_RISK_CLASSIFICATION_WORDING,
   PRODUCTION_RISK_CONFIDENCE,
   PRODUCTION_RISK_FINDING_WORDING,
   PRODUCTION_RISK_RULE_IDS,
@@ -101,6 +106,12 @@ function detectSection(context, name) {
         reportEstablished: report?.established === true,
         kind: finding.kind,
         kindWording: PRODUCTION_RISK_FINDING_WORDING[finding.kind] ?? null,
+        // What the finding claims, before how strongly it claims it: an `observation` is a
+        // structural fact and never a defect, and the rule reports the classification it read
+        // rather than deciding one.
+        classification: finding.classification,
+        classificationWording:
+          PRODUCTION_RISK_CLASSIFICATION_WORDING[finding.classification] ?? null,
         severityWording: finding.severityWording ?? null,
         confidence: finding.confidence,
         confidenceWording: finding.confidenceWording ?? null,
@@ -195,10 +206,11 @@ export const productionRiskRules = Object.freeze([
     section: "environment",
     title: "Environment configuration gaps",
     description:
-      `The environment configuration gaps the repository's own evidence proves: a live environment file with no example or template stating its keys, a template class stated more than once, the template stated under more than one naming class, and environment configuration with no sample configuration file. Detection is name-based and no environment file is ever opened, so no value, key or default is established — and every absence claim is withheld while the domain was only partly read, which is what an ignore policy excluding \`.env\` produces. ${NO_SCORING} ${NOT_READ}`,
+      `The environment configuration observations the repository's own evidence establishes: a live environment file with no example or template stating its keys, a template class stated more than once, the template stated under more than one naming class, and environment configuration with no sample configuration file. Every one of them is classified \`observation\`, because no policy contract in the model states that any of these is required — so each states a naming fact, claims no defect and recommends nothing. Detection is name-based and no environment file is ever opened, so no value, key or default is established — and every absence claim is withheld while the domain was only partly read, which is what an ignore policy excluding \`.env\` produces. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "environment", "configuration", "risk"],
     falsePositives: [
       "an environment artifact is classified by its own file name, so a file named `.env.production` is treated as a live environment file whether or not it is used in production",
+      "a naming relationship is not a configuration failure: a live environment file with no example or template is classified `observation`, and no policy in this model requires a template",
       "an environment-shaped path an ignore policy excludes is reported as an abstention, so no absence is claimed over it",
       "a template class is a naming fact: two files in one class need not hold the same keys",
     ],
@@ -208,10 +220,10 @@ export const productionRiskRules = Object.freeze([
     section: "container",
     title: "Container configuration gaps",
     description:
-      `The container configuration gaps the repository's declarations prove: a container definition whose own instructions declare no healthcheck and do not disable one, a composition service whose build names a Dockerfile the repository does not contain, a composition build declaration that does not resolve inside the repository, and a service that runs an image with no build context. Only observed structure is reported: image quality, layer ordering, base-image currency and ignore coverage are never evaluated, and a definition whose instructions could not be read is an abstention rather than a finding. ${NO_SCORING} ${NOT_READ}`,
+      `The container configuration findings the repository's own declarations prove. Two are classified \`risk\` and carried at \`medium\`, because the repository's own declaration cannot hold inside the repository it describes: a service whose build names a Dockerfile the repository does not contain while the container reading was complete, and a build declaration that does not resolve inside the repository. Two are classified \`observation\`: a definition whose own instructions declare no healthcheck and do not disable one, and a service that runs an image with no build context — no contract here states that a healthcheck is required, and no runtime observation establishes that the image is inadequate. Only observed structure is reported: image quality, layer ordering, base-image currency and ignore coverage are never evaluated, a definition whose instructions could not be read is an abstention rather than a finding, and the Dockerfile-not-observed finding is itself withheld unless the container reading was complete. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "container", "docker", "risk"],
     falsePositives: [
-      "a missing healthcheck instruction is reported as absent from the definition, not as an unhealthy image: whether a healthcheck would pass is not established",
+      "a container definition without a healthcheck instruction is classified `observation`: the definition is reported as not declaring one, never as an unhealthy image, and no policy here requires one",
       "an image reference is reported as declared, and the reference itself is never carried into the model, so no registry host travels with the finding",
       "a composition declaration whose context escapes the repository is a finding about the declaration's own text, which is never carried either",
     ],
@@ -221,10 +233,11 @@ export const productionRiskRules = Object.freeze([
     section: "ci",
     title: "CI configuration gaps",
     description:
-      `The CI configuration gaps the repository's workflow file names prove: a release-shaped name with no test- or lint-shaped name beside it, workflow files whose names state no purpose at all, and more than one release-shaped name. Classification is name-based and workflow bodies are never opened, so no step, trigger, permission or outcome is established — and the absence claims are withheld while any name is unclassified, because \`ci.yml\` may well be the test pipeline. ${NO_SCORING} ${NOT_READ}`,
+      `The CI configuration observations the repository's workflow file names establish: a release-shaped name with no test- or lint-shaped name beside it, workflow files whose names state no purpose at all, and more than one release-shaped name. All of them are classified \`observation\`: a workflow's purpose is its own file name and nothing else, and no contract here binds one purpose to another, so a release-only workflow set is never reported as a release-pipeline defect. Classification is name-based and workflow bodies are never opened, so no step, trigger, permission or outcome is established — and the absence claims are withheld while any name is unclassified, because \`ci.yml\` may well be the test pipeline. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "ci", "workflow", "risk"],
     falsePositives: [
       "a workflow's purpose is derived from its file name, so `test.yml` reads as test-shaped whether or not it runs tests",
+      "a release-only workflow set is a naming fact, not a defect: both absence findings are classified `observation`, and no policy here requires a test- or lint-shaped workflow",
       "`ci.yml` and `build.yml` are unclassified by design, so a release name with one of them beside it is an abstention rather than a finding",
       "a release-shaped name is not a statement that a release happens, gates a merge, or succeeds",
     ],
@@ -234,9 +247,10 @@ export const productionRiskRules = Object.freeze([
     section: "api",
     title: "API protection gaps",
     description:
-      `The structural route-protection gaps the accepted API and middleware graphs establish: a route whose middleware could not be established at all, a protected route whose middleware identity is only partly established, and a route declared in a file where a router-scope registration was not established. Missing authentication, weak authorization, administrative exposure, CORS policy and rate limiting are **not** detected and cannot be: this build has no policy, no threat model and no runtime observation to compare a route against. ${NO_SCORING} ${NOT_READ}`,
+      `The structural route-protection observations the accepted API and middleware graphs establish: a route whose middleware could not be established at all, a protected route whose middleware identity is only partly established, and a route declared in a file where a router-scope registration was not established. Each is classified \`observation\`, because it states what this build could not establish and no contract here says that a route must have resolvable middleware. Missing authentication, weak authorization, administrative exposure, CORS policy and rate limiting are **not** detected and cannot be: this build has no policy, no threat model and no runtime observation to compare a route against. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "api", "middleware", "risk"],
     falsePositives: [
+      "an unresolved protection state is classified `observation`: it states what this build could not establish, not that the route is unprotected",
       "a route with unresolved middleware is reported as unresolved, never as unprotected: the report cannot tell whether the middleware exists",
       "a route is reported as declared by its own source file, not as reachable at runtime",
       "a protection state is a structural claim about declared registrations, never about authentication, authorization or rate limiting",
@@ -247,9 +261,10 @@ export const productionRiskRules = Object.freeze([
     section: "dependencies",
     title: "Dependency hygiene gaps",
     description:
-      `The structural dependency gaps the manifests and lockfiles prove: a manifest with no lockfile in its ecosystem, a lockfile with no manifest, dependencies declared in more than one ecosystem, and a dependency source in a format this build does not interpret. There is no vulnerability analysis, no CVE lookup, no package audit, no outdated-version check, no licence check and no registry or network access of any kind — the absence claims are made only over a reading in which every source was parsed. ${NO_SCORING} ${NOT_READ}`,
+      `The structural dependency observations the manifests and lockfiles establish: a manifest with no lockfile in its ecosystem, a lockfile with no manifest, dependencies declared in more than one ecosystem, and a dependency source in a format this build does not interpret. All of them are classified \`observation\`: whether an ecosystem must be locked, whether a lockfile must have a manifest beside it, and whether one ecosystem must be used are questions this model states no policy about, so none of them is reported as a dependency-hygiene failure. There is no vulnerability analysis, no CVE lookup, no package audit, no outdated-version check, no licence check and no registry or network access of any kind — the absence claims are made only over a reading in which every source was parsed. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "dependencies", "lockfile", "risk"],
     falsePositives: [
+      "a manifest with no lockfile is classified `observation`: the report states the structural condition and claims no hygiene failure, because no policy here requires a lockfile",
       "a missing lockfile is a statement about what the repository declares, never about whether its dependencies are safe, current or installable",
       "an uninterpreted source is a statement about the source's format and this build's readers, not about the dependency",
       "two ecosystems are reported as declared, not as a defect: whether each is maintained by its own toolchain is not established",
@@ -260,9 +275,10 @@ export const productionRiskRules = Object.freeze([
     section: "architecture",
     title: "Architecture integrity gaps",
     description:
-      `The structural gaps the architecture and import graphs establish: an entrypoint-shaped file no import relationship relates, a group of such files under one directory, and a container holding a manifest that no import edge touches. There is no coupling score, no complexity metric, no layering verdict, no circular-dependency detection and no dead-code claim — and every one of the three is withheld unless the import graph was complete, because an absence is only reportable over a finished reading. ${NO_SCORING} ${NOT_READ}`,
+      `The structural observations the architecture and import graphs establish: an entrypoint-shaped file no import relationship relates, a group of such files under one directory, and a container holding a manifest that no import edge touches. Each is classified \`observation\`: the import graph's silence about a file is a fact about a relationship, and no contract here states that an entrypoint must be imported or that every module must be reachable, so nothing is reported as runtime-disconnected. There is no coupling score, no complexity metric, no layering verdict, no circular-dependency detection and no dead-code claim — and every one of the three is withheld unless the import graph was complete, because an absence is only reportable over a finished reading. ${NO_SCORING} ${NOT_READ}`,
     tags: ["production", "architecture", "imports", "risk"],
     falsePositives: [
+      "a file with no import relationship is classified `observation`: `main.js` with no incoming edge is a name-shaped structural condition, not a runtime-disconnected entrypoint",
       "an entrypoint is recognised by file name, so `main.js` is entrypoint-shaped whether or not anything starts there",
       "an unconnected container is one no import edge touches *and* that the import graph actually carries a file for: a container of files no reader covers is skipped rather than reported",
       "an isolated file is a file the import graph established no relationship for, which is not a claim that it is unused",

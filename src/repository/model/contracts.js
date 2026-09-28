@@ -135,11 +135,15 @@ import {
 } from "./production-report.js";
 import {
   PRODUCTION_RISK_BASIS_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATION_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATIONS,
+  PRODUCTION_RISK_CLASSIFICATION_VALUES,
   PRODUCTION_RISK_CONFIDENCE_VALUES,
   PRODUCTION_RISK_FINDING_KINDS,
   PRODUCTION_RISK_REPORT_LIMITS,
   PRODUCTION_RISK_REPORT_VERSION,
   PRODUCTION_RISK_SECTIONS,
+  PRODUCTION_RISK_SEVERITIES,
   PRODUCTION_RISK_SEVERITY_BY_KIND,
   PRODUCTION_RISK_SEVERITY_VALUES,
   PRODUCTION_RISK_SECTION_TITLES,
@@ -3430,15 +3434,18 @@ export function validateRepositoryModelGraph(model) {
   // The second report-shaped projection, validated as a document for the same reason the
   // first one is: its findings are what a consumer acts on, so a report that repeats a
   // finding, orders them non-deterministically, cites an observation the model does not
-  // carry, states a severity its own kind does not declare, or renders prose that disagrees
-  // with its data must be a **validation failure** rather than a finding.
+  // carry, states a classification or a severity its own kind does not declare, claims a
+  // defect its kind is classified as an observation for, or renders prose that disagrees with
+  // its data must be a **validation failure** rather than a finding.
   //
   // Six invariants carry the weight:
   //
   //   - the six domains appear **exactly once each, in their declared order**;
-  //   - every finding's `kind` is in *its* section's vocabulary, and its severity, confidence
-  //     and basis are the ones the kind's own tables declare — so a severity can never be
-  //     invented for a kind, and there is no `high` or `critical` anywhere;
+  //   - every finding's `kind` is in *its* section's vocabulary, and its classification,
+  //     severity, confidence and basis are the ones the kind's own tables declare — so neither
+  //     can be invented for a kind, a finding may claim a defect **only** where its kind is
+  //     classified as one (an observation is `info` and may not be anything else), and there is
+  //     no `high` or `critical` anywhere;
   //   - every finding's `statement` and `remediation` are **recomputed** here from its own
   //     record and must match, so a sentence cannot drift from the evidence it claims;
   //   - every cited evidence id resolves to an observation the model carries;
@@ -3548,7 +3555,27 @@ export function validateRepositoryModelGraph(model) {
                 findingIds.add(finding.id);
               }
 
-              // The three closed tables, each pinned to the kind rather than trusted.
+              // The closed tables, each pinned to the kind rather than trusted. The
+              // classification is checked first and the severity against it, because the whole
+              // point of the pair is that a finding cannot claim a defect its kind does not:
+              // an `observation` is `info` and nothing else, and a `risk` may not be silent.
+              if (!PRODUCTION_RISK_CLASSIFICATION_VALUES.includes(finding.classification)) {
+                fail(`${where}.classification`, "must be a classification this report declares");
+              } else if (
+                finding.classification !== PRODUCTION_RISK_CLASSIFICATION_BY_KIND[finding.kind]
+              ) {
+                fail(`${where}.classification`, "must be the classification its kind declares");
+              } else if (
+                finding.classification === PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION &&
+                finding.severity !== PRODUCTION_RISK_SEVERITIES.INFO
+              ) {
+                fail(`${where}.severity`, "cannot claim a defect of a kind that observes");
+              } else if (
+                finding.classification === PRODUCTION_RISK_CLASSIFICATIONS.RISK &&
+                finding.severity === PRODUCTION_RISK_SEVERITIES.INFO
+              ) {
+                fail(`${where}.severity`, "cannot leave a defect its kind declares unstated");
+              }
               if (!PRODUCTION_RISK_SEVERITY_VALUES.includes(finding.severity)) {
                 fail(`${where}.severity`, "must be a severity this report declares");
               } else if (finding.severity !== PRODUCTION_RISK_SEVERITY_BY_KIND[finding.kind]) {

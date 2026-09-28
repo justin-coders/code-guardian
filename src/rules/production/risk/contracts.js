@@ -15,10 +15,20 @@
  * each report one section's findings. There is no aggregate rule, no readiness verdict, no
  * percentage, no grade, no traffic light and no severity above `medium` anywhere in the pack.
  *
+ * ### A finding says whether it claims a defect
+ *
+ * Every finding carries the report's own `classification` — `risk` where the repository's own
+ * declaration cannot hold, `observation` where the evidence establishes a structural condition
+ * and no policy contract in the model makes it required — beside the severity that describes
+ * how certain that defect is. The pack never promotes an observation: a rule states the
+ * classification it read and the pack's own sentence for it, so "this resembles bad practice"
+ * has no way to become "this is wrong" between the report and the rule.
+ *
  * ### Prose is a closed map over the report's own vocabularies
  *
- * A section, a finding kind, a severity, a confidence or an abstention reason the report can
- * produce but this pack cannot describe is a contract mismatch. Each map below is a closed
+ * A section, a finding kind, a classification, a severity, a confidence or an abstention reason
+ * the report can produce but this pack cannot describe is a contract mismatch. Each map below is
+ * a closed
  * phrase table over one of those vocabularies, and the pack's test pins each one to its source
  * so a rename on either side fails the suite instead of silently retiring a value.
  *
@@ -63,15 +73,18 @@ export const PRODUCTION_RISK_RULE_IDS = Object.freeze({
  * A rule's declared severity is the **strongest** severity its own detection table can produce,
  * so a consumer reading the registry sees the strongest statement the rule can make. Every
  * finding carries its own kind's severity from the report, which may be lower — the report's
- * tables are the source, and this map is the pack's summary of them.
+ * tables are the source, and this map is the pack's summary of them. After the phase's
+ * correction only the container rule can produce `medium`, because only its domain contains
+ * kinds whose declarations cannot hold; the other five report structural observations and
+ * declare `info`, which is what "no defect is claimed" reads as in the closed vocabulary.
  */
 export const PRODUCTION_RISK_RULE_SEVERITIES = Object.freeze({
-  environment: "low",
+  environment: "info",
   container: "medium",
-  ci: "low",
-  api: "medium",
-  dependencies: "low",
-  architecture: "low",
+  ci: "info",
+  api: "info",
+  dependencies: "info",
+  architecture: "info",
 });
 
 /**
@@ -162,12 +175,32 @@ export const PRODUCTION_RISK_FINDING_WORDING = Object.freeze({
     "a container holding a manifest that no import edge touches",
 });
 
-/** How each severity reads. Closed over the report's three-word table. */
+/**
+ * How each severity reads. Closed over the report's three-word table.
+ *
+ * Severity describes the certainty of the **defect**, never how undesirable the condition
+ * sounds: an observation that resembles common practice is still an observation, and no rule may
+ * raise or lower one. `low` is deliberately unassigned by every kind in this report.
+ */
 export const PRODUCTION_RISK_SEVERITY_WORDING = Object.freeze({
-  info: "an inventory-only statement: the repository states a structural fact and nothing about a declaration is contradicted",
-  low: "a declaration whose named counterpart the repository does not state, or states more than once",
+  info: "no defect is claimed: the repository's evidence establishes a structural condition that no policy contract in the model makes wrong",
+  low: "reserved for a defect whose proof would be weaker than the repository's own declaration; no kind in this report sits here",
   medium:
-    "a declaration the repository makes that cannot hold as written, or a protection this build could not establish at all",
+    "a defect the repository's own declaration proves, because the declaration cannot hold inside the repository it describes",
+});
+
+/**
+ * How each classification reads. Closed over the report's two-word table.
+ *
+ * This is the pack's answer to the only question the correction turns on — does this finding
+ * claim a defect? — and the two words are the whole of it. An `observation` may never be
+ * reported as a defect, and a `risk` may never be reduced to a structural note; the report's own
+ * validator pins the classification to the kind, and this map only gives it a sentence.
+ */
+export const PRODUCTION_RISK_CLASSIFICATION_WORDING = Object.freeze({
+  risk: "the repository's own declaration cannot hold inside the repository it describes, so repository facts alone prove a defect",
+  observation:
+    "a structural observation rather than a defect: the repository's evidence establishes the condition, and no policy contract in the model states that it is required",
 });
 
 /** How each confidence reads. Closed over the report's four-word table. */
@@ -194,6 +227,8 @@ export const PRODUCTION_RISK_ABSTENTION_WORDING = Object.freeze({
     "no production report was established, so no domain has an answer to derive a gap from",
   "environment-coverage-not-complete":
     "the environment domain was only partly read, so an absence in it cannot be reported",
+  "container-coverage-not-complete":
+    "the container domain was only partly read, so an absence in it cannot be reported",
   "ci-coverage-not-complete":
     "the CI domain was only partly read, so an absence in it cannot be reported",
   "dependency-coverage-not-complete":

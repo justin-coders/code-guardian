@@ -3899,9 +3899,10 @@ export function createRepositoryQuery(model) {
      * means this model carries no report at all.
      *
      * The report contains no score, no grade, no readiness percentage and no aggregate of any
-     * kind, and the query layer adds none: a caller receives the findings, the evidence ids
-     * behind each one, the closed severity its kind declares, the basis it rests on, and the
-     * reasons a domain withheld a detection, and decides for itself.
+     * kind, and the query layer adds none: a caller receives the findings, whether each one
+     * claims a defect at all (`classification`), the closed severity its kind declares, the
+     * basis it rests on, the evidence ids behind it, and the reasons a domain withheld a
+     * detection, and decides for itself.
      *
      * @returns {object|null} A deeply frozen `ProductionRiskReport`, or `null`.
      */

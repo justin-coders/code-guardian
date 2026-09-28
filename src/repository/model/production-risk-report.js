@@ -3,15 +3,42 @@
  *
  * The first evidence-backed production **risk** auditor. Phase 20's ProductionReport
  * inventories what a repository states across six domains; this projection states the
- * **engineering gaps** those same facts prove — and it states them the only way this
- * architecture allows:
+ * **production conditions** those same facts prove — and, where the repository's own
+ * declaration proves one, a defect — and it states them the only way this architecture
+ * allows:
  *
- * > What repository evidence proves this gap?
+ * > What repository evidence proves this?
  *
  * Never "this is probably insecure". A finding is not an assessment; it is a small record
  * whose every sentence is a restatement of an observation the model already carries, whose
  * provenance is a list of evidence ids the model already validated, and whose severity comes
  * from a closed table rather than from a heuristic or a comparison against anything.
+ *
+ * ### A defect is claimed only where the repository's own declaration proves one
+ *
+ * The load-bearing distinction of this projection: a structural condition is not a defect
+ * until something the architecture already states makes it one. Every kind therefore carries a
+ * **classification** from a closed table, because the two halves of that test are separate
+ * questions:
+ *
+ *   risk         the repository's own declaration cannot hold inside the repository it
+ *                describes — a service naming a Dockerfile the repository does not contain
+ *                while the container reading was complete, or a build declaration the
+ *                supported declaration contract cannot resolve at all. The declaration
+ *                contradicts the repository's own contents, so no policy is needed to call it
+ *                a defect.
+ *   observation  the repository's evidence establishes the condition and **no** policy
+ *                contract in the model makes it required: a Dockerfile whose own instructions
+ *                declare no `HEALTHCHECK`, a release-shaped workflow name with no test-shaped
+ *                name beside it, a manifest with no lockfile, `main.js` with no import
+ *                relationship. These are facts about what the repository states; this build
+ *                does not invent the missing policy that would make them violations.
+ *
+ * A finding is a *risk* only when both halves hold, so an absence this build can prove is
+ * still an observation, and a recommendation follows only from a proven defect: a
+ * policy-dependent condition states its fact and recommends nothing. Presence in the
+ * repository is never evidence of a policy — a condition that resembles common practice is
+ * still only an observation until the model states otherwise.
  *
  * ### It derives from the inventory report, and never re-reads
  *
@@ -29,13 +56,14 @@
  *
  * The load-bearing rule of this phase, and the reason this file is longer than it looks:
  * a finding that states a *gap by absence* — no environment template exists, no workflow
- * name states a test purpose, no lockfile was observed, nothing in the import graph relates
+ * name states a test purpose, no lockfile was observed, a service names a Dockerfile the
+ * inventory does not contain, nothing in the import graph relates
  * this file — is only emitted while the reading behind it was complete. When the inventory
  * section was partial (an ignored path, an unparsed source, an unclassified workflow, an
  * incomplete graph, a bound that bit) the corresponding detection is **withheld** and the
  * section records why, naming the detection it could not make. A finding that states a
- * *present* fact — this Dockerfile declares no `HEALTHCHECK`, this service builds a
- * Dockerfile the inventory does not contain, this route's middleware was not established —
+ * *present* fact — this Dockerfile declares no `HEALTHCHECK`, this declaration resolved to a
+ * path the classifier could not resolve, this route's middleware was not established —
  * needs only the record that proves it, because it claims nothing about what the repository
  * does not have.
  *
@@ -43,11 +71,11 @@
  *
  * There is no aggregate anywhere in this module: findings are not summed into a number, no
  * finding is compared with another, there is no readiness percentage and no pass/fail state.
- * `severity` is one of three closed words assigned per finding *kind* by a documented table
- * — `info` for an inventory-only statement, `low` for a declaration whose named counterpart
- * the repository does not state or states twice, `medium` for a declaration that cannot hold
- * as written or a protection this build could not establish at all — and it is never
- * computed. `confidence` is likewise a closed word (`declared`, `absent`, `name-derived`,
+ * `severity` describes the certainty of the *defect* and nothing else, and it is a closed word
+ * assigned per finding *kind* by a documented table — `info` for an observation that claims no
+ * defect, `medium` for a defect the repository's own declaration proves, `low` reserved for a
+ * defect whose proof would be weaker than the declaration itself — and it is never computed.
+ * `confidence` is likewise a closed word (`declared`, `absent`, `name-derived`,
  * `graph-derived`) naming *how* the fact was established, not how strongly anyone believes
  * it. `coverage.severities` is a census of the records the report contains, which is a count
  * of findings and not a score.
@@ -104,22 +132,28 @@ export const PRODUCTION_RISK_STATE_VALUES = Object.freeze(Object.values(PRODUCTI
 /**
  * The severity vocabulary. Three closed words, never `high`, never `critical`.
  *
- * `severity` is assigned per finding *kind* by `PRODUCTION_RISK_SEVERITY_BY_KIND` and is
- * never derived from a count, a ratio, a comparison or an estimate. The three words mean
- * three kinds of statement, documented once, here:
+ * `severity` describes one thing only: how certain this build is that the condition it states
+ * is a **defect**. It is assigned per finding *kind* by `PRODUCTION_RISK_SEVERITY_BY_KIND` and
+ * is never derived from a count, a ratio, a comparison, an estimate, or a resemblance to common
+ * practice. The three words mean three strengths of statement, documented once, here:
  *
- *   medium  a declaration the repository makes cannot hold as written (a build that names a
- *           Dockerfile the repository does not contain, a build context that does not resolve
- *           inside the repository), or a protection this build could not establish at all
- *   low     a declaration exists whose named counterpart the repository does not state or
- *           states more than once (no template beside a live environment file, no
- *           `HEALTHCHECK` instruction, a release path with no test- or lint-shaped
- *           counterpart, a manifest with no lockfile, a lockfile with no manifest, a
- *           duplicated template class, more than one release pipeline)
- *   info    an inventory-only statement with nothing implied about a declaration: a service
- *           running a prebuilt image, a workflow file whose name states no purpose, more than
- *           one dependency ecosystem, a dependency source in a format this build does not
- *           read, a broken-duplicate naming class
+ *   info    no defect is claimed. The repository's evidence establishes the condition — an
+ *           instruction its own Dockerfile does not declare, a workflow name with no
+ *           counterpart name beside it, a manifest with no lockfile, a file no import edge
+ *           relates — and nothing in the architecture makes it required, so it is a
+ *           *structural observation* rather than a violation
+ *   low     deliberately unassigned in this phase: a defect whose proof would be weaker than
+ *           the repository's own declaration, resting for instance on a reading-level
+ *           assumption rather than on the declaration itself. No kind sits here, the word is
+ *           kept in the closed vocabulary on purpose, and a rule can neither raise nor lower a
+ *           severity
+ *   medium  a defect the repository's own declaration proves. The declaration cannot hold
+ *           inside the repository it describes, so the contradiction is in the repository's own
+ *           terms and needs no policy, no threat model and no runtime observation
+ *
+ * Only `PRODUCTION_RISK_CLASSIFICATION_BY_KIND` decides whether a kind may claim a defect at
+ * all; this table decides only how certain that claim is, and the validator requires the two to
+ * agree.
  */
 export const PRODUCTION_RISK_SEVERITIES = Object.freeze({
   INFO: "info",
@@ -131,6 +165,79 @@ export const PRODUCTION_RISK_SEVERITIES = Object.freeze({
 export const PRODUCTION_RISK_SEVERITY_VALUES = Object.freeze(
   Object.values(PRODUCTION_RISK_SEVERITIES),
 );
+
+/**
+ * The classification vocabulary: whether a finding claims a defect at all.
+ *
+ * Two closed words, and the distinction is the correction this phase carries:
+ *
+ *   risk         the repository's own declaration cannot hold inside the repository it
+ *                describes, so repository facts alone prove the defect
+ *   observation  the repository's evidence establishes the condition, and no policy contract
+ *                in the model makes it required, so no defect is claimed
+ *
+ * A finding may claim a defect only when *both* halves of the test hold: the evidence
+ * establishes the condition, **and** something the architecture already states makes the
+ * condition wrong. The second half is never supplied by this build. Where a policy would be
+ * needed — a healthcheck must be declared, a release path must have a test path, a manifest
+ * must be locked, an entrypoint must be imported — the finding is an observation, and the
+ * missing policy is not invented to promote it.
+ */
+export const PRODUCTION_RISK_CLASSIFICATIONS = Object.freeze({
+  RISK: "risk",
+  OBSERVATION: "observation",
+});
+
+/** The classification vocabulary as a list, for validation. */
+export const PRODUCTION_RISK_CLASSIFICATION_VALUES = Object.freeze(
+  Object.values(PRODUCTION_RISK_CLASSIFICATIONS),
+);
+
+/**
+ * Classification per kind: the table that decides whether a defect may be claimed.
+ *
+ * Two of the twenty-two kinds are `risk`, and both are Compose *declarations* that contradict
+ * the repository's own contents under the supported declaration contract: a build naming a
+ * Dockerfile the repository does not contain while the container reading was complete, and a
+ * build declaration the classifier could not resolve inside the repository at all. Each is a
+ * statement the repository makes about itself that its own contents do not satisfy, so no
+ * external policy is required to call it wrong.
+ *
+ * Every other kind is an `observation`. Each states a condition the repository's evidence
+ * establishes — an instruction a Dockerfile does not declare, a workflow name with no
+ * counterpart name beside it, a manifest with no lockfile, a route whose middleware this build
+ * could not establish, a file no import edge relates — and no contract in this architecture
+ * makes any of them required. Calling them defects would mean inventing a policy, which this
+ * report refuses to do; calling them facts is exactly what it does.
+ *
+ * The list is a decision, written out rather than computed from severity, and the validator
+ * rejects a finding whose classification disagrees with its kind or whose severity claims a
+ * defect its classification does not.
+ */
+export const PRODUCTION_RISK_CLASSIFICATION_BY_KIND = Object.freeze({
+  "environment-file-without-template": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "environment-template-class-duplicated": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "environment-template-classes-conflict": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "environment-configuration-without-sample": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "container-healthcheck-missing": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "container-compose-dockerfile-not-observed": PRODUCTION_RISK_CLASSIFICATIONS.RISK,
+  "container-compose-build-context-unresolved": PRODUCTION_RISK_CLASSIFICATIONS.RISK,
+  "container-service-image-without-build": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "ci-release-without-test": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "ci-release-without-lint": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "ci-workflows-unclassified": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "ci-release-workflows-multiple": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "api-route-protection-unresolved": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "api-protected-route-partially-unresolved": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "api-router-inheritance-incomplete": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "dependency-manifest-without-lockfile": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "dependency-lockfile-without-manifest": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "dependency-ecosystems-multiple": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "dependency-source-unresolved": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "architecture-entrypoint-disconnected": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "architecture-isolated-cluster": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+  "architecture-module-unconnected": PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+});
 
 /**
  * The confidence vocabulary: how the fact behind a finding was established.
@@ -209,32 +316,36 @@ export const PRODUCTION_RISK_FINDING_KINDS = Object.freeze({
  * Severity per kind: the table the phase requires, declared once and never computed.
  *
  * Every value is one of `PRODUCTION_RISK_SEVERITIES`, every kind has exactly one, and the
- * validator rejects a finding whose severity disagrees with its kind. A rule cannot raise or
- * lower a severity, and no severity is `high` or `critical` in this phase.
+ * validator rejects a finding whose severity disagrees with its kind, whose severity claims a
+ * defect its classification does not, or whose classification cannot support its severity. A
+ * rule cannot raise or lower a severity, and no severity is `high` or `critical` in this
+ * phase: two kinds are `medium` — the two Compose declarations that cannot hold — and every
+ * other kind is `info`, because a condition the repository's own evidence establishes and no
+ * policy contract makes wrong is an observation, not a defect.
  */
 export const PRODUCTION_RISK_SEVERITY_BY_KIND = Object.freeze({
-  "environment-file-without-template": PRODUCTION_RISK_SEVERITIES.LOW,
-  "environment-template-class-duplicated": PRODUCTION_RISK_SEVERITIES.LOW,
-  "environment-template-classes-conflict": PRODUCTION_RISK_SEVERITIES.LOW,
+  "environment-file-without-template": PRODUCTION_RISK_SEVERITIES.INFO,
+  "environment-template-class-duplicated": PRODUCTION_RISK_SEVERITIES.INFO,
+  "environment-template-classes-conflict": PRODUCTION_RISK_SEVERITIES.INFO,
   "environment-configuration-without-sample": PRODUCTION_RISK_SEVERITIES.INFO,
-  "container-healthcheck-missing": PRODUCTION_RISK_SEVERITIES.LOW,
+  "container-healthcheck-missing": PRODUCTION_RISK_SEVERITIES.INFO,
   "container-compose-dockerfile-not-observed": PRODUCTION_RISK_SEVERITIES.MEDIUM,
   "container-compose-build-context-unresolved": PRODUCTION_RISK_SEVERITIES.MEDIUM,
   "container-service-image-without-build": PRODUCTION_RISK_SEVERITIES.INFO,
-  "ci-release-without-test": PRODUCTION_RISK_SEVERITIES.LOW,
-  "ci-release-without-lint": PRODUCTION_RISK_SEVERITIES.LOW,
+  "ci-release-without-test": PRODUCTION_RISK_SEVERITIES.INFO,
+  "ci-release-without-lint": PRODUCTION_RISK_SEVERITIES.INFO,
   "ci-workflows-unclassified": PRODUCTION_RISK_SEVERITIES.INFO,
-  "ci-release-workflows-multiple": PRODUCTION_RISK_SEVERITIES.LOW,
-  "api-route-protection-unresolved": PRODUCTION_RISK_SEVERITIES.MEDIUM,
-  "api-protected-route-partially-unresolved": PRODUCTION_RISK_SEVERITIES.MEDIUM,
-  "api-router-inheritance-incomplete": PRODUCTION_RISK_SEVERITIES.LOW,
-  "dependency-manifest-without-lockfile": PRODUCTION_RISK_SEVERITIES.LOW,
-  "dependency-lockfile-without-manifest": PRODUCTION_RISK_SEVERITIES.LOW,
+  "ci-release-workflows-multiple": PRODUCTION_RISK_SEVERITIES.INFO,
+  "api-route-protection-unresolved": PRODUCTION_RISK_SEVERITIES.INFO,
+  "api-protected-route-partially-unresolved": PRODUCTION_RISK_SEVERITIES.INFO,
+  "api-router-inheritance-incomplete": PRODUCTION_RISK_SEVERITIES.INFO,
+  "dependency-manifest-without-lockfile": PRODUCTION_RISK_SEVERITIES.INFO,
+  "dependency-lockfile-without-manifest": PRODUCTION_RISK_SEVERITIES.INFO,
   "dependency-ecosystems-multiple": PRODUCTION_RISK_SEVERITIES.INFO,
   "dependency-source-unresolved": PRODUCTION_RISK_SEVERITIES.INFO,
-  "architecture-entrypoint-disconnected": PRODUCTION_RISK_SEVERITIES.LOW,
-  "architecture-isolated-cluster": PRODUCTION_RISK_SEVERITIES.LOW,
-  "architecture-module-unconnected": PRODUCTION_RISK_SEVERITIES.LOW,
+  "architecture-entrypoint-disconnected": PRODUCTION_RISK_SEVERITIES.INFO,
+  "architecture-isolated-cluster": PRODUCTION_RISK_SEVERITIES.INFO,
+  "architecture-module-unconnected": PRODUCTION_RISK_SEVERITIES.INFO,
 });
 
 /**
@@ -315,6 +426,7 @@ export const PRODUCTION_RISK_UNKNOWN_REASONS = Object.freeze({
   ]),
   container: Object.freeze([
     "production-report-not-established",
+    "container-coverage-not-complete",
     "risk-finding-without-evidence",
     "risk-findings-truncated",
   ]),
@@ -448,8 +560,38 @@ function boundedPaths(paths) {
   };
 }
 
-/** The prose of a finding, rendered from its own record. Pure, total, and validated. */
+/**
+ * The clause every statement ends with, and the reason the clause is a constant.
+ *
+ * Whether a finding claims a defect is a property of its *kind*, not of its fields, so the
+ * sentence that says so is one of exactly two sentences rather than per-kind prose: a reader
+ * who never looks at the record still cannot read a structural observation as a violation, and
+ * the validator recomputes the whole sentence either way. Neither clause names a consequence, a
+ * likelihood, a severity word or a runtime state, because none of those is established.
+ */
+const RISK_CLAUSE =
+  "This is a defect, not a policy preference: the repository's own declaration cannot hold inside the repository it describes.";
+
+const OBSERVATION_CLAUSE =
+  "This is a structural observation, not a defect: no policy contract in this model states that this condition is required.";
+
+/**
+ * The prose of a finding, rendered from its own record. Pure, total, and validated.
+ *
+ * The fact is rendered from the finding's own fields and the clause that says whether it is a
+ * defect is appended from its kind's own table, so a finding cannot be worded as a defect while
+ * its kind is an observation, or the other way round.
+ */
 export function renderRiskStatement(kind, finding) {
+  const clause =
+    PRODUCTION_RISK_CLASSIFICATION_BY_KIND[kind] === PRODUCTION_RISK_CLASSIFICATIONS.RISK
+      ? RISK_CLAUSE
+      : OBSERVATION_CLAUSE;
+  return `${renderRiskObservation(kind, finding)} ${clause}`;
+}
+
+/** The fact one finding states, without the clause that says whether it is a defect. */
+function renderRiskObservation(kind, finding) {
   const paths = Array.isArray(finding.paths) ? finding.paths : [];
   const more = finding.pathsTruncated === true ? " and more" : "";
   const path = typeof finding.path === "string" ? finding.path : null;
@@ -532,39 +674,23 @@ export function renderRiskStatement(kind, finding) {
 /**
  * The remediation a finding implies, rendered from its own record, or `null`.
  *
- * `null` is the common case and it is a statement, not an omission: where the gap is about
- * what this build could establish — a middleware identity it could not resolve, a router
- * whose registrations it could not read, a dependency source in a format it does not
- * interpret, an entrypoint whose reachability nothing states, a container with no import
- * relationship, a service running a prebuilt image, more than one ecosystem, a workflow whose
- * name states no purpose, an environment with no sample configuration — nothing is implied
- * about the repository, so nothing is recommended.
+ * `null` is the common case and it is a statement, not an omission: a remediation follows only
+ * from a **defect**, because a recommendation is a claim about what the repository should
+ * state. Every observation therefore recommends nothing — a healthcheck the Dockerfile does not
+ * declare, a release name with no test name beside it, a manifest with no lockfile, a
+ * middleware identity this build could not resolve, a dependency source in a format it does not
+ * interpret, an entrypoint nothing imports, a service running a prebuilt image, more than one
+ * ecosystem, a workflow whose name states no purpose — because no policy here requires the
+ * change that advice would presuppose. Where the finding *is* a defect, the remediation is the
+ * correction the repository's own declaration implies and nothing wider.
  */
 export function renderRiskRemediation(kind, finding) {
   const path = typeof finding.path === "string" ? finding.path : null;
   switch (kind) {
-    case "environment-file-without-template":
-      return "Add an example or template file that states the environment's keys.";
-    case "environment-template-class-duplicated":
-      return "Keep one file per template class.";
-    case "environment-template-classes-conflict":
-      return "Keep one naming convention for the environment template.";
-    case "container-healthcheck-missing":
-      return `Declare a \`HEALTHCHECK\` instruction in \`${path}\`.`;
     case "container-compose-dockerfile-not-observed":
       return `Add \`${path}\`, or correct the declaration that names it.`;
     case "container-compose-build-context-unresolved":
       return "Point the declaration at a context and Dockerfile inside the repository.";
-    case "ci-release-without-test":
-      return "Add a workflow file whose name states a test purpose.";
-    case "ci-release-without-lint":
-      return "Add a workflow file whose name states a lint purpose.";
-    case "ci-release-workflows-multiple":
-      return "Keep one release pipeline.";
-    case "dependency-manifest-without-lockfile":
-      return "Commit a lockfile for the ecosystem's manifest.";
-    case "dependency-lockfile-without-manifest":
-      return "Add the manifest that declares the dependencies the lockfile resolves, or remove the lockfile.";
     default:
       return null;
   }
@@ -574,13 +700,14 @@ export function renderRiskRemediation(kind, finding) {
  * One finding record, with its vocabulary fields filled from the tables above.
  *
  * The caller supplies the kind, the deterministic key and the evidence; everything else that
- * is a *contract* value (severity, confidence, basis) and everything that is *prose*
- * (statement, remediation) is derived here, so a finding cannot be built that disagrees with
- * the tables or with its own data.
+ * is a *contract* value (classification, severity, confidence, basis) and everything that is
+ * *prose* (statement, remediation) is derived here, so a finding cannot be built that
+ * disagrees with the tables or with its own data.
  */
 function findingFor(section, kind, fields) {
   const record = { section, kind, key: fields.key, ...fields };
   record.severity = PRODUCTION_RISK_SEVERITY_BY_KIND[kind];
+  record.classification = PRODUCTION_RISK_CLASSIFICATION_BY_KIND[kind];
   record.confidence = PRODUCTION_RISK_CONFIDENCE_BY_KIND[kind];
   record.basis = PRODUCTION_RISK_BASIS_BY_KIND[kind];
   record.id = `${section}:${kind}:${fields.key}`;
@@ -710,7 +837,7 @@ function observationsOf(section, kind) {
 // ─── Environment configuration ───────────────────────────────────────────────
 
 /**
- * Environment gaps.
+ * Environment configuration.
  *
  * Three of the four detections rest on *absence* — no example or template beside a live
  * environment file, no sample configuration class, no second naming class — so all three are
@@ -719,6 +846,11 @@ function observationsOf(section, kind) {
  * that did not look at it cannot say whether a live file exists, and the section abstains
  * with the inventory report's own `environment-configuration-ignored` instead of reporting an
  * absence it did not establish.
+ *
+ * All four are `observations`. A file named `.env` is not a declaration that its keys must be
+ * documented, a second `.env`sibling is not a declaration that one is canonical, and no
+ * contract in this model states that an environment configuration must have a sample — so each
+ * of them states a naming fact the scan established and claims no defect.
  */
 function detectEnvironmentRisks({ section, cite, complete }) {
   const findings = [];
@@ -822,26 +954,37 @@ function detectEnvironmentRisks({ section, cite, complete }) {
 // ─── Container configuration ─────────────────────────────────────────────────
 
 /**
- * Container gaps.
+ * Container configuration.
  *
- * Every detection here is a statement about a **present** record, so none of them needs the
- * container section to be complete — the section's witness is the Dockerfile's own
- * instructions or the Compose file's own declaration, both read in full before they were
- * recorded:
+ * Two of the four detections are `risks`, and the reason is narrow: a Compose file's own
+ * declaration cannot hold inside the repository that contains it. A service whose `build:` names
+ * a Dockerfile the inventory does not contain, while the container reading was complete, states
+ * a file that does not exist; a build declaration the classifier could not resolve inside the
+ * repository states a build that cannot take place there. Both contradict the repository's own
+ * contents, so neither needs a policy, a threat model or a runtime observation to be called a
+ * defect, and both are `medium`.
+ *
+ * The other two are `observations`, and the difference is stated rather than implied:
  *
  *   - a parsed Dockerfile that declares no `HEALTHCHECK` and does not disable one proved that
- *     absence itself, instruction by instruction;
- *   - a declaration that resolved to a path the inventory does not contain states a file that
- *     does not exist, whatever else the scan did;
- *   - a declaration the classifier could not resolve inside the repository states its own
- *     defect;
- *   - a service that states an `image:` key and no `build:` states it in its own keys.
+ *     absence itself, instruction by instruction — and nothing in this architecture states that
+ *     a healthcheck is required, nor can this build observe whether the image it builds is
+ *     healthy at runtime;
+ *   - a service that states an `image:` key and no `build:` states it in its own keys, and
+ *     whether a prebuilt image is adequate is neither declared nor observable here.
  *
- * A Dockerfile whose instructions could **not** be read is the case that is deliberately
- * absent from the findings: the inventory report already abstains with
- * `dockerfile-structure-not-established`, and an unread definition is not an unhealthy one.
+ * The Dockerfile-not-observed detection is the one that reads like a present fact and is not:
+ * "the inventory contains no such file" is a claim about what the repository does **not** have,
+ * so it is made only while the container reading was complete. When it was not — an incomplete
+ * scan, a cut-short inventory, a definition whose instructions could not be read, a Compose file
+ * whose declarations could not be established — the detection is withheld and the section says
+ * which one it could not make with `container-coverage-not-complete`.
+ *
+ * A Dockerfile whose instructions could **not** be read is deliberately absent from the
+ * findings: the inventory report already abstains with `dockerfile-structure-not-established`,
+ * and an unread definition is not an unhealthy one.
  */
-function detectContainerRisks({ section, cite, unobservedDeclarations, imageDeclarations, unestablishedComposeSources }) {
+function detectContainerRisks({ section, cite, complete, unobservedDeclarations, imageDeclarations, unestablishedComposeSources }) {
   const findings = [];
   const unknown = [];
   let withheld = 0;
@@ -869,7 +1012,21 @@ function detectContainerRisks({ section, cite, unobservedDeclarations, imageDecl
     observationsOf(section, "container-composition").map((entry) => [entry.path, entry]),
   );
 
-  for (const declaration of unobservedDeclarations ?? []) {
+  // The one detection here that states an absence: the repository does not contain the file the
+  // declaration names. It is reportable only over a reading that finished, so an incomplete
+  // container reading withholds it and names it.
+  const unobserved = unobservedDeclarations ?? [];
+  if (unobserved.length > 0 && !complete) {
+    unknown.push(
+      abstention(
+        "container-coverage-not-complete",
+        "container-compose-dockerfile-not-observed",
+        1,
+      ),
+    );
+  }
+
+  for (const declaration of complete ? unobserved : []) {
     const cited = cite(...(declaration.evidenceIds ?? []), ...(composeObservations.get(declaration.source)?.evidenceIds ?? []));
     if (cited.length === 0) {
       withheld += 1;
@@ -935,7 +1092,9 @@ function detectContainerRisks({ section, cite, unobservedDeclarations, imageDecl
 
   // A Compose file whose declarations are not established is carried as an abstention by the
   // inventory report already; it is repeated here so a consumer reading only the risk report
-  // sees that this domain's build statements are bounded by it.
+  // sees that this domain's build statements are bounded by it. The build-context finding
+  // itself needs no completeness: a declaration the classifier could not resolve inside the
+  // repository states its own defect, whatever else the scan did or could not do.
   const unreadable = (unestablishedComposeSources ?? []).filter(
     (source) => !COMPOSE_DECLARATION_DEFECTS.includes(source.detail ?? null),
   ).length;
@@ -978,6 +1137,13 @@ const COMPOSE_DECLARATION_DEFECTS = Object.freeze([
  *
  * "More than one release name" is the exception: it claims nothing about what is absent, so it
  * is made from the classified names alone, whatever else the scan did.
+ *
+ * All four are `observations`. A workflow's purpose is its file name and nothing else, and no
+ * contract in this model binds one purpose to another: a release-shaped name is not a
+ * declaration that a test- or lint-shaped workflow must exist, and nothing states that a
+ * repository may name only one release path. Each detection therefore states the naming fact it
+ * proved and claims no defect — an unclassified name beside a release name still withholds the
+ * absence claims, because "no test workflow" cannot be said while `ci.yml` might be one.
  */
 function detectCiRisks({ section, cite, complete }) {
   const findings = [];
@@ -1093,6 +1259,11 @@ function detectCiRisks({ section, cite, complete }) {
  *
  * Every finding here is a statement about a record the graph produced, so none of them needs
  * a complete reading; a graph that was not established at all withholds all three and says so.
+ *
+ * All three are `observations`. Each says what the middleware graph could and could not
+ * establish — "this build could not resolve this route's protection" is a fact about the
+ * reading, not about the route — and no contract in this model states that a route must have
+ * resolvable middleware, so none of them is reported as a defect.
  */
 function detectApiRisks({ section, cite, middlewareGraph, apiGraph, middlewareEstablished }) {
   const findings = [];
@@ -1234,6 +1405,11 @@ function detectApiRisks({ section, cite, middlewareGraph, apiGraph, middlewareEs
  * inventory report's own `complete` state already requires all sources to have been parsed
  * for. The other two state a present fact (more than one ecosystem; a source this build could
  * not interpret) and need nothing beyond the record.
+ *
+ * All four are `observations`. Whether an ecosystem must be locked, whether a lockfile must have
+ * a manifest beside it, whether one ecosystem must be used rather than several, and whether a
+ * source's format ought to be one this build reads are all questions this model states no
+ * policy about — so the report states the structural fact and refuses the hygiene verdict.
  */
 function detectDependencyRisks({ section, cite, complete }) {
   const findings = [];
@@ -1352,6 +1528,11 @@ function detectDependencyRisks({ section, cite, complete }) {
  * files no import reader covers (a language this build does not read) is a place the import
  * graph says nothing about, and "nothing imports it" would be a claim from an absent
  * substrate.
+ *
+ * All three are `observations`. The import graph's silence about a file is a fact about a
+ * relationship, and no contract in this model states that an entrypoint must be imported or that
+ * every module must be reachable: "no import edge relates this" is not "this is disconnected at
+ * runtime", and this report never says the latter.
  */
 function detectArchitectureRisks({ section, cite, complete, architectureGraph, importGraph }) {
   const findings = [];

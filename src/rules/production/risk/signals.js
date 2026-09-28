@@ -27,6 +27,7 @@ import {
 
 import {
   PRODUCTION_RISK_ABSTENTION_WORDING,
+  PRODUCTION_RISK_CLASSIFICATION_WORDING,
   PRODUCTION_RISK_CONFIDENCE_WORDING,
   PRODUCTION_RISK_FINDING_WORDING,
   PRODUCTION_RISK_SECTION_WORDING,
@@ -51,6 +52,7 @@ function describeFinding(finding) {
     evidenceIds: [...finding.evidenceIds],
     paths: Array.isArray(finding.paths) ? [...finding.paths] : [],
     kindWording: PRODUCTION_RISK_FINDING_WORDING[finding.kind] ?? null,
+    classificationWording: PRODUCTION_RISK_CLASSIFICATION_WORDING[finding.classification] ?? null,
     severityWording: PRODUCTION_RISK_SEVERITY_WORDING[finding.severity] ?? null,
     confidenceWording: PRODUCTION_RISK_CONFIDENCE_WORDING[finding.confidence] ?? null,
     fingerprintKey: `production.risk:${finding.section}:${stabilityHash(finding.id)}`,
@@ -161,6 +163,11 @@ export const PRODUCTION_RISK_DESCRIBED_KINDS = Object.freeze(
 /** The severity vocabulary this pack can describe, for tests. */
 export const PRODUCTION_RISK_DESCRIBED_SEVERITIES = Object.freeze(
   Object.keys(PRODUCTION_RISK_SEVERITY_WORDING),
+);
+
+/** The classification vocabulary this pack can describe, for tests. */
+export const PRODUCTION_RISK_DESCRIBED_CLASSIFICATIONS = Object.freeze(
+  Object.keys(PRODUCTION_RISK_CLASSIFICATION_WORDING),
 );
 
 /** The confidence vocabulary this pack can describe, for tests. */

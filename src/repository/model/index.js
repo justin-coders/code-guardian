@@ -280,13 +280,17 @@ export {
   isEstablishedProductionState,
 } from "./production-report.js";
 
-// Phase 21 — the production **risk** report: the same six domains, read for the engineering
-// gaps the inventory's own evidence proves. Its six section names, its three-word severity
-// table, its four-word confidence vocabulary, its per-kind basis table, its abstention
+// Phase 21 — the production **risk** report: the same six domains, read for the production
+// conditions the inventory's own evidence proves, and for a defect only where the repository's
+// own declaration proves one. Its six section names, its classification table, its three-word
+// severity table, its four-word confidence vocabulary, its per-kind basis table, its abstention
 // vocabulary and its bounds are all part of its interface, so all of them are exported rather
 // than reached for through the report object.
 export {
   PRODUCTION_RISK_BASIS_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATION_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATIONS,
+  PRODUCTION_RISK_CLASSIFICATION_VALUES,
   PRODUCTION_RISK_CONFIDENCE_BY_KIND,
   PRODUCTION_RISK_CONFIDENCES,
   PRODUCTION_RISK_CONFIDENCE_VALUES,

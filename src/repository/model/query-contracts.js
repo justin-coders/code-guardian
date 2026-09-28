@@ -59,6 +59,7 @@ import {
   PRODUCTION_UNKNOWN_REASONS as PRODUCTION_UNKNOWN_REASONS_SOURCE,
 } from "./production-report.js";
 import {
+  PRODUCTION_RISK_CLASSIFICATION_VALUES as PRODUCTION_RISK_CLASSIFICATION_VALUES_SOURCE,
   PRODUCTION_RISK_FINDING_KINDS as PRODUCTION_RISK_FINDING_KINDS_SOURCE,
   PRODUCTION_RISK_REPORT_VERSION,
   PRODUCTION_RISK_SECTIONS as PRODUCTION_RISK_SECTIONS_SOURCE,
@@ -1909,6 +1910,7 @@ export const PRODUCTION_RISK_FINDING_RESULT_FIELDS = Object.freeze([
   "section",
   "kind",
   "severity",
+  "classification",
   "confidence",
   "basis",
   "key",
@@ -1936,6 +1938,9 @@ export const PRODUCTION_RISK_STATE_VALUES = PRODUCTION_RISK_STATE_VALUES_SOURCE;
 
 /** The severity vocabulary, re-exported for the same reason. */
 export const PRODUCTION_RISK_SEVERITY_VALUES = PRODUCTION_RISK_SEVERITY_VALUES_SOURCE;
+
+/** The classification vocabulary — whether a finding may claim a defect at all. */
+export const PRODUCTION_RISK_CLASSIFICATION_VALUES = PRODUCTION_RISK_CLASSIFICATION_VALUES_SOURCE;
 
 /** The six audit domains, re-exported for the same reason. */
 export const RISK_SECTIONS = PRODUCTION_RISK_SECTIONS_SOURCE;
@@ -2195,10 +2200,12 @@ export function validateProductionRiskSectionResult(value) {
 /**
  * Validate one risk finding's addressable shape.
  *
- * The severity must be one of the three closed words and the basis non-empty, so a consumer
- * can switch on both without defensively guessing; the statement must be a non-empty sentence
- * and the remediation `null` or a bounded sentence, so "a finding may carry advice it did not
- * imply" is not expressible here either.
+ * The classification must be present and one of its two closed words, so a consumer can always
+ * tell a claimed defect from a structural observation before it reads the severity; the severity
+ * must be one of the three closed words and the basis non-empty, so a consumer can switch on
+ * both without defensively guessing; the statement must be a non-empty sentence and the
+ * remediation `null` or a bounded sentence, so "a finding may carry advice it did not imply" is
+ * not expressible here either.
  */
 export function validateRiskFinding(value) {
   const contract = "ProductionRiskFindingResult";
@@ -2208,6 +2215,9 @@ export function validateRiskFinding(value) {
 
   if (!PRODUCTION_RISK_SECTIONS_SOURCE.includes(value.section)) {
     fail(`${contract}.section`, "must be a declared audit domain");
+  }
+  if (!PRODUCTION_RISK_CLASSIFICATION_VALUES_SOURCE.includes(value.classification)) {
+    fail(`${contract}.classification`, "must be one of the report's closed classifications");
   }
   if (!PRODUCTION_RISK_SEVERITY_VALUES_SOURCE.includes(value.severity)) {
     fail(`${contract}.severity`, "must be one of the report's closed severities");

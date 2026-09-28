@@ -47,6 +47,9 @@ import {
   MIDDLEWARE_PROTECTION_STATES,
   PRODUCTION_REPORT_STATES,
   PRODUCTION_RISK_BASIS_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATION_BY_KIND,
+  PRODUCTION_RISK_CLASSIFICATIONS,
+  PRODUCTION_RISK_CLASSIFICATION_VALUES,
   PRODUCTION_RISK_CONFIDENCE_BY_KIND,
   PRODUCTION_RISK_CONFIDENCES,
   PRODUCTION_RISK_CONFIDENCE_VALUES,
@@ -89,9 +92,11 @@ import {
   PRODUCTION_RISK_ANALYZER_SCOPE,
   PRODUCTION_RISK_BASIS,
   PRODUCTION_RISK_CATEGORY,
+  PRODUCTION_RISK_CLASSIFICATION_WORDING,
   PRODUCTION_RISK_CONFIDENCE,
   PRODUCTION_RISK_CONFIDENCE_WORDING,
   PRODUCTION_RISK_DESCRIBED_ABSTENTIONS,
+  PRODUCTION_RISK_DESCRIBED_CLASSIFICATIONS,
   PRODUCTION_RISK_DESCRIBED_CONFIDENCES,
   PRODUCTION_RISK_DESCRIBED_KINDS,
   PRODUCTION_RISK_DESCRIBED_SECTIONS,
@@ -396,16 +401,16 @@ describe("production risk: environment", () => {
     const section = riskSectionOf(risk, "environment");
     const finding = findingOf(section, "environment-file-without-template");
     assert.notEqual(finding, null);
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.LOW);
+    // A naming relationship, not a policy violation: no contract here requires a template.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.ABSENT);
     assert.equal(finding.basis, "environment-name-table");
     assert.deepEqual(finding.paths, [".env"]);
     assert.equal(finding.count, 1);
     assert.equal(finding.statement.includes("no example or template file"), true);
-    assert.equal(
-      finding.remediation,
-      "Add an example or template file that states the environment's keys.",
-    );
+    assert.equal(finding.statement.includes("structural observation, not a defect"), true);
+    assert.equal(finding.remediation, null);
     // Every citation resolves to an observation the model carries.
     const ids = new Set(fullModel.evidence.map((record) => record.id));
     assert.equal(finding.evidenceIds.every((id) => ids.has(id)), true);
@@ -425,8 +430,10 @@ describe("production risk: environment", () => {
     assert.equal(duplicated.class, "environment-example");
     assert.equal(duplicated.count, 2);
     assert.deepEqual(duplicated.paths, [".env.example", ".env.sample"]);
-    assert.equal(duplicated.severity, PRODUCTION_RISK_SEVERITIES.LOW);
-    assert.equal(duplicated.remediation, "Keep one file per template class.");
+    assert.equal(duplicated.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(duplicated.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    // "Keep one file per template class" would be invented policy, so nothing is advised.
+    assert.equal(duplicated.remediation, null);
   });
 
   it("reports the template stated under two naming classes", async () => {
@@ -503,12 +510,16 @@ describe("production risk: container", () => {
     const finding = findingOf(section, "container-healthcheck-missing");
     assert.notEqual(finding, null);
     assert.equal(finding.path, "Dockerfile");
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.LOW);
+    // The absence is proven, the requirement is not: no contract here states that a container
+    // definition must declare a healthcheck, so this is an observation and not a defect.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.DECLARED);
     assert.equal(finding.basis, "dockerfile-instructions");
     assert.equal(finding.instructions, 2);
     assert.equal(finding.statement.includes("read from its own instructions"), true);
-    assert.equal(finding.remediation, "Declare a `HEALTHCHECK` instruction in `Dockerfile`.");
+    assert.equal(finding.statement.includes("structural observation, not a defect"), true);
+    assert.equal(finding.remediation, null);
   });
 
   it("reports nothing for a definition that declares or disables a healthcheck", async () => {
@@ -575,6 +586,13 @@ describe("production risk: container", () => {
     assert.equal(finding.detail, "context-outside-repository");
     assert.equal(finding.count, 1);
     assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.MEDIUM);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.RISK);
+    // This declaration cannot hold inside the repository, so it *is* a defect and the
+    // remediation is the correction it implies.
+    assert.equal(
+      finding.remediation,
+      "Point the declaration at a context and Dockerfile inside the repository.",
+    );
     // The declaration's text is never carried, so no host path travels with the finding.
     assert.equal(JSON.stringify(finding).includes("/etc"), false);
     assert.equal(JSON.stringify(section.unknown).includes("/etc"), false);
@@ -624,10 +642,13 @@ describe("production risk: ci", () => {
     assert.deepEqual(kindsOf(section).sort(), ["ci-release-without-lint", "ci-release-without-test"]);
     const finding = findingOf(section, "ci-release-without-test");
     assert.deepEqual(finding.paths, [".github/workflows/release.yml"]);
+    // A release-only workflow set is a naming fact: nothing here makes it a pipeline defect.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.NAME_DERIVED);
     assert.equal(finding.basis, "workflow-name-table");
     assert.equal(finding.statement.includes("Only file names are read"), true);
-    assert.equal(finding.remediation, "Add a workflow file whose name states a test purpose.");
+    assert.equal(finding.remediation, null);
   });
 
   it("reports only the absent counterpart when a test name is present", async () => {
@@ -661,8 +682,10 @@ describe("production risk: ci", () => {
     const finding = section.findings[0];
     assert.deepEqual(finding.paths, [".github/workflows/publish.yml", ".github/workflows/release.yml"]);
     assert.equal(finding.count, 2);
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.LOW);
-    assert.equal(finding.remediation, "Keep one release pipeline.");
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    // "Keep one release pipeline" would be invented policy, so nothing is advised.
+    assert.equal(finding.remediation, null);
   });
 
   it("reports unclassified names and withholds every absence claim beside them", async () => {
@@ -681,6 +704,33 @@ describe("production risk: ci", () => {
       section.unknown.some(
         (record) =>
           record.reason === "workflow-purpose-not-established" && record.detail === null,
+      ),
+      true,
+    );
+  });
+
+  it("withholds both absence claims while the CI reading is not complete", async () => {
+    const { model } = await scanOf({
+      "package.json": pkg(),
+      ".github/workflows/release.yml": workflow("release"),
+    });
+    // The inventory report is the substrate: a CI section that did not establish an answer — the
+    // scan was cut short, say — cannot support "no test workflow", so the detection is withheld
+    // and the section names it. The observations behind the release name are the real ones.
+    const report = clone(model.production.report);
+    const ci = report.sections.find((section) => section.name === "ci");
+    ci.state = PRODUCTION_REPORT_STATES.UNKNOWN;
+    ci.established = false;
+    ci.coverage.state = PRODUCTION_REPORT_STATES.UNKNOWN;
+    ci.coverage.established = false;
+    const rebuilt = buildProductionRiskReport({ report, evidence: model.evidence });
+    const section = rebuilt.sections.find((entry) => entry.name === "ci");
+    assert.deepEqual(section.findings, []);
+    assert.equal(
+      section.unknown.some(
+        (record) =>
+          record.reason === "ci-coverage-not-complete" &&
+          record.detail === "ci-release-without-test",
       ),
       true,
     );
@@ -732,7 +782,10 @@ describe("production risk: api protection", () => {
     assert.notEqual(finding, null);
     assert.equal(finding.route, "route:GET:/users");
     assert.equal(finding.method, "GET");
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.MEDIUM);
+    // A knowledge gap, not a proven defect: no contract states that a route's middleware must
+    // be resolvable, so the crossing to "unprotected" is never made.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.GRAPH_DERIVED);
     assert.equal(finding.basis, "middleware-graph-protection");
     assert.equal(finding.unresolved > 0, true);
@@ -826,6 +879,25 @@ describe("production risk: api protection", () => {
     assert.equal(basis.length > 0, true);
   });
 
+  it("withholds every route detection for a domain whose middleware graph was not established", async () => {
+    const { model } = await scanOf(expressApp("app.use(auth.middleware);"));
+    // The api graph is handed in and the middleware graph is not: a route is observed while the
+    // graph that would say anything about its protection was never established, so the domain
+    // abstains instead of reporting a protection state nothing supports.
+    const rebuilt = buildProductionRiskReport({
+      report: clone(model.production.report),
+      evidence: model.evidence,
+      apiGraph: model.api.graph,
+      middlewareGraph: null,
+    });
+    const section = rebuilt.sections.find((entry) => entry.name === "api");
+    assert.deepEqual(section.findings, []);
+    assert.equal(
+      section.unknown.some((record) => record.reason === "middleware-graph-not-established"),
+      true,
+    );
+  });
+
   it("withholds every route detection while the scan itself is incomplete", () => {
     const model = buildRepositoryModel(
       literalScan(["main.js", "package.json"], { complete: false }),
@@ -872,7 +944,10 @@ describe("production risk: dependency hygiene", () => {
     const finding = findingOf(section, "dependency-manifest-without-lockfile");
     assert.notEqual(finding, null);
     assert.equal(finding.ecosystem, "node");
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.LOW);
+    // A structural condition, not a hygiene failure: whether an ecosystem must be locked is a
+    // project decision this model states no policy about.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.ABSENT);
     assert.equal(finding.basis, "dependency-source-role");
     assert.deepEqual(finding.paths, ["package.json"]);
@@ -881,7 +956,7 @@ describe("production risk: dependency hygiene", () => {
       true,
     );
     assert.equal(/vulnerab|CVE|outdated|unsafe|audit/i.test(finding.statement), false);
-    assert.equal(finding.remediation, "Commit a lockfile for the ecosystem's manifest.");
+    assert.equal(finding.remediation, null);
   });
 
   it("reports a lockfile with no manifest", async () => {
@@ -896,7 +971,9 @@ describe("production risk: dependency hygiene", () => {
     assert.equal(finding.ecosystem, "node");
     assert.deepEqual(finding.paths, ["package-lock.json"]);
     assert.equal(finding.statement.includes("and no manifest"), true);
-    assert.equal(finding.remediation !== null, true);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    assert.equal(finding.remediation, null);
   });
 
   it("reports dependencies declared in more than one ecosystem", async () => {
@@ -982,7 +1059,10 @@ describe("production risk: architecture integrity", () => {
     );
     assert.notEqual(finding, null);
     assert.equal(finding.path, "main.js");
-    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.LOW);
+    // No incoming import edge is a structural condition, not a runtime claim: nothing here
+    // states that an entrypoint must be imported.
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
     assert.equal(finding.confidence, PRODUCTION_RISK_CONFIDENCES.GRAPH_DERIVED);
     assert.equal(finding.basis, "import-graph-isolation");
     assert.equal(
@@ -1181,6 +1261,41 @@ describe("production risk report: model and query API", () => {
     assert.equal(query.productionRiskSection("api"), null);
   });
 
+  it("refuses a tampered or missing classification when the report is read through the query API", () => {
+    const tampered = clone(fullModel);
+    // The query contract validates the report's own flat finding list, so the tamper is made
+    // where a consumer would read it.
+    tampered.productionRisk.report.findings.find(
+      (entry) => entry.kind === "container-healthcheck-missing",
+    ).classification = "defect";
+    assert.throws(
+      () => createRepositoryQuery(tampered).productionRiskReport(),
+      (error) => error instanceof ValidationError,
+    );
+
+    // The vocabulary fields are required fields of every finding a query hands back, so a
+    // report that dropped one is not readable at all rather than readable without it. The
+    // classification has a vocabulary check of its own, and `kind` does not — so `kind` is the
+    // field whose absence only the required-field list can see, and it is deleted here.
+    const missing = clone(fullModel);
+    delete missing.productionRisk.report.findings.find(
+      (entry) => entry.kind === "container-healthcheck-missing",
+    ).classification;
+    assert.throws(
+      () => createRepositoryQuery(missing).productionRiskReport(),
+      (error) => error instanceof ValidationError,
+    );
+
+    const kindless = clone(fullModel);
+    delete kindless.productionRisk.report.findings.find(
+      (entry) => entry.kind === "container-healthcheck-missing",
+    ).kind;
+    assert.throws(
+      () => createRepositoryQuery(kindless).productionRiskReport(),
+      (error) => error instanceof ValidationError,
+    );
+  });
+
   it("never converts an unknown into a pass", () => {
     const model = buildRepositoryModel(literalScan(["package.json"], { complete: false }));
     const query = createRepositoryQuery(model);
@@ -1282,6 +1397,33 @@ describe("production risk report contract", () => {
       section.findings[0].severity = severity;
       assert.notEqual(issuesOfValidate(model), null, severity);
     }
+  });
+
+  it("rejects a classification outside the closed vocabulary or foreign to its own kind", () => {
+    const invented = base();
+    const section = invented.productionRisk.report.sections.find(
+      (entry) => entry.findings.length > 0,
+    );
+    section.findings[0].classification = "defect";
+    assert.notEqual(issuesOfValidate(invented), null);
+
+    const mismatched = base();
+    const container = mismatched.productionRisk.report.sections.find(
+      (entry) => entry.name === "container",
+    );
+    const observation = container.findings.find(
+      (entry) => entry.kind === "container-healthcheck-missing",
+    );
+    assert.notEqual(observation, undefined);
+    observation.classification = PRODUCTION_RISK_CLASSIFICATIONS.RISK;
+    assert.notEqual(issuesOfValidate(mismatched), null);
+
+    const reversed = base();
+    const risk = reversed.productionRisk.report.sections
+      .find((entry) => entry.name === "container")
+      .findings.find((entry) => entry.kind === "container-compose-dockerfile-not-observed");
+    risk.classification = PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION;
+    assert.notEqual(issuesOfValidate(reversed), null);
   });
 
   it("rejects a severity, confidence or basis that disagrees with its own kind", () => {
@@ -1474,11 +1616,56 @@ describe("production risk rule pack", () => {
     }
   });
 
+  it("declares each rule's severity as the strongest its own findings can produce", () => {
+    // Pinned as a literal on purpose: the pack's own summary of the report's tables is a
+    // decision, and the correction changed it — only the container rule can produce a `medium`
+    // finding now, because only its domain contains a declaration that cannot hold.
+    assert.deepEqual(PRODUCTION_RISK_RULE_SEVERITIES, {
+      environment: "info",
+      container: "medium",
+      ci: "info",
+      api: "info",
+      dependencies: "info",
+      architecture: "info",
+    });
+    for (const rule of productionRiskRules) {
+      const section = rule.id.slice("production.risk.".length);
+      const severities = PRODUCTION_RISK_FINDING_KINDS[section].map(
+        (kind) => PRODUCTION_RISK_SEVERITY_BY_KIND[kind],
+      );
+      const strongest = severities.includes(PRODUCTION_RISK_SEVERITIES.MEDIUM)
+        ? PRODUCTION_RISK_SEVERITIES.MEDIUM
+        : severities.includes(PRODUCTION_RISK_SEVERITIES.LOW)
+          ? PRODUCTION_RISK_SEVERITIES.LOW
+          : PRODUCTION_RISK_SEVERITIES.INFO;
+      assert.equal(rule.severity, strongest, rule.id);
+    }
+    // Five of the six domains observe only, so their rules declare `info` — the severity that
+    // means no defect is claimed.
+    assert.deepEqual(
+      productionRiskRules
+        .filter((rule) => rule.severity === "info")
+        .map((rule) => rule.id)
+        .sort(),
+      [
+        "production.risk.api",
+        "production.risk.architecture",
+        "production.risk.ci",
+        "production.risk.dependencies",
+        "production.risk.environment",
+      ],
+    );
+  });
+
   it("describes every vocabulary the report can produce", () => {
     assert.deepEqual([...PRODUCTION_RISK_DESCRIBED_SECTIONS].sort(), [...PRODUCTION_RISK_SECTIONS].sort());
     const kinds = PRODUCTION_RISK_SECTIONS.flatMap((name) => [...PRODUCTION_RISK_FINDING_KINDS[name]]);
     assert.deepEqual([...PRODUCTION_RISK_DESCRIBED_KINDS].sort(), kinds.sort());
     assert.deepEqual(PRODUCTION_RISK_DESCRIBED_SEVERITIES, [...PRODUCTION_RISK_SEVERITY_VALUES]);
+    assert.deepEqual(
+      PRODUCTION_RISK_DESCRIBED_CLASSIFICATIONS,
+      [...PRODUCTION_RISK_CLASSIFICATION_VALUES],
+    );
     assert.deepEqual(PRODUCTION_RISK_DESCRIBED_CONFIDENCES, [...PRODUCTION_RISK_CONFIDENCE_VALUES]);
     assert.deepEqual(PRODUCTION_RISK_DESCRIBED_STATES, [...PRODUCTION_RISK_STATE_VALUES]);
     // The abstention vocabulary is the inventory report's own reasons plus this report's.
@@ -1496,6 +1683,17 @@ describe("production risk rule pack", () => {
       assert.equal(PRODUCTION_RISK_SEVERITY_VALUES.includes(PRODUCTION_RISK_SEVERITY_BY_KIND[kind]), true);
       assert.equal(PRODUCTION_RISK_CONFIDENCE_VALUES.includes(PRODUCTION_RISK_CONFIDENCE_BY_KIND[kind]), true);
       assert.equal(typeof PRODUCTION_RISK_BASIS_BY_KIND[kind], "string");
+      const classification = PRODUCTION_RISK_CLASSIFICATION_BY_KIND[kind];
+      assert.equal(PRODUCTION_RISK_CLASSIFICATION_VALUES.includes(classification), true, kind);
+      // The pair the pack must be able to describe: an observation is `info` and a risk is not.
+      assert.equal(
+        classification === PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION
+          ? PRODUCTION_RISK_SEVERITY_BY_KIND[kind] === PRODUCTION_RISK_SEVERITIES.INFO
+          : PRODUCTION_RISK_SEVERITY_BY_KIND[kind] !== PRODUCTION_RISK_SEVERITIES.INFO,
+        true,
+        kind,
+      );
+      assert.equal(typeof PRODUCTION_RISK_CLASSIFICATION_WORDING[classification], "string", kind);
     }
   });
 
@@ -1510,6 +1708,20 @@ describe("production risk rule pack", () => {
       for (const finding of result.findings) {
         assert.equal(PRODUCTION_RISK_SEVERITY_VALUES.includes(finding.severity), true);
         assert.equal(finding.evidence.length > 0, true);
+        // The rule reports the classification its kind declares, never one of its own — and an
+        // observation is never carried in a defect word.
+        assert.equal(
+          finding.metadata.classification,
+          PRODUCTION_RISK_CLASSIFICATION_BY_KIND[finding.metadata.kind],
+          finding.metadata.kind,
+        );
+        assert.equal(
+          finding.metadata.classification === PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION
+            ? finding.severity === PRODUCTION_RISK_SEVERITIES.INFO
+            : finding.severity !== PRODUCTION_RISK_SEVERITIES.INFO,
+          true,
+          finding.metadata.kind,
+        );
         assert.equal(finding.metadata.basis, PRODUCTION_RISK_BASIS);
         assert.equal(typeof finding.description, "string");
         assert.equal(finding.description.length > 40, true);
@@ -1530,6 +1742,8 @@ describe("production risk rule pack", () => {
     );
     assert.notEqual(finding, undefined);
     assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.MEDIUM);
+    assert.equal(finding.metadata.classification, PRODUCTION_RISK_CLASSIFICATIONS.RISK);
+    assert.equal(typeof finding.metadata.classificationWording, "string");
     assert.equal(finding.metadata.basisDetail, "compose-build-declaration");
     assert.equal(finding.metadata.remediationStated, true);
     assert.equal(typeof finding.metadata.statement, "string");
@@ -1600,6 +1814,8 @@ describe("production risk rule pack", () => {
       assert.equal(typeof section.counts.findings, "number");
       for (const finding of section.findings) {
         assert.equal(typeof finding.kindWording, "string");
+        assert.equal(typeof finding.classificationWording, "string");
+        assert.equal(PRODUCTION_RISK_CLASSIFICATION_VALUES.includes(finding.classification), true);
         assert.equal(typeof finding.severityWording, "string");
         assert.equal(typeof finding.confidenceWording, "string");
         assert.equal(typeof finding.fingerprintKey, "string");
@@ -1684,56 +1900,89 @@ describe("production risk integration", () => {
  *
  * Written out as literals on purpose: a table is a *decision* the phase made, and a test that
  * read the tables back from the module would agree with any decision at all — including an
- * escalated severity, a reclassified confidence or a basis that no longer names what was read.
+ * escalated severity, an invented classification, a reclassified confidence or a basis that no
+ * longer names what was read. The second column is the correction's whole point: only two kinds
+ * claim a defect, and the other twenty are structural observations.
  */
 const RISK_TABLE = Object.freeze([
-  ["environment-file-without-template", "low", "absent", "environment-name-table"],
-  ["environment-template-class-duplicated", "low", "name-derived", "duplicate-name-class"],
-  ["environment-template-classes-conflict", "low", "name-derived", "conflicting-name-class"],
-  ["environment-configuration-without-sample", "info", "absent", "environment-name-table"],
-  ["container-healthcheck-missing", "low", "declared", "dockerfile-instructions"],
-  ["container-compose-dockerfile-not-observed", "medium", "declared", "compose-build-declaration"],
-  ["container-compose-build-context-unresolved", "medium", "declared", "compose-declaration-classification"],
-  ["container-service-image-without-build", "info", "declared", "compose-service-key"],
-  ["ci-release-without-test", "low", "name-derived", "workflow-name-table"],
-  ["ci-release-without-lint", "low", "name-derived", "workflow-name-table"],
-  ["ci-workflows-unclassified", "info", "name-derived", "workflow-name-table"],
-  ["ci-release-workflows-multiple", "low", "name-derived", "workflow-name-table"],
-  ["api-route-protection-unresolved", "medium", "graph-derived", "middleware-graph-protection"],
-  ["api-protected-route-partially-unresolved", "medium", "graph-derived", "middleware-graph-protection"],
-  ["api-router-inheritance-incomplete", "low", "graph-derived", "middleware-graph-unresolved-scope"],
-  ["dependency-manifest-without-lockfile", "low", "absent", "dependency-source-role"],
-  ["dependency-lockfile-without-manifest", "low", "absent", "dependency-source-role"],
-  ["dependency-ecosystems-multiple", "info", "declared", "dependency-ecosystem-census"],
-  ["dependency-source-unresolved", "info", "declared", "dependency-source-status"],
-  ["architecture-entrypoint-disconnected", "low", "graph-derived", "import-graph-isolation"],
-  ["architecture-isolated-cluster", "low", "graph-derived", "import-graph-isolation"],
-  ["architecture-module-unconnected", "low", "graph-derived", "import-graph-module-connectivity"],
+  ["environment-file-without-template", "observation", "info", "absent", "environment-name-table"],
+  ["environment-template-class-duplicated", "observation", "info", "name-derived", "duplicate-name-class"],
+  ["environment-template-classes-conflict", "observation", "info", "name-derived", "conflicting-name-class"],
+  ["environment-configuration-without-sample", "observation", "info", "absent", "environment-name-table"],
+  ["container-healthcheck-missing", "observation", "info", "declared", "dockerfile-instructions"],
+  ["container-compose-dockerfile-not-observed", "risk", "medium", "declared", "compose-build-declaration"],
+  ["container-compose-build-context-unresolved", "risk", "medium", "declared", "compose-declaration-classification"],
+  ["container-service-image-without-build", "observation", "info", "declared", "compose-service-key"],
+  ["ci-release-without-test", "observation", "info", "name-derived", "workflow-name-table"],
+  ["ci-release-without-lint", "observation", "info", "name-derived", "workflow-name-table"],
+  ["ci-workflows-unclassified", "observation", "info", "name-derived", "workflow-name-table"],
+  ["ci-release-workflows-multiple", "observation", "info", "name-derived", "workflow-name-table"],
+  ["api-route-protection-unresolved", "observation", "info", "graph-derived", "middleware-graph-protection"],
+  ["api-protected-route-partially-unresolved", "observation", "info", "graph-derived", "middleware-graph-protection"],
+  ["api-router-inheritance-incomplete", "observation", "info", "graph-derived", "middleware-graph-unresolved-scope"],
+  ["dependency-manifest-without-lockfile", "observation", "info", "absent", "dependency-source-role"],
+  ["dependency-lockfile-without-manifest", "observation", "info", "absent", "dependency-source-role"],
+  ["dependency-ecosystems-multiple", "observation", "info", "declared", "dependency-ecosystem-census"],
+  ["dependency-source-unresolved", "observation", "info", "declared", "dependency-source-status"],
+  ["architecture-entrypoint-disconnected", "observation", "info", "graph-derived", "import-graph-isolation"],
+  ["architecture-isolated-cluster", "observation", "info", "graph-derived", "import-graph-isolation"],
+  ["architecture-module-unconnected", "observation", "info", "graph-derived", "import-graph-module-connectivity"],
+]);
+
+/** The two kinds whose own declaration cannot hold, and the only ones that may claim a defect. */
+const RISK_KINDS = Object.freeze([
+  "container-compose-build-context-unresolved",
+  "container-compose-dockerfile-not-observed",
 ]);
 
 describe("production risk: the closed tables and the bound", () => {
-  it("assigns every finding kind the severity, confidence and basis the phase decided", () => {
+  it("assigns every finding kind the classification, severity, confidence and basis the phase decided", () => {
     const declared = PRODUCTION_RISK_SECTIONS.flatMap((name) => [...PRODUCTION_RISK_FINDING_KINDS[name]]);
     assert.deepEqual(RISK_TABLE.map(([kind]) => kind).sort(), [...declared].sort());
-    for (const [kind, severity, confidence, basis] of RISK_TABLE) {
+    for (const [kind, classification, severity, confidence, basis] of RISK_TABLE) {
+      assert.equal(PRODUCTION_RISK_CLASSIFICATION_BY_KIND[kind], classification, kind);
       assert.equal(PRODUCTION_RISK_SEVERITY_BY_KIND[kind], severity, kind);
       assert.equal(PRODUCTION_RISK_CONFIDENCE_BY_KIND[kind], confidence, kind);
       assert.equal(PRODUCTION_RISK_BASIS_BY_KIND[kind], basis, kind);
     }
+    // The correction in one assertion: only a declaration the repository itself contradicts may
+    // be called a defect, and nothing else is promoted to one.
+    assert.deepEqual(
+      RISK_TABLE.filter(([, classification]) => classification === "risk")
+        .map(([kind]) => kind)
+        .sort(),
+      [...RISK_KINDS],
+    );
   });
 
-  it("never escalates past `medium`, in the tables or in a report", () => {
+  it("uses only the severities the correction left in place, and never escalates past `medium`", () => {
+    // `info` means no defect is claimed and `medium` means one is proven. `low` stays declared
+    // for a defect whose proof would be weaker than the repository's own declaration, and no
+    // kind in this report sits there — so the vocabulary is three words and two are in use.
     assert.deepEqual(
       [...new Set(Object.values(PRODUCTION_RISK_SEVERITY_BY_KIND))].sort(),
-      [PRODUCTION_RISK_SEVERITIES.INFO, PRODUCTION_RISK_SEVERITIES.LOW, PRODUCTION_RISK_SEVERITIES.MEDIUM],
+      [PRODUCTION_RISK_SEVERITIES.INFO, PRODUCTION_RISK_SEVERITIES.MEDIUM],
     );
     assert.deepEqual(
       [...PRODUCTION_RISK_SEVERITY_VALUES].sort(),
       ["info", "low", "medium"],
     );
+    assert.equal(
+      Object.values(PRODUCTION_RISK_SEVERITY_BY_KIND).includes(PRODUCTION_RISK_SEVERITIES.LOW),
+      false,
+    );
     for (const section of fullRisk.sections) {
       for (const finding of section.findings) {
         assert.equal(["high", "critical"].includes(finding.severity), false, finding.kind);
+        // The pair holds in every record the report carries: an observation is `info` and a
+        // risk is not, so no finding states a structural fact in a defect word.
+        assert.equal(
+          finding.classification === PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION
+            ? finding.severity === PRODUCTION_RISK_SEVERITIES.INFO
+            : finding.severity !== PRODUCTION_RISK_SEVERITIES.INFO,
+          true,
+          finding.kind,
+        );
       }
     }
   });
@@ -1825,6 +2074,164 @@ describe("production risk: the closed tables and the bound", () => {
   });
 });
 
+// ─── A structural observation is not a proven risk ───────────────────────────
+
+/**
+ * The correction's own suite.
+ *
+ * Every test here takes a repository that establishes a condition and asks the phase's own
+ * question: does the repository's evidence make this condition a *defect*, or is it a structural
+ * observation? The five examples the correction names are here, one per domain, plus the one
+ * Compose detection whose proof depends on the container reading having finished.
+ */
+describe("production risk: a structural observation is not a proven risk", () => {
+  it("reports a Dockerfile without a healthcheck as an observation, never an unhealthy image", async () => {
+    const { risk } = await scanOf({ "package.json": pkg(), Dockerfile: plainDockerfile });
+    const section = riskSectionOf(risk, "container");
+    const finding = findingOf(section, "container-healthcheck-missing");
+    assert.notEqual(finding, null);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    assert.equal(finding.statement.includes("structural observation, not a defect"), true);
+    assert.equal(finding.statement.includes("This is a defect"), false);
+    // No policy is invented, so no recommendation follows either.
+    assert.equal(finding.remediation, null);
+    assert.equal(
+      section.findings.every(
+        (entry) => entry.classification === PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+      ),
+      true,
+    );
+  });
+
+  it("reports a release-only workflow set as a naming fact, not a pipeline defect", async () => {
+    const { risk } = await scanOf({
+      "package.json": pkg(),
+      ".github/workflows/release.yml": workflow("release"),
+    });
+    const section = riskSectionOf(risk, "ci");
+    assert.deepEqual(kindsOf(section).sort(), [
+      "ci-release-without-lint",
+      "ci-release-without-test",
+    ]);
+    for (const finding of section.findings) {
+      assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION, finding.kind);
+      assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO, finding.kind);
+      assert.equal(finding.remediation, null, finding.kind);
+      assert.equal(finding.statement.includes("This is a defect"), false, finding.kind);
+      assert.equal(
+        finding.statement.includes("structural observation, not a defect"),
+        true,
+        finding.kind,
+      );
+    }
+  });
+
+  it("reports a manifest without a lockfile as a structural condition, not a hygiene failure", async () => {
+    const { risk } = await scanOf({
+      "package.json": pkg({ dependencies: { express: "^4.18.0" } }),
+      "src/a.js": "export const a = 1;\n",
+    });
+    const finding = findingOf(
+      riskSectionOf(risk, "dependencies"),
+      "dependency-manifest-without-lockfile",
+    );
+    assert.notEqual(finding, null);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    assert.equal(finding.remediation, null);
+    assert.equal(finding.statement.includes("This is a defect"), false);
+    assert.equal(/hygiene failure|must be locked|unsafe|outdated/i.test(finding.statement), false);
+  });
+
+  it("reports an entrypoint-shaped file with no incoming edge as a structural condition", async () => {
+    const { risk } = await scanOf({
+      "package.json": pkg(),
+      "main.js": "export const main = 1;\n",
+    });
+    const finding = findingOf(
+      riskSectionOf(risk, "architecture"),
+      "architecture-entrypoint-disconnected",
+    );
+    assert.notEqual(finding, null);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    assert.equal(finding.remediation, null);
+    // Never a runtime claim: the graph's silence is a statement about a relationship.
+    assert.equal(/runtime|unreachable|dead code|disconnected/i.test(finding.statement), false);
+    assert.equal(finding.statement.includes("structural observation, not a defect"), true);
+  });
+
+  it("reports `.env.production` without `.env.example` as a naming relationship", async () => {
+    const { risk } = await scanOf({ "package.json": pkg(), ".env.production": "DEMO=1\n" });
+    const finding = findingOf(
+      riskSectionOf(risk, "environment"),
+      "environment-file-without-template",
+    );
+    assert.notEqual(finding, null);
+    assert.equal(finding.classification, PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION);
+    assert.equal(finding.severity, PRODUCTION_RISK_SEVERITIES.INFO);
+    assert.deepEqual(finding.paths, [".env.production"]);
+    assert.equal(finding.remediation, null);
+    assert.equal(finding.statement.includes("This is a defect"), false);
+    assert.equal(finding.statement.includes("structural observation, not a defect"), true);
+  });
+
+  it("withholds the Dockerfile-not-observed defect while the container reading is incomplete", async () => {
+    const { risk } = await scanOf({
+      "package.json": pkg(),
+      // A definition whose instructions cannot be read leaves the domain partial, so the absence
+      // of the file the Compose declaration names is not established and is not reported.
+      Dockerfile: "FROM node:20\u0000\n",
+      "docker-compose.yml": [
+        "services:",
+        "  api:",
+        "    build:",
+        "      context: .",
+        "      dockerfile: Dockerfile.absent",
+        "",
+      ].join("\n"),
+    });
+    const section = riskSectionOf(risk, "container");
+    assert.deepEqual(kindsOf(section), []);
+    assert.notEqual(section.state, PRODUCTION_REPORT_STATES.COMPLETE);
+    const withheld = section.unknown.find(
+      (record) => record.reason === "container-coverage-not-complete",
+    );
+    assert.notEqual(withheld, undefined);
+    assert.equal(withheld.detail, "container-compose-dockerfile-not-observed");
+  });
+
+  it("keeps the two declaration defects as risks, and nothing else as one", () => {
+    for (const section of fullRisk.sections) {
+      for (const finding of section.findings) {
+        const isDeclaredDefect = RISK_KINDS.includes(finding.kind);
+        assert.equal(
+          finding.classification,
+          isDeclaredDefect
+            ? PRODUCTION_RISK_CLASSIFICATIONS.RISK
+            : PRODUCTION_RISK_CLASSIFICATIONS.OBSERVATION,
+          finding.kind,
+        );
+        assert.equal(
+          finding.statement.includes(
+            isDeclaredDefect
+              ? "This is a defect, not a policy preference"
+              : "This is a structural observation, not a defect",
+          ),
+          true,
+          finding.kind,
+        );
+        assert.equal(
+          finding.severity === PRODUCTION_RISK_SEVERITIES.MEDIUM,
+          isDeclaredDefect,
+          finding.kind,
+        );
+      }
+    }
+  });
+});
+
 // ─── The reason for each rejection ───────────────────────────────────────────
 
 /**
@@ -1865,6 +2272,64 @@ describe("production risk report: why each malformed report is refused", () => {
         ? PRODUCTION_RISK_SEVERITIES.INFO
         : PRODUCTION_RISK_SEVERITIES.LOW;
     expectIssue(model, "must be the severity its kind declares");
+  });
+
+  it("refuses a classification the kind does not declare, and a defect word on an observation", () => {
+    const invented = base();
+    firstSectionWithFindings(invented).findings[0].classification = "defect";
+    expectIssue(invented, "must be a classification this report declares");
+
+    const mismatched = base();
+    const observed = mismatched.productionRisk.report.sections
+      .find((entry) => entry.name === "container")
+      .findings.find((entry) => entry.kind === "container-healthcheck-missing");
+    assert.notEqual(observed, undefined);
+    observed.classification = "risk";
+    expectIssue(mismatched, "must be the classification its kind declares");
+
+    // The pair is checked independently of the two tables that pin each half, so a structural
+    // observation cannot be carried in a defect word and a defect cannot be left unstated.
+    const escalated = base();
+    const other = escalated.productionRisk.report.sections
+      .find((entry) => entry.name === "container")
+      .findings.find((entry) => entry.kind === "container-healthcheck-missing");
+    other.severity = PRODUCTION_RISK_SEVERITIES.MEDIUM;
+    expectIssue(escalated, "cannot claim a defect of a kind that observes");
+
+    const silenced = base();
+    const muted = silenced.productionRisk.report.sections
+      .find((entry) => entry.name === "container")
+      .findings.find((entry) => entry.kind === "container-compose-dockerfile-not-observed");
+    muted.severity = PRODUCTION_RISK_SEVERITIES.INFO;
+    expectIssue(silenced, "cannot leave a defect its kind declares unstated");
+  });
+
+  it("refuses a report state and an established flag that disagree with the area they belong to", () => {
+    const state = base();
+    state.productionRisk.report.state = PRODUCTION_RISK_STATES.UNKNOWN;
+    expectIssue(state, "must agree with the area it belongs to");
+
+    // Flipped alone, so the only check that can see it is the one comparing the report with the
+    // area it belongs to.
+    const flag = base();
+    flag.productionRisk.report.established = !flag.productionRisk.report.established;
+    expectIssue(flag, "must agree with the area it belongs to");
+  });
+
+  it("refuses a section whose established flag disagrees with its own state", () => {
+    // Both the section and its coverage are flipped, so the coverage comparison cannot stand in
+    // for the state comparison — the check under test is the only one that can see this report.
+    const model = base();
+    const section = model.productionRisk.report.sections[0];
+    section.established = !section.established;
+    section.coverage.established = section.established;
+    expectIssue(model, "must agree with the state it reports");
+  });
+
+  it("refuses a finding whose kind its own domain does not declare", () => {
+    const model = base();
+    firstSectionWithFindings(model).findings[0].kind = "architecture-module-unconnected";
+    expectIssue(model, "must be a finding kind this domain declares");
   });
 
   it("refuses prose that claims more than the finding's own record renders", () => {
