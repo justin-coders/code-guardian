@@ -91,6 +91,18 @@ import {
   MIDDLEWARE_UNRESOLVED_REASON_VALUES,
 } from "./policies/middleware.js";
 import {
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOMAINS,
+  POLICY_FAILURE_REASON_VALUES,
+  POLICY_KEYS_BY_DOMAIN,
+  POLICY_LIMITS,
+  POLICY_SCHEMA,
+  POLICY_SOURCE_STATUSES,
+  POLICY_SOURCE_STATUS_VALUES,
+  POLICY_UNSUPPORTED_REASON_VALUES,
+  boundedPolicyToken,
+} from "./policies/policy.js";
+import {
   SEMANTIC_MODULE_EXTENSIONS,
   SEMANTIC_PROBLEM_VALUES,
   SEMANTIC_SOURCE_REASON_VALUES,
@@ -196,6 +208,39 @@ export {
   UNSUPPORTED_MODULE_EXTENSIONS,
   moduleLanguageOf,
 } from "./policies/imports.js";
+
+/**
+ * Policy acquisition vocabulary, re-exported for the same reason as the others.
+ *
+ * The document schema, its closed refusal vocabulary and its bounds live in the acquisition
+ * policy; the contract re-exports them so a consumer validates against one source, and so the
+ * two sides can never drift.
+ */
+export {
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOMAINS,
+  POLICY_FAILURE_REASONS,
+  POLICY_FORMAT,
+  POLICY_KEYS_BY_DOMAIN,
+  POLICY_LIMITS,
+  POLICY_SCHEMA,
+  POLICY_SOURCE_STATUSES,
+  POLICY_UNREAD_FORMATS,
+  POLICY_UNSUPPORTED_REASONS,
+  boundedPolicyToken,
+  parsePolicyDocument,
+  policySettingCount,
+} from "./policies/policy.js";
+
+/**
+ * Policy document acquisition statuses, re-exported so no section of this contract could
+ * disagree with the acquirer about what `absent` and `unsupported` mean.
+ */
+export {
+  POLICY_FAILURE_REASON_VALUES,
+  POLICY_SOURCE_STATUS_VALUES,
+  POLICY_UNSUPPORTED_REASON_VALUES,
+};
 
 /** Stable signal ids used across detectors. */
 export const SCAN_SIGNALS = Object.freeze({
@@ -314,6 +359,7 @@ export function createScanResult(overrides = {}) {
   const semantics = overrides.semantics ?? {};
   const api = overrides.api ?? {};
   const middleware = overrides.middleware ?? {};
+  const policy = overrides.policy ?? {};
 
   return {
     version: overrides.version ?? SCAN_RESULT_VERSION,
@@ -431,6 +477,21 @@ export function createScanResult(overrides = {}) {
       truncated: middleware.truncated ?? false,
       files: middleware.files ?? [],
       limits: middleware.limits ?? {},
+    },
+    // Phase 22 — the repository's declared-requirements document. One record, `absent` by
+    // default, because a draft that declares nothing about a policy must not look like one whose
+    // policy document was read and found to state nothing: `status` says which of the four
+    // answers this is, and `document` is carried only when the document was interpreted. The
+    // scan knows nothing about whether the policy is *satisfied* — that question needs the
+    // repository facts, and belongs to the model.
+    policy: {
+      path: policy.path ?? POLICY_DOCUMENT_PATH,
+      detected: policy.detected ?? false,
+      inspected: policy.inspected ?? false,
+      status: policy.status ?? POLICY_SOURCE_STATUSES.ABSENT,
+      reason: policy.reason ?? null,
+      detail: policy.detail ?? null,
+      document: policy.document ?? null,
     },
     statistics: {
       filesScanned: statistics.filesScanned ?? 0,
@@ -1842,6 +1903,157 @@ function collectDetectionIssues(section, ctx, path) {  if (!isPlainObject(sectio
  * @returns {object} The same value when valid.
  * @throws {ValidationError} When any contract invariant is violated.
  */
+/**
+ * Validate the policy document's own shape.
+ *
+ * The document is a *closed* contract, so the validator can be as strict as the parser: keys
+ * outside `POLICY_DOMAINS` are refused, keys outside a domain's schema are refused, a boolean
+ * setting must be a boolean, the one integer setting must be an in-range whole number, and the
+ * domains and keys must appear in canonical order — the order the acquisition rebuilds them in,
+ * which is what makes two spellings of one policy serialize identically.
+ *
+ * **Duplicate domains** are not representable and are therefore not checked: `JSON.parse`
+ * collapses a repeated key in one object literal before any reader sees it, so a document in
+ * which a domain appears twice cannot reach this contract at all. What *is* enforced is the
+ * half of that requirement that matters here — each declared domain at most once, in declared
+ * order — and the compliance report enforces the other half over its own sections, which are an
+ * array and *could* repeat.
+ */
+function collectPolicyDocumentIssues(document, ctx, path) {
+  if (!isPlainObject(document)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+
+  const domains = Object.keys(document);
+  for (const domain of domains) {
+    if (!POLICY_DOMAINS.includes(domain)) {
+      ctx.fail(`${path}.${domain}`, "must be a declared policy domain");
+      return;
+    }
+  }
+  const canonical = POLICY_DOMAINS.filter((domain) => domains.includes(domain));
+  if (domains.join("\u0000") !== canonical.join("\u0000")) {
+    ctx.fail(path, "must state its domains in the declared order");
+  }
+
+  for (const domain of domains) {
+    const settings = document[domain];
+    if (!isPlainObject(settings)) {
+      ctx.fail(`${path}.${domain}`, "must be a plain object of declared settings");
+      continue;
+    }
+    const keys = Object.keys(settings);
+    for (const key of keys) {
+      if (!POLICY_KEYS_BY_DOMAIN[domain].includes(key)) {
+        ctx.fail(`${path}.${domain}.${key}`, "is not a setting this schema declares");
+      }
+    }
+    const expectedKeys = POLICY_KEYS_BY_DOMAIN[domain].filter((key) => keys.includes(key));
+    if (keys.join("\u0000") !== expectedKeys.join("\u0000")) {
+      ctx.fail(`${path}.${domain}`, "must state its settings in the declared order");
+    }
+    for (const key of keys) {
+      if (!POLICY_KEYS_BY_DOMAIN[domain].includes(key)) continue;
+      const type = POLICY_SCHEMA[domain][key];
+      const value = settings[key];
+      if (type === "boolean") {
+        if (typeof value !== "boolean") {
+          ctx.fail(`${path}.${domain}.${key}`, "must be a boolean");
+        }
+        continue;
+      }
+      if (
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value > POLICY_LIMITS.maxReleaseWorkflows
+      ) {
+        ctx.fail(
+          `${path}.${domain}.${key}`,
+          `must be a whole number between 0 and ${POLICY_LIMITS.maxReleaseWorkflows}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Validate the policy acquisition section.
+ *
+ * The section is one record, and every one of its fields is checked against the *reason* the
+ * reading stopped: a document is carried if and only if the status is `parsed`, a failure
+ * carries a failure reason and an unsupported reading carries an unsupported one, and `absent`
+ * carries neither. `detected` — whether the contracted path was observed — is pinned to the
+ * status for the same reason: a section that claimed to have observed a policy it did not
+ * interpret, or to have interpreted one it never saw, would be contradicting itself in a way no
+ * consumer could detect.
+ */
+function collectPolicyIssues(section, ctx, path) {
+  if (!isPlainObject(section)) {
+    ctx.fail(path, "must be a plain object");
+    return;
+  }
+  if (!isNonEmptyString(section.path) || isAbsolutePath(section.path)) {
+    ctx.fail(`${path}.path`, "must be a repository-relative path");
+  }
+  for (const field of ["detected", "inspected"]) {
+    if (typeof section[field] !== "boolean") ctx.fail(`${path}.${field}`, "must be a boolean");
+  }
+  if (!POLICY_SOURCE_STATUS_VALUES.includes(section.status)) {
+    ctx.fail(`${path}.status`, `must be one of: ${POLICY_SOURCE_STATUS_VALUES.join(", ")}`);
+  }
+
+  const failureReasons = POLICY_FAILURE_REASON_VALUES;
+  const unsupportedReasons = POLICY_UNSUPPORTED_REASON_VALUES;
+  if (section.reason !== null && section.reason !== undefined) {
+    if (![...failureReasons, ...unsupportedReasons].includes(section.reason)) {
+      ctx.fail(`${path}.reason`, "must be null or a documented policy reading reason");
+    }
+  }
+  if (section.detail !== null && section.detail !== undefined) {
+    if (!isNonEmptyString(section.detail) || boundedPolicyToken(section.detail) !== section.detail) {
+      ctx.fail(`${path}.detail`, "must be a bounded identifier or null");
+    }
+  }
+
+  const parsed = section.status === POLICY_SOURCE_STATUSES.PARSED;
+  const observed = section.detected === true;
+
+  if (observed !== (parsed || section.status === POLICY_SOURCE_STATUSES.FAILED)) {
+    ctx.fail(`${path}.detected`, "must say whether the contracted policy path was observed");
+  }
+
+  if (parsed) {
+    if (section.reason != null) ctx.fail(`${path}.reason`, "must be null for a read policy");
+    if (section.inspected !== true) {
+      ctx.fail(`${path}.inspected`, "must be true for a read policy");
+    }
+    if (section.document === null || section.document === undefined) {
+      ctx.fail(`${path}.document`, "must carry the document it established");
+    } else {
+      collectPolicyDocumentIssues(section.document, ctx, `${path}.document`);
+    }
+    return;
+  }
+
+  if (section.document !== null && section.document !== undefined) {
+    ctx.fail(`${path}.document`, "must be null unless the policy was interpreted");
+  }
+  if (section.status === POLICY_SOURCE_STATUSES.ABSENT && section.reason != null) {
+    ctx.fail(`${path}.reason`, "must be null when no policy path was observed");
+  }
+  if (section.status === POLICY_SOURCE_STATUSES.FAILED) {
+    if (!failureReasons.includes(section.reason)) {
+      ctx.fail(`${path}.reason`, "must record why the policy document was not interpreted");
+    }
+  }
+  if (section.status === POLICY_SOURCE_STATUSES.UNSUPPORTED) {
+    if (!unsupportedReasons.includes(section.reason)) {
+      ctx.fail(`${path}.reason`, "must record why this build does not read the document");
+    }
+  }
+}
+
 export function validateScanResult(value) {
   const issues = [];
   const fail = (path, message) => issues.push(`${path}: ${message}`);
@@ -1912,6 +2124,7 @@ export function validateScanResult(value) {
   collectSemanticsIssues(value.semantics, ctx, "scanResult.semantics");
   collectApiIssues(value.api, ctx, "scanResult.api");
   collectMiddlewareIssues(value.middleware, ctx, "scanResult.middleware");
+  collectPolicyIssues(value.policy, ctx, "scanResult.policy");
   if (Array.isArray(value.ignored)) {
     assertSortedByPath(value.ignored, ctx, "scanResult.ignored");
     value.ignored.forEach((entry, index) => {

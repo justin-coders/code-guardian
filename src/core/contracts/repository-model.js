@@ -81,6 +81,23 @@ export const REPOSITORY_MODEL_AREAS = Object.freeze([
   // carries findings, each one a restatement of evidence the model already validated, with a
   // severity drawn from a closed three-word table and the basis that severity rests on.
   "productionRisk",
+  // Phase 22 — the repository's own declared engineering requirements. Unlike every area above
+  // it, this one is an **input**: it carries what the repository *requires of itself*, read from
+  // one document at one path and validated against a closed schema, or `null` when no policy was
+  // established. A required area like every other one (the factory emits it as an empty object)
+  // because a consumer must be able to tell "this repository declares no policy" from "this model
+  // says nothing about policy at all". Nothing here is judged: `state` names what the reading
+  // established, and a malformed policy never becomes a document — it becomes a state and a
+  // reason.
+  "policy",
+  // Phase 22 — the compliance substrate: which declared policies the repository satisfies, which
+  // it contradicts, and which could not be measured. A required area like every other one (the
+  // factory emits it as an empty object, because the report is a projection and only a built
+  // model carries one) because "no policy requirement is violated" and "this model says nothing
+  // about compliance" are different answers. It carries no compliance percentage, no grade and no
+  // traffic light: it carries items, each with the repository evidence and the policy
+  // declaration it was measured against, and the reasons nothing could be measured.
+  "compliance",
   "scan",
   "metadata",
 ]);
@@ -181,6 +198,8 @@ export function createRepositoryModel(overrides = {}) {
     middleware: overrides.middleware ?? {},
     production: overrides.production ?? {},
     productionRisk: overrides.productionRisk ?? {},
+    policy: overrides.policy ?? {},
+    compliance: overrides.compliance ?? {},
     scan: {
       complete: scan.complete ?? false,
       truncated: scan.truncated ?? false,

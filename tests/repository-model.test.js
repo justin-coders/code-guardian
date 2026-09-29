@@ -866,6 +866,18 @@ describe("model: evidence", () => {
         semantics: semanticsSection(),
         api: apiSection(),
         middleware: middlewareSection(),
+        // Phase 22 — the policy subject is emitted only when the contracted document was
+        // observed, so the fixture states one: an `absent` policy produces no observation at
+        // all, and the documented subject list still has to be exercised.
+        policy: {
+          path: ".codeguardian/policy.json",
+          detected: true,
+          inspected: true,
+          status: "parsed",
+          reason: null,
+          detail: null,
+          document: { container: { requireHealthcheck: true } },
+        },
         content: {
           inspected: true,
           complete: false,

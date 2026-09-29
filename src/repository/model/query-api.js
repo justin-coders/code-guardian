@@ -194,9 +194,17 @@ import {
   validateSymbolTraversalResult,
   validateSymbolUnresolvedQueryResult,
   validateTraversalResult,
+  // Phase 22 — the policy area and the compliance report.
+  createComplianceCoverageResult,
+  createPolicyResult,
+  validateComplianceCoverageResult,
+  validateComplianceReportResult,
+  validateComplianceSectionResult,
+  validatePolicyResult,
 } from "./query-contracts.js";
 import { PRODUCTION_SECTIONS } from "./production-report.js";
 import { PRODUCTION_RISK_SECTIONS } from "./production-risk-report.js";
+import { COMPLIANCE_SECTIONS } from "./compliance-report.js";
 import { QUERY_ERROR_KINDS, RepositoryQueryError, safeQueryToken } from "./query-errors.js";
 
 const ENTITY_KIND_VALUES = Object.values(ENTITY_KINDS);
@@ -523,6 +531,34 @@ function productionReportOf(model) {
  */
 function productionRiskReportOf(model) {
   const report = model?.productionRisk?.report;
+  return report !== null && typeof report === "object" ? report : null;
+}
+
+/**
+ * The model's repository policy area, or `null` when it carries none.
+ *
+ * Unlike every other area, this one is an *input*: what the repository declares about itself.
+ * `null` means this model says nothing about policy at all; a model built from a scan where the
+ * contracted path was not established carries an area whose `state` names which of the three
+ * ways that happened, and that area is returned.
+ */
+function policyAreaOf(model) {
+  const area = model?.policy;
+  if (area === null || typeof area !== "object") return null;
+  // The contracted skeleton is `{}`: an area with no state says nothing, which is exactly what
+  // `null` means here, so the two are reported the same way.
+  return typeof area.state === "string" ? area : null;
+}
+
+/**
+ * The model's compliance report, or `null` when it carries none.
+ *
+ * `null` means the same thing it means for the other reports: this model records nothing about
+ * compliance. A model that was built and found no requirement to measure carries a report whose
+ * sections are `unknown` with the reason why, and that report is returned.
+ */
+function complianceReportOf(model) {
+  const report = model?.compliance?.report;
   return report !== null && typeof report === "object" ? report : null;
 }
 
@@ -3949,6 +3985,94 @@ export function createRepositoryQuery(model) {
       const section = report.sections.find((entry) => entry.name === name) ?? null;
       if (section === null) return null;
       validateProductionRiskSectionResult(section);
+      return section;
+    },
+
+    // ── Repository policy and compliance (Phase 22) ─────────────────────────
+    /**
+     * What this repository declares about itself: the validated policy document, or `null`, plus
+     * the state of the reading that established it.
+     *
+     * Read from `model.policy` — the area the builder already made and validated — and never
+     * recomputed. `null` means this model carries no policy area at all; a model whose policy
+     * could not be established carries an area whose `state` (`absent`, `unknown`, `unsupported`
+     * or `truncated`) and `coverage.reason` say which case it is, and that area is returned.
+     *
+     * The document contains only settings the closed schema declares — a malformed policy never
+     * becomes a document — and nothing here judges the repository: the policy states what is
+     * *required*, and whether it is satisfied is the compliance report's question.
+     *
+     * @returns {object|null} A deeply frozen policy result, or `null`.
+     */
+    policy() {
+      const area = policyAreaOf(model);
+      if (area === null) return null;
+      const result = createPolicyResult({ ...area });
+      validatePolicyResult(result);
+      return area;
+    },
+
+    /**
+     * The whole compliance report: one section per policy domain, every item carrying the
+     * requirement it measures, the observation it measured, its own evidence ids and the status
+     * that follows.
+     *
+     * `null` means this model carries no compliance report at all. The report contains no
+     * compliance percentage, no grade and no traffic light, and the query layer adds none: a
+     * caller receives the items, the policy document behind each one, and the reasons nothing
+     * could be measured, and decides for itself.
+     *
+     * @returns {object|null} A deeply frozen `ComplianceReport`, or `null`.
+     */
+    complianceReport() {
+      const report = complianceReportOf(model);
+      if (report === null) return null;
+      validateComplianceReportResult(report);
+      return report;
+    },
+
+    /**
+     * The report's structured coverage statement: its own state, the section and item totals, the
+     * item status census, what the policy itself established and the abstention census.
+     *
+     * A *copy*, frozen, so a caller cannot reach the model's own object through it.
+     */
+    complianceCoverage() {
+      const report = complianceReportOf(model);
+      if (report === null) return null;
+      const coverage = createComplianceCoverageResult({ ...report.coverage });
+      validateComplianceCoverageResult(coverage);
+      return Object.freeze({
+        ...coverage,
+        policyDomains: Object.freeze([...coverage.policyDomains]),
+        evidence: Object.freeze([...coverage.evidence]),
+        limits: Object.freeze({ ...coverage.limits }),
+        unknownReasons: Object.freeze({ ...coverage.unknownReasons }),
+      });
+    },
+
+    /**
+     * One policy domain's section: `environment`, `container`, `ci`, `api`, `dependencies` or
+     * `architecture`.
+     *
+     * The domain name is a closed vocabulary, so a typo throws rather than returning an empty
+     * section a caller could read as "this repository satisfies this policy". A missing section in
+     * a well-formed report is impossible — the contract requires all six — so `null` here means
+     * only that the model carries no compliance report at all.
+     *
+     * @throws {RepositoryQueryError} kind `invalid-query` for an unknown domain name.
+     */
+    complianceSection(name) {
+      if (typeof name !== "string" || !COMPLIANCE_SECTIONS.includes(name)) {
+        throw new RepositoryQueryError(QUERY_ERROR_KINDS.INVALID_QUERY, {
+          field: "complianceSection.name",
+        });
+      }
+      const report = complianceReportOf(model);
+      if (report === null) return null;
+      const section = report.sections.find((entry) => entry.name === name) ?? null;
+      if (section === null) return null;
+      validateComplianceSectionResult(section);
       return section;
     },
 

@@ -155,6 +155,36 @@ import {
   renderRiskRemediation,
   renderRiskStatement,
 } from "./production-risk-report.js";
+import {
+  MAX_RELEASE_WORKFLOWS,
+  POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOMAINS,
+  POLICY_LIMITS,
+  POLICY_STATES,
+  POLICY_STATE_VALUES,
+  POLICY_UNKNOWN_REASON_VALUES,
+  isEstablishedPolicyState,
+  policyDocumentDomains,
+  policyDocumentSettingCount,
+} from "./policy.js";
+import {
+  COMPLIANCE_CHECK_IDS,
+  COMPLIANCE_LIMITS,
+  COMPLIANCE_OBSERVED_VALUES,
+  COMPLIANCE_SECTIONS,
+  COMPLIANCE_SECTION_STATES,
+  COMPLIANCE_SECTION_STATE_VALUES,
+  COMPLIANCE_STATES,
+  COMPLIANCE_STATE_VALUES,
+  COMPLIANCE_STATUSES,
+  COMPLIANCE_STATUS_VALUES,
+  COMPLIANCE_UNKNOWN_REASON_VALUES,
+  COMPLIANCE_VERSION,
+  POLICY_REQUIREMENT_BINDING,
+  renderComplianceRationale,
+} from "./compliance-report.js";
 import { GRAPH_RELATIONSHIP_TYPES, RELATIONSHIP_TYPES } from "./graph.js";
 import { ENTITY_KINDS } from "./identity.js";
 import {
@@ -310,6 +340,647 @@ function checkIndexCoverage(model, entityIds, evidenceIds, ctx) {
  * @returns {object} The same model when valid.
  * @throws {ValidationError} Listing every invariant it found broken.
  */
+/**
+ * Validate a policy document against the model's own closed schema.
+ *
+ * The document is the one payload in this model whose *contents* decide later answers, so the
+ * check is complete rather than sampled: declared domains only, declared keys only, correctly
+ * typed values, and the canonical order the entity layer rebuilds them in.
+ */
+function collectPolicyDocumentIssues(document, fail, path) {
+  if (!isPlainObject(document)) {
+    fail(path, "must be a plain object or null");
+    return;
+  }
+  const domains = Object.keys(document);
+  for (const domain of domains) {
+    if (!POLICY_DOMAINS.includes(domain)) {
+      fail(`${path}.${domain}`, "must be a declared policy domain");
+      return;
+    }
+  }
+  if (domains.join("\u0000") !== POLICY_DOMAINS.filter((d) => domains.includes(d)).join("\u0000")) {
+    fail(path, "must state its domains in the declared order");
+  }
+  for (const domain of domains) {
+    const settings = document[domain];
+    if (!isPlainObject(settings)) {
+      fail(`${path}.${domain}`, "must be a plain object of declared settings");
+      continue;
+    }
+    const keys = Object.keys(settings);
+    for (const key of keys) {
+      if (!POLICY_DOCUMENT_KEYS[domain].includes(key)) {
+        fail(`${path}.${domain}.${key}`, "is not a setting this schema declares");
+        continue;
+      }
+      const value = settings[key];
+      if (POLICY_DOCUMENT_SCHEMA[domain][key] === "boolean") {
+        if (typeof value !== "boolean") fail(`${path}.${domain}.${key}`, "must be a boolean");
+      } else if (
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value > MAX_RELEASE_WORKFLOWS
+      ) {
+        fail(`${path}.${domain}.${key}`, "must be a whole number within the declared bound");
+      }
+    }
+    if (keys.join("\u0000") !== POLICY_DOCUMENT_KEYS[domain].filter((k) => keys.includes(k)).join("\u0000")) {
+      fail(`${path}.${domain}`, "must state its settings in the declared order");
+    }
+  }
+}
+
+/**
+ * Validate the repository policy area.
+ *
+ * Every field is pinned to the state it claims. The two that carry the phase's weight are the
+ * document and the answer flag: a document exists if and only if the state is `established`, and
+ * `established` is true for exactly the two states that answer "what does this repository
+ * declare?" — `established` and `absent`. So a model can neither claim an answer about a
+ * document it did not read, nor present an unreadable document as an answer.
+ */
+function collectPolicyAreaIssues(model, fail) {
+  const area = model.policy;
+  if (!isPlainObject(area)) {
+    fail("policy", "must be a plain object");
+    return;
+  }
+  const evidence = new Set((model.evidence ?? []).map((record) => record?.id));
+
+  if (typeof area.detected !== "boolean") fail("policy.detected", "must be a boolean");
+  if (typeof area.established !== "boolean") fail("policy.established", "must be a boolean");
+  if (!POLICY_STATE_VALUES.includes(area.state)) {
+    fail("policy.state", "must be a documented policy state");
+  }
+  if (area.established !== isEstablishedPolicyState(area.state)) {
+    fail("policy.established", "must agree with the state it reports");
+  }
+
+  const document = area.document ?? null;
+  if (document !== null) collectPolicyDocumentIssues(document, fail, "policy.document");
+  if ((document !== null) !== (area.state === POLICY_STATES.ESTABLISHED)) {
+    fail("policy.document", "must be carried exactly when the state is established");
+  }
+
+  const coverage = area.coverage;
+  if (!isPlainObject(coverage)) {
+    fail("policy.coverage", "must be a plain object");
+    return;
+  }
+  if (coverage.state !== area.state) fail("policy.coverage.state", "must agree with the area state");
+  if (coverage.established !== area.established) {
+    fail("policy.coverage.established", "must agree with the area state");
+  }
+  for (const field of ["complete", "inspected", "truncated"]) {
+    if (typeof coverage[field] !== "boolean") {
+      fail(`policy.coverage.${field}`, "must be a boolean");
+    }
+  }
+  if (coverage.complete !== isEstablishedPolicyState(area.state)) {
+    fail("policy.coverage.complete", "must agree with the state it reports");
+  }
+  if (coverage.truncated !== (area.state === POLICY_STATES.TRUNCATED)) {
+    fail("policy.coverage.truncated", "must agree with the state it reports");
+  }
+  if (coverage.path !== POLICY_DOCUMENT_PATH) {
+    fail("policy.coverage.path", "must be the contracted policy document path");
+  }
+  const answered = isEstablishedPolicyState(area.state);
+  if (answered && coverage.reason !== null) {
+    fail("policy.coverage.reason", "must be null when the reading answered");
+  }
+  if (!answered) {
+    if (!POLICY_UNKNOWN_REASON_VALUES.includes(coverage.reason)) {
+      fail("policy.coverage.reason", "must document why the reading did not answer");
+    }
+  }
+  if (coverage.detail !== null && !isNonEmptyString(coverage.detail)) {
+    fail("policy.coverage.detail", "must be a bounded identifier or null");
+  }
+
+  const declared = policyDocumentDomains(document);
+  if (!Array.isArray(coverage.domains)) {
+    fail("policy.coverage.domains", "must be an array");
+  } else if (
+    coverage.domains.join("\u0000") !== declared.join("\u0000") ||
+    new Set(coverage.domains).size !== coverage.domains.length
+  ) {
+    fail("policy.coverage.domains", "must be the document's domains in declared order, each once");
+  }
+  if (coverage.settings !== policyDocumentSettingCount(document)) {
+    fail("policy.coverage.settings", "must count the settings the document states");
+  }
+
+  if (!Array.isArray(coverage.evidenceIds)) {
+    fail("policy.coverage.evidenceIds", "must be an array");
+    return;
+  }
+  const uniqueEvidence = [...new Set(coverage.evidenceIds)].sort();
+  if (JSON.stringify(uniqueEvidence) !== JSON.stringify(coverage.evidenceIds)) {
+    fail("policy.coverage.evidenceIds", "must be sorted and unique");
+  }
+  for (const id of coverage.evidenceIds) {
+    if (!evidence.has(id)) fail(`policy.coverage.evidenceIds`, `must cite a carried observation (${id})`);
+  }
+  if ((coverage.evidenceIds.length > 0) !== (area.detected === true)) {
+    fail(
+      "policy.coverage.evidenceIds",
+      "must carry the document's observation exactly when the document was observed",
+    );
+  }
+  if (!isPlainObject(coverage.limits)) fail("policy.coverage.limits", "must be a plain object");
+  if (coverage.limits?.maxDomains !== POLICY_LIMITS.maxDomains) {
+    fail("policy.coverage.limits.maxDomains", "must be the schema's own bound");
+  }
+}
+
+/**
+ * Validate the compliance report.
+ *
+ * The report is recomputed rather than sampled. Each section's state follows from its items, its
+ * counts are the items it carries, its evidence union is the items' own citations, the report's
+ * three item lists are exactly its sections' items by status, its state follows from its
+ * sections, and every item's rationale is *re-rendered* from the item's own fields. The two
+ * checks that give the phase its teeth are the last two: a `violation` must cite repository
+ * evidence **and** the policy document, and an item's `expected` value must be the policy the
+ * model actually carries — so no item can accuse the repository of contradicting a requirement
+ * the repository never declared.
+ */
+function collectComplianceIssues(model, fail) {
+  const area = model.compliance;
+  if (!isPlainObject(area)) {
+    fail("compliance", "must be a plain object");
+    return;
+  }
+  const evidence = new Set((model.evidence ?? []).map((record) => record?.id));
+  const document = isPlainObject(model.policy?.document) ? model.policy.document : null;
+  const policyEvidenceIds = [...(model.policy?.coverage?.evidenceIds ?? [])].sort();
+
+  if (typeof area.detected !== "boolean") fail("compliance.detected", "must be a boolean");
+  if (typeof area.established !== "boolean") {
+    fail("compliance.established", "must be a boolean");
+  }
+  if (!COMPLIANCE_STATE_VALUES.includes(area.state)) {
+    fail("compliance.state", "must be a documented compliance state");
+  }
+
+  const report = area.report;
+  if (!isPlainObject(report)) {
+    fail("compliance.report", "must be a plain object");
+    return;
+  }
+  if (report.version !== COMPLIANCE_VERSION) {
+    fail("compliance.report.version", "must be the report version this builder produces");
+  }
+  if (!COMPLIANCE_STATE_VALUES.includes(report.state)) {
+    fail("compliance.report.state", "must be a documented compliance state");
+  }
+  if (report.state !== area.state) {
+    fail("compliance.report.state", "must agree with the area it belongs to");
+  }
+  if (report.established !== area.established) {
+    fail("compliance.report.established", "must agree with the area it belongs to");
+  }
+
+  const sections = report.sections;
+  if (!Array.isArray(sections)) {
+    fail("compliance.report.sections", "must be an array");
+    return;
+  }
+  if (sections.length !== COMPLIANCE_SECTIONS.length) {
+    fail("compliance.report.sections", "must carry every policy domain exactly once");
+  }
+  const names = sections.map((section) => section?.name);
+  if (names.join("\u0000") !== COMPLIANCE_SECTIONS.join("\u0000")) {
+    fail("compliance.report.sections", "must be ordered by domain and carry each once");
+  }
+
+  sections.forEach((section, index) => {
+    const at = `compliance.report.sections[${index}]`;
+    if (!isPlainObject(section)) {
+      fail(at, "must be a plain object");
+      return;
+    }
+    if (!isNonEmptyString(section.title)) fail(`${at}.title`, "must be a non-empty title");
+    if (!COMPLIANCE_SECTION_STATE_VALUES.includes(section.state)) {
+      fail(`${at}.state`, "must be a documented section state");
+    }
+    if (section.established !== (section.state !== COMPLIANCE_SECTION_STATES.UNKNOWN)) {
+      fail(`${at}.established`, "must agree with the state it reports");
+    }
+    if (typeof section.policyDeclared !== "boolean") {
+      fail(`${at}.policyDeclared`, "must be a boolean");
+    }
+    if (section.policyDeclared !== (document !== null && isPlainObject(document[section.name]))) {
+      fail(`${at}.policyDeclared`, "must agree with the policy this model carries");
+    }
+
+    const keys = section.policyKeys;
+    if (!Array.isArray(keys)) {
+      fail(`${at}.policyKeys`, "must be an array");
+    } else {
+      const expectedKeys = POLICY_DOCUMENT_KEYS[section.name] ?? [];
+      for (const key of keys) {
+        if (!expectedKeys.includes(key)) fail(`${at}.policyKeys`, "must be keys the schema declares");
+      }
+      if (keys.join("\u0000") !== expectedKeys.filter((key) => keys.includes(key)).join("\u0000")) {
+        fail(`${at}.policyKeys`, "must be in schema order, each once");
+      }
+      const declaredKeys = document !== null && isPlainObject(document[section.name])
+        ? Object.keys(document[section.name])
+        : [];
+      if (keys.join("\u0000") !== declaredKeys.join("\u0000")) {
+        fail(`${at}.policyKeys`, "must be the keys the document declares for this domain");
+      }
+    }
+
+    const items = Array.isArray(section.items) ? section.items : [];
+    if (!Array.isArray(section.items)) fail(`${at}.items`, "must be an array");
+    const seenIds = new Set();
+    items.forEach((item, itemIndex) => {
+      const itemAt = `${at}.items[${itemIndex}]`;
+      if (!isPlainObject(item)) {
+        fail(itemAt, "must be a plain object");
+        return;
+      }
+      if (item.domain !== section.name) fail(`${itemAt}.domain`, "must be the section's own domain");
+      if (!(POLICY_DOCUMENT_KEYS[section.name] ?? []).includes(item.key)) {
+        fail(`${itemAt}.key`, "must be a policy key this domain declares");
+      }
+      if (item.policyKey !== `${section.name}.${item.key}`) {
+        fail(`${itemAt}.policyKey`, "must name the policy key it measures");
+      }
+      const expectedId =
+        item.subject === null || item.subject === undefined
+          ? item.policyKey
+          : `${item.policyKey}:${item.subject}`;
+      if (item.id !== expectedId) fail(`${itemAt}.id`, "must be derived from its key and subject");
+      if (seenIds.has(item.id)) fail(`${itemAt}.id`, "must be unique within the section");
+      seenIds.add(item.id);
+
+      // The requirement the item measures must be the one the model actually carries. This is
+      // the check that makes "no inferred policy" a property of the model rather than a promise.
+      const declared = document === null ? undefined : document[section.name]?.[item.key];
+      if (declared === undefined) {
+        fail(`${itemAt}.expected`, "must be a requirement the policy declares");
+      } else if (item.expected !== declared) {
+        fail(`${itemAt}.expected`, "must be the value the policy declares");
+      }
+
+      const vocabulary = COMPLIANCE_OBSERVED_VALUES[item.policyKey] ?? [];
+      if (item.policyKey === "ci.maxReleaseWorkflows") {
+        if (
+          !(Number.isInteger(item.observed) && item.observed >= 0) &&
+          !vocabulary.includes(item.observed)
+        ) {
+          fail(`${itemAt}.observed`, "must be a count or a documented observation");
+        }
+      } else if (!vocabulary.includes(item.observed)) {
+        fail(`${itemAt}.observed`, "must be one of the observations this key declares");
+      }
+      if (!COMPLIANCE_STATUS_VALUES.includes(item.status)) {
+        fail(`${itemAt}.status`, "must be one of: pass, violation, unknown");
+      }
+      if (item.subject !== null && !isNonEmptyString(item.subject)) {
+        fail(`${itemAt}.subject`, "must name its subject or be null");
+      }
+      if (item.basis !== null && !isNonEmptyString(item.basis)) {
+        fail(`${itemAt}.basis`, "must name the basis it rests on, or be null");
+      }
+      if (item.rationale !== renderComplianceRationale(item)) {
+        fail(`${itemAt}.rationale`, "must be the sentence its own fields render");
+      }
+      if (
+        typeof item.rationale !== "string" ||
+        item.rationale.length > COMPLIANCE_LIMITS.maxRationaleLength
+      ) {
+        fail(`${itemAt}.rationale`, "must stay within the rationale bound");
+      }
+
+      if (!Array.isArray(item.evidenceIds) || !Array.isArray(item.policyEvidenceIds)) {
+        fail(`${itemAt}.evidenceIds`, "must be arrays");
+        return;
+      }
+      if (
+        JSON.stringify([...new Set(item.evidenceIds)].sort()) !== JSON.stringify(item.evidenceIds) ||
+        JSON.stringify([...new Set(item.policyEvidenceIds)].sort()) !==
+          JSON.stringify(item.policyEvidenceIds)
+      ) {
+        fail(`${itemAt}.evidenceIds`, "must be sorted and unique");
+      }
+      for (const id of item.evidenceIds) {
+        if (!evidence.has(id)) fail(`${itemAt}.evidenceIds`, `must cite a carried observation (${id})`);
+      }
+      for (const id of item.policyEvidenceIds) {
+        if (!policyEvidenceIds.includes(id)) {
+          fail(`${itemAt}.policyEvidenceIds`, "must cite the policy document's own observation");
+        }
+      }
+      // An accusation is two-sided, always.
+      if (item.status === COMPLIANCE_STATUSES.VIOLATION) {
+        if (item.evidenceIds.length === 0) {
+          fail(`${itemAt}.evidenceIds`, "must cite the observation a violation rests on");
+        }
+        if (item.policyEvidenceIds.length === 0) {
+          fail(`${itemAt}.policyEvidenceIds`, "must cite the policy a violation contradicts");
+        }
+      }
+    });
+
+    const order = compareComplianceItems;
+    const sorted = [...items].sort(order);
+    if (JSON.stringify(items.map((item) => item?.id)) !== JSON.stringify(sorted.map((item) => item?.id))) {
+      fail(`${at}.items`, "must be sorted by key, subject and id");
+    }
+
+    const violations = items.filter((item) => item?.status === COMPLIANCE_STATUSES.VIOLATION);
+    const passed = items.filter((item) => item?.status === COMPLIANCE_STATUSES.PASS);
+    const unknowns = items.filter((item) => item?.status === COMPLIANCE_STATUSES.UNKNOWN);
+
+    let expectedState;
+    if (items.length === 0) expectedState = COMPLIANCE_SECTION_STATES.UNKNOWN;
+    else if (violations.length > 0) expectedState = COMPLIANCE_SECTION_STATES.VIOLATION;
+    else if (passed.length > 0 && unknowns.length === 0) expectedState = COMPLIANCE_SECTION_STATES.PASS;
+    else if (passed.length > 0) expectedState = COMPLIANCE_SECTION_STATES.PARTIAL;
+    else expectedState = COMPLIANCE_SECTION_STATES.UNKNOWN;
+    if (section.state !== expectedState) {
+      fail(`${at}.state`, "must follow from the items it carries");
+    }
+
+    const counts = section.counts;
+    if (!isPlainObject(counts)) {
+      fail(`${at}.counts`, "must be a plain object");
+    } else if (
+      counts.items !== items.length ||
+      counts.violations !== violations.length ||
+      counts.passed !== passed.length ||
+      counts.unknown !== unknowns.length
+    ) {
+      fail(`${at}.counts`, "must count the items it carries");
+    }
+
+    const union = [...new Set(items.flatMap((item) => [...(item?.evidenceIds ?? []), ...(item?.policyEvidenceIds ?? [])]))].sort();
+    if (!Array.isArray(section.evidenceIds) || section.evidenceIds.join("\u0000") !== union.join("\u0000")) {
+      fail(`${at}.evidenceIds`, "must be every citation its items make, sorted");
+    }
+    if (
+      !Array.isArray(section.policyEvidenceIds) ||
+      section.policyEvidenceIds.join("\u0000") !== policyEvidenceIds.join("\u0000")
+    ) {
+      fail(`${at}.policyEvidenceIds`, "must be the policy document's own observation");
+    }
+
+    const abstentions = section.unknown;
+    if (!Array.isArray(abstentions)) {
+      fail(`${at}.unknown`, "must be an array");
+    } else {
+      if (abstentions.length > COMPLIANCE_LIMITS.maxUnknownReasonsPerSection) {
+        fail(`${at}.unknown`, "must stay within the abstention bound");
+      }
+      if (
+        JSON.stringify(abstentions.map((r) => `${r?.reason}\u0000${r?.detail ?? ""}`)) !==
+        JSON.stringify(
+          [...abstentions]
+            .map((r) => `${r?.reason}\u0000${r?.detail ?? ""}`)
+            .sort(),
+        )
+      ) {
+        fail(`${at}.unknown`, "must be ordered by reason then detail");
+      }
+      const pairs = new Set();
+      for (const record of abstentions) {
+        if (!isPlainObject(record)) {
+          fail(`${at}.unknown`, "every abstention must be a plain object");
+          continue;
+        }
+        if (!COMPLIANCE_UNKNOWN_REASON_VALUES.includes(record.reason)) {
+          fail(`${at}.unknown`, "must name a documented reason");
+        }
+        if (record.detail !== null && !isNonEmptyString(record.detail)) {
+          fail(`${at}.unknown`, "must carry a bounded detail or null");
+        }
+        if (!Number.isInteger(record.count) || record.count <= 0) {
+          fail(`${at}.unknown`, "must count the reasons it merges");
+        }
+        const pair = `${record.reason}\u0000${record.detail ?? ""}`;
+        if (pairs.has(pair)) fail(`${at}.unknown`, "must merge abstentions that share a reason");
+        pairs.add(pair);
+      }
+    }
+
+    const coverage = section.coverage;
+    if (!isPlainObject(coverage)) {
+      fail(`${at}.coverage`, "must be a plain object");
+      return;
+    }
+    if (coverage.state !== section.state) fail(`${at}.coverage.state`, "must agree with the section");
+    if (coverage.established !== section.established) {
+      fail(`${at}.coverage.established`, "must agree with the section");
+    }
+    if (coverage.policyDeclared !== section.policyDeclared) {
+      fail(`${at}.coverage.policyDeclared`, "must agree with the section");
+    }
+    if (typeof coverage.complete !== "boolean" || typeof coverage.truncated !== "boolean") {
+      fail(`${at}.coverage`, "must state completeness and truncation as booleans");
+    }
+    if (
+      coverage.items !== items.length ||
+      coverage.violations !== violations.length ||
+      coverage.passed !== passed.length ||
+      coverage.unknown !== unknowns.length ||
+      coverage.evidence !== union.length ||
+      coverage.unknownReasons !== (Array.isArray(abstentions) ? abstentions.length : 0)
+    ) {
+      fail(`${at}.coverage`, "must count what the section carries");
+    }
+  });
+
+  const flat = (status) =>
+    sections.flatMap((section) =>
+      (Array.isArray(section?.items) ? section.items : []).filter(
+        (item) => item?.status === status,
+      ),
+    );
+  for (const [field, status] of [
+    ["violations", COMPLIANCE_STATUSES.VIOLATION],
+    ["passed", COMPLIANCE_STATUSES.PASS],
+    ["unknown", COMPLIANCE_STATUSES.UNKNOWN],
+  ]) {
+    const expectedItems = flat(status);
+    if (!Array.isArray(report[field])) {
+      fail(`compliance.report.${field}`, "must be an array");
+    } else if (JSON.stringify(report[field].map((item) => item?.id)) !== JSON.stringify(expectedItems.map((item) => item?.id))) {
+      fail(`compliance.report.${field}`, `must be every ${status} item the sections carry, in order`);
+    }
+  }
+
+  const allItems = sections.flatMap((section) => (Array.isArray(section?.items) ? section.items : []));
+  const anyTruncated = sections.some((section) => section?.coverage?.truncated === true);
+  const everyPass = sections.every(
+    (section) => section?.state === COMPLIANCE_SECTION_STATES.PASS,
+  );
+  const anyEstablished = sections.some((section) => section?.established === true);
+  const expectedState =
+    flat(COMPLIANCE_STATUSES.VIOLATION).length > 0
+      ? COMPLIANCE_STATES.VIOLATION
+      : anyTruncated
+        ? COMPLIANCE_STATES.TRUNCATED
+        : everyPass
+          ? COMPLIANCE_STATES.PASS
+          : anyEstablished
+            ? COMPLIANCE_STATES.PARTIAL
+            : COMPLIANCE_STATES.UNKNOWN;
+  if (report.state !== expectedState) {
+    fail("compliance.report.state", "must follow from the sections it summarises");
+  }
+  if (report.established !== anyEstablished) {
+    fail("compliance.report.established", "must follow from the sections it summarises");
+  }
+  if (area.detected !== allItems.length > 0) {
+    fail("compliance.detected", "must say whether any requirement was measured");
+  }
+
+  const coverage = report.coverage;
+  if (!isPlainObject(coverage)) {
+    fail("compliance.report.coverage", "must be a plain object");
+    return;
+  }
+  if (coverage.state !== report.state) fail("compliance.report.coverage.state", "must agree with the report");
+  if (coverage.established !== report.established) {
+    fail("compliance.report.coverage.established", "must agree with the report");
+  }
+  if (coverage.complete !== (report.state === COMPLIANCE_STATES.PASS)) {
+    fail("compliance.report.coverage.complete", "must agree with the report state");
+  }
+  if (coverage.truncated !== anyTruncated) {
+    fail("compliance.report.coverage.truncated", "must agree with the sections");
+  }
+  if (
+    coverage.sections !== sections.length ||
+    coverage.sectionsEstablished !== sections.filter((section) => section?.established === true).length ||
+    coverage.items !== allItems.length ||
+    coverage.violations !== flat(COMPLIANCE_STATUSES.VIOLATION).length ||
+    coverage.passed !== flat(COMPLIANCE_STATUSES.PASS).length ||
+    coverage.unknown !== flat(COMPLIANCE_STATUSES.UNKNOWN).length
+  ) {
+    fail("compliance.report.coverage", "must count what the report carries");
+  }
+  if (coverage.policyState !== (model.policy?.state ?? null)) {
+    fail("compliance.report.coverage.policyState", "must agree with the policy this model carries");
+  }
+  if (coverage.policyEstablished !== (model.policy?.established === true)) {
+    fail("compliance.report.coverage.policyEstablished", "must agree with the policy this model carries");
+  }
+  const declaredDomains = policyDocumentDomains(document);
+  if (JSON.stringify(coverage.policyDomains) !== JSON.stringify(declaredDomains)) {
+    fail("compliance.report.coverage.policyDomains", "must be the domains the document declares");
+  }
+  if (coverage.policySettings !== policyDocumentSettingCount(document)) {
+    fail("compliance.report.coverage.policySettings", "must count the settings the document states");
+  }
+  const union = [...new Set(allItems.flatMap((item) => [...(item?.evidenceIds ?? []), ...(item?.policyEvidenceIds ?? [])]))].sort();
+  if (!Array.isArray(coverage.evidence) || coverage.evidence.join("\u0000") !== union.join("\u0000")) {
+    fail("compliance.report.coverage.evidence", "must be every citation the report makes");
+  }
+  if (!isPlainObject(coverage.limits)) {
+    fail("compliance.report.coverage.limits", "must be a plain object");
+  } else if (coverage.limits.maxItemsPerSection !== COMPLIANCE_LIMITS.maxItemsPerSection) {
+    fail("compliance.report.coverage.limits.maxItemsPerSection", "must be the report's own bound");
+  }
+
+  const unknownReasons = coverage.unknownReasons;
+  if (!isPlainObject(unknownReasons)) {
+    fail("compliance.report.coverage.unknownReasons", "must be a plain object");
+  } else {
+    const expected = {};
+    for (const section of sections) {
+      for (const record of section?.unknown ?? []) {
+        if (!isPlainObject(record) || typeof record.reason !== "string") continue;
+        expected[record.reason] = (expected[record.reason] ?? 0) + (record.count ?? 0);
+      }
+    }
+    const keys = Object.keys(unknownReasons);
+    if (keys.join("\u0000") !== keys.slice().sort().join("\u0000")) {
+      fail("compliance.report.coverage.unknownReasons", "must be ordered by reason");
+    }
+    for (const key of [...new Set([...keys, ...Object.keys(expected)])]) {
+      if (unknownReasons[key] !== expected[key]) {
+        fail(
+          `compliance.report.coverage.unknownReasons.${key}`,
+          "must total the sections' own abstentions",
+        );
+      }
+    }
+  }
+
+  // `detected` one level up is the same statement the report's item lists make, so a model that
+  // carries an item it does not count, or counts one it does not carry, is rejected here.
+  if (area.coverage !== undefined) {
+    if (!isPlainObject(area.coverage)) {
+      fail("compliance.coverage", "must be a plain object");
+    } else {
+      for (const field of ["state", "established", "complete", "truncated", "sections", "items"]) {
+        if (area.coverage[field] !== report.coverage[field]) {
+          fail(`compliance.coverage.${field}`, "must agree with the report it summarises");
+        }
+      }
+    }
+  }
+}
+
+/** The canonical order of a compliance section's items. */
+function compareComplianceItems(a, b) {
+  const left = `${a?.key}\u0000${a?.subject ?? ""}\u0000${a?.id ?? ""}`;
+  const right = `${b?.key}\u0000${b?.subject ?? ""}\u0000${b?.id ?? ""}`;
+  return left === right ? 0 : left < right ? -1 : 1;
+}
+
+/**
+ * Every policy key the schema declares, as `domain.key`.
+ *
+ * @returns {string[]}
+ */
+export function policyKeyIds() {
+  return POLICY_DOMAINS.flatMap((domain) =>
+    POLICY_DOCUMENT_KEYS[domain].map((key) => `${domain}.${key}`),
+  );
+}
+
+/**
+ * The policy keys the report has no measurement for.
+ *
+ * Exported so the focused suite can pin the two tables together in both directions; the
+ * load-time check below makes the same statement a build-time guarantee, because a declared
+ * setting with no measurement would be a policy this build silently ignores — the one outcome
+ * this phase forbids.
+ */
+export function unmeasuredPolicyKeys() {
+  const checked = new Set(COMPLIANCE_CHECK_IDS);
+  return policyKeyIds().filter((id) => !checked.has(id));
+}
+
+/** Policy keys a check measures that the schema does not declare. */
+export function unknownPolicyCheckKeys() {
+  const declared = new Set(policyKeyIds());
+  return COMPLIANCE_CHECK_IDS.filter((id) => !declared.has(id));
+}
+
+const UNMEASURED_POLICY_KEYS = [
+  ...unmeasuredPolicyKeys().map((id) => `${id}: no compliance check measures this policy key`),
+  ...unknownPolicyCheckKeys().map((id) => `${id}: no policy schema declares this measured key`),
+  ...COMPLIANCE_CHECK_IDS.filter((id) => {
+    const [domain, key] = id.split(".");
+    return POLICY_REQUIREMENT_BINDING[domain]?.[key] === undefined;
+  }).map((id) => `${id}: no requirement binding decides when this key binds`),
+];
+
+if (UNMEASURED_POLICY_KEYS.length > 0) {
+  throw new ValidationError("Invalid compliance check table", {
+    details: { contract: "ComplianceChecks", issues: UNMEASURED_POLICY_KEYS },
+  });
+}
+
 export function validateRepositoryModelGraph(model) {
   const issues = [];
   const fail = (path, message) => issues.push(`${path}: ${message}`);
@@ -4004,6 +4675,14 @@ export function validateRepositoryModelGraph(model) {
       }
     }
   }
+
+  // ── Policy and compliance (Phase 22) ──────────────────────────────────────
+  //
+  // The policy area is validated before the report that measures it, because the report's own
+  // checks read the document the area publishes: an invalid document must fail as an invalid
+  // *policy* rather than as a compliance item nobody can explain.
+  collectPolicyAreaIssues(model, fail);
+  collectComplianceIssues(model, fail);
 
   checkIndexCoverage(model, entityIds, evidenceIds, { fail });
 

@@ -51,6 +51,8 @@ import { buildDependencyGraph } from "./dependency-graph.js";
 import { buildImportGraph, isInterpretedLanguage } from "./import-graph.js";
 import { buildSymbolGraph } from "./symbol-graph.js";
 import { buildIndexes, buildRelationships } from "./graph.js";
+import { buildComplianceReport } from "./compliance-report.js";
+import { buildPolicyArea } from "./policy.js";
 import { buildProductionReport } from "./production-report.js";
 import { buildProductionRiskReport } from "./production-risk-report.js";
 import { repositoryId as repositoryIdOf } from "./identity.js";
@@ -313,6 +315,21 @@ export function buildRepositoryModel(scanResult) {
     importGraph,
   });
 
+  // Phase 22 — the repository's own declared requirements, and the compliance report that
+  // measures them. The policy area is built first because it is an *input*: it turns the one
+  // document the repository declares into a first-class observation, so a compliance violation
+  // can cite the declaration that makes a condition wrong beside the observation that proves the
+  // condition. The compliance report then compares the two — and it reads the accepted
+  // production report rather than re-deriving any fact, so there is no second notion of which
+  // routes, Dockerfiles or manifests the repository contains.
+  const policyArea = buildPolicyArea({ policy: collections.policy, scan: { complete: scan.scan.complete, truncated: scan.scan.truncated, coverage } });
+
+  const complianceReport = buildComplianceReport({
+    policy: policyArea,
+    report: productionReport,
+    evidence: collections.evidence,
+  });
+
   // The Core factory supplies the contracted skeleton (every required area,
   // contract-shaped defaults including the optional areas). The model is then
   // assembled explicitly from that skeleton, so an area can never be omitted and
@@ -492,6 +509,30 @@ export function buildRepositoryModel(scanResult) {
       established: productionRiskReport.established,
       report: productionRiskReport,
       coverage: { ...productionRiskReport.coverage },
+    },
+    // Phase 22 — the declared-requirements substrate. `document` carries the validated policy
+    // document or `null`, and `state` says what the reading established: a policy, the absence
+    // of one, or one of the three ways this build could not tell. No setting is interpreted
+    // here — the area states what the repository *declares*, never whether it complies.
+    policy: {
+      detected: policyArea.detected,
+      established: policyArea.established,
+      state: policyArea.state,
+      document: policyArea.document,
+      coverage: { ...policyArea.coverage },
+    },
+    // Phase 22 — the compliance substrate: one section per policy domain, each item citing the
+    // repository observation and the policy declaration it was measured against. `detected`
+    // says whether any policy requirement was stated at all, which is the same "the repository
+    // declared something to measure" statement every other area makes. There is no score, no
+    // percentage and no grade: the report carries items with `pass` / `violation` / `unknown`
+    // and the reasons nothing could be measured.
+    compliance: {
+      detected: complianceReport.coverage.items > 0,
+      state: complianceReport.state,
+      established: complianceReport.established,
+      report: complianceReport,
+      coverage: { ...complianceReport.coverage },
     },
     git: {
       detected: scan.git.detected,

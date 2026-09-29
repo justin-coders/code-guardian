@@ -382,3 +382,47 @@ export {
   productionRiskSection,
   productionRiskSections,
 } from "./production/index.js";
+
+// Phase 22 — the `compliance.*` pack. Six rules, one per policy domain of the ComplianceReport,
+// proving that report is consumable through the accepted Rule Engine: a rule reports the
+// requirements the repository's own policy contradicts, cites both the repository observation and
+// the policy declaration behind each finding, and abstains where nothing could be measured.
+// Purely additive — the Rule Engine is unchanged and every other pack is untouched.
+export {
+  COMPLIANCE_ABSTENTION_WORDING,
+  COMPLIANCE_ANALYZER_ID,
+  COMPLIANCE_ANALYZER_NAME,
+  COMPLIANCE_ANALYZER_SCOPE,
+  COMPLIANCE_BASIS,
+  COMPLIANCE_CATEGORY,
+  COMPLIANCE_CONFIDENCE,
+  COMPLIANCE_DESCRIBED_ABSTENTIONS,
+  COMPLIANCE_DESCRIBED_POLICY_STATES,
+  COMPLIANCE_DESCRIBED_SECTIONS,
+  COMPLIANCE_DESCRIBED_STATES,
+  COMPLIANCE_DESCRIBED_STATUSES,
+  COMPLIANCE_POLICY_STATE_WORDING,
+  COMPLIANCE_RULE_ID_PREFIX,
+  COMPLIANCE_RULE_IDS,
+  COMPLIANCE_RULE_PACK_VERSION,
+  COMPLIANCE_RULE_SEVERITIES,
+  COMPLIANCE_RULE_VERSION,
+  COMPLIANCE_SECTIONS,
+  COMPLIANCE_SECTION_TITLES,
+  COMPLIANCE_SECTION_WORDING,
+  COMPLIANCE_SEVERITY_VALUES,
+  COMPLIANCE_STATE_WORDING,
+  COMPLIANCE_STATUS_WORDING,
+  MAX_COMPLIANCE_FINDINGS,
+  complianceAbsence,
+  complianceCoverage,
+  complianceDomainRules,
+  compliancePolicy,
+  complianceRules,
+  complianceRuleSetIssues,
+  complianceSection,
+  complianceSections,
+  complianceUnmeasuredReason,
+  createComplianceAnalyzer,
+  createComplianceRuleRegistry,
+} from "./compliance/index.js";

@@ -29,6 +29,24 @@
 
 import { ValidationError } from "../../core/index.js";
 
+import {
+  COMPLIANCE_CHECK_IDS as COMPLIANCE_CHECK_IDS_SOURCE,
+  COMPLIANCE_LIMITS as COMPLIANCE_LIMITS_SOURCE,
+  COMPLIANCE_OBSERVED_VALUES as COMPLIANCE_OBSERVED_VALUES_SOURCE,
+  COMPLIANCE_SECTIONS as COMPLIANCE_SECTIONS_SOURCE,
+  COMPLIANCE_SECTION_STATE_VALUES as COMPLIANCE_SECTION_STATE_VALUES_SOURCE,
+  COMPLIANCE_STATE_VALUES as COMPLIANCE_STATE_VALUES_SOURCE,
+  COMPLIANCE_STATUSES as COMPLIANCE_STATUSES_SOURCE,
+  COMPLIANCE_STATUS_VALUES as COMPLIANCE_STATUS_VALUES_SOURCE,
+  COMPLIANCE_VERSION,
+  renderComplianceRationale,
+} from "./compliance-report.js";
+import {
+  POLICY_DOCUMENT_KEYS as POLICY_DOCUMENT_KEYS_SOURCE,
+  POLICY_DOCUMENT_PATH as POLICY_DOCUMENT_PATH_SOURCE,
+  POLICY_STATE_VALUES as POLICY_STATE_VALUES_SOURCE,
+  POLICY_UNKNOWN_REASON_VALUES as POLICY_UNKNOWN_REASON_VALUES_SOURCE,
+} from "./policy.js";
 import { ARCHITECTURE_GRAPH_STATE_VALUES } from "./architecture-graph.js";
 import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
 import { IMPORT_GRAPH_STATE_VALUES } from "./import-graph.js";
@@ -1867,6 +1885,540 @@ function throwProductionIssues(contract, issues) {
   if (issues.length > 0) {
     throw new ValidationError(`Invalid ${contract}`, { details: { contract, issues } });
   }
+}
+
+// ── Repository policy and compliance report (Phase 22) ───────────────────────
+//
+// The policy area and the compliance report are handed out in full: the policy *is* the
+// document plus what the reading established about it, and the report *is* the sections and
+// items. The query layer adds no interpretation — it re-validates the shape it is about to hand
+// a caller, so a consumer cannot receive a report the model itself would refuse.
+
+/** Fields every policy result declares. */
+export const POLICY_RESULT_FIELDS = Object.freeze([
+  "detected",
+  "established",
+  "state",
+  "document",
+  "coverage",
+]);
+
+/** Fields every compliance item declares. */
+export const COMPLIANCE_ITEM_RESULT_FIELDS = Object.freeze([
+  "id",
+  "domain",
+  "key",
+  "policyKey",
+  "expected",
+  "observed",
+  "status",
+  "subject",
+  "basis",
+  "rationale",
+  "policyEvidenceIds",
+  "evidenceIds",
+]);
+
+/** Fields every compliance section declares. */
+export const COMPLIANCE_SECTION_RESULT_FIELDS = Object.freeze([
+  "name",
+  "title",
+  "state",
+  "established",
+  "policyDeclared",
+  "policyKeys",
+  "items",
+  "counts",
+  "evidenceIds",
+  "policyEvidenceIds",
+  "unknown",
+  "coverage",
+]);
+
+/** Fields every compliance report declares. */
+export const COMPLIANCE_REPORT_RESULT_FIELDS = Object.freeze([
+  "version",
+  "state",
+  "established",
+  "sections",
+  "violations",
+  "passed",
+  "unknown",
+  "coverage",
+]);
+
+/** Fields every compliance coverage statement declares. */
+export const COMPLIANCE_COVERAGE_RESULT_FIELDS = Object.freeze([
+  "state",
+  "established",
+  "complete",
+  "truncated",
+  "sections",
+  "sectionsEstablished",
+  "items",
+  "violations",
+  "passed",
+  "unknown",
+  "policyState",
+  "policyEstablished",
+  "policyDomains",
+  "policySettings",
+  "evidence",
+  "limits",
+  "unknownReasons",
+]);
+
+/** The policy states, re-exported for consumers of this contract. */
+export const POLICY_STATE_VALUES = POLICY_STATE_VALUES_SOURCE;
+
+/** The compliance states, statuses and section states, re-exported for the same reason. */
+export const COMPLIANCE_STATE_VALUES = COMPLIANCE_STATE_VALUES_SOURCE;
+export const COMPLIANCE_STATUS_VALUES = COMPLIANCE_STATUS_VALUES_SOURCE;
+export const COMPLIANCE_SECTION_STATE_VALUES = COMPLIANCE_SECTION_STATE_VALUES_SOURCE;
+
+/** The six policy domains, re-exported for the same reason. */
+export const COMPLIANCE_DOMAINS = COMPLIANCE_SECTIONS_SOURCE;
+
+/** Build a policy result draft. */
+export function createPolicyResult(input = {}) {
+  return createEnvelope(POLICY_RESULT_FIELDS, {
+    detected: input.detected === true,
+    established: input.established === true,
+    state: input.state,
+    document: input.document ?? null,
+    coverage: input.coverage,
+  });
+}
+
+/**
+ * Validate a policy result.
+ *
+ * The four fields that matter are pinned to each other: a document may be carried only by an
+ * `established` reading, `established` may be true only for the two states that answer "what
+ * does this repository declare?", and a reading that did not answer must say why. The document
+ * itself is checked against the closed schema, so a caller can never receive a setting this
+ * build's policy contract does not declare.
+ */
+export function validatePolicyResult(value) {
+  const contract = "PolicyResult";
+  requireProductionFields(value, contract, POLICY_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (typeof value.detected !== "boolean") fail(`${contract}.detected`, "must be a boolean");
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+  if (!POLICY_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented policy state");
+  }
+  if (value.document !== null && !isPlainObject(value.document)) {
+    fail(`${contract}.document`, "must be a plain object or null");
+  }
+  if ((value.document !== null) !== (value.state === "established")) {
+    fail(`${contract}.document`, "must be carried exactly when the state is established");
+  }
+  if (isPlainObject(value.document)) {
+    for (const domain of Object.keys(value.document)) {
+      if (!COMPLIANCE_SECTIONS_SOURCE.includes(domain)) {
+        fail(`${contract}.document.${domain}`, "must be a declared policy domain");
+        continue;
+      }
+      if (!isPlainObject(value.document[domain])) {
+        fail(`${contract}.document.${domain}`, "must be a plain object of settings");
+        continue;
+      }
+      for (const key of Object.keys(value.document[domain])) {
+        if (!POLICY_DOCUMENT_KEYS_SOURCE[domain].includes(key)) {
+          fail(`${contract}.document.${domain}.${key}`, "is not a declared setting");
+        }
+      }
+    }
+  }
+
+  if (!isPlainObject(value.coverage)) {
+    fail(`${contract}.coverage`, "must be a plain object");
+  } else {
+    if (value.coverage.state !== value.state) {
+      fail(`${contract}.coverage.state`, "must agree with the result state");
+    }
+    if (value.coverage.established !== value.established) {
+      fail(`${contract}.coverage.established`, "must agree with the result state");
+    }
+    if (value.coverage.path !== POLICY_DOCUMENT_PATH_SOURCE) {
+      fail(`${contract}.coverage.path`, "must be the contracted policy document path");
+    }
+    if (
+      !isEstablishedPolicyResultState(value.state) &&
+      !POLICY_UNKNOWN_REASON_VALUES_SOURCE.includes(value.coverage.reason)
+    ) {
+      fail(`${contract}.coverage.reason`, "must document why the reading did not answer");
+    }
+    if (!Array.isArray(value.coverage.domains)) {
+      fail(`${contract}.coverage.domains`, "must be an array");
+    }
+    if (!Array.isArray(value.coverage.evidenceIds)) {
+      fail(`${contract}.coverage.evidenceIds`, "must be an array");
+    }
+    if (!isPlainObject(value.coverage.limits)) {
+      fail(`${contract}.coverage.limits`, "must be a plain object");
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Whether a policy state answers what the repository declares. */
+function isEstablishedPolicyResultState(state) {
+  return state === "established" || state === "absent";
+}
+
+/** Build a compliance item draft. */
+export function createComplianceItemResult(input = {}) {
+  return createEnvelope(COMPLIANCE_ITEM_RESULT_FIELDS, {
+    id: input.id,
+    domain: input.domain,
+    key: input.key,
+    policyKey: input.policyKey,
+    expected: input.expected,
+    observed: input.observed,
+    status: input.status,
+    subject: input.subject ?? null,
+    basis: input.basis ?? null,
+    rationale: input.rationale,
+    policyEvidenceIds: input.policyEvidenceIds ?? [],
+    evidenceIds: input.evidenceIds ?? [],
+  });
+}
+
+/**
+ * Validate one compliance item.
+ *
+ * Three checks carry the phase here, and they are the three a consumer would otherwise have to
+ * remember: the requirement the item measures must be one the policy *declares*, the observation
+ * must come from the vocabulary its own key declares, and a `violation` must cite both the
+ * repository observation and the policy document. The rationale is re-rendered from the item's
+ * own fields, so the sentence a caller reads can never disagree with the tuple behind it.
+ */
+export function validateComplianceItem(value) {
+  const contract = "ComplianceItemResult";
+  requireProductionFields(value, contract, COMPLIANCE_ITEM_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!COMPLIANCE_SECTIONS_SOURCE.includes(value.domain)) {
+    fail(`${contract}.domain`, "must be a declared policy domain");
+  }
+  if (!(POLICY_DOCUMENT_KEYS_SOURCE[value.domain] ?? []).includes(value.key)) {
+    fail(`${contract}.key`, "must be a policy key this domain declares");
+  }
+  if (value.policyKey !== `${value.domain}.${value.key}`) {
+    fail(`${contract}.policyKey`, "must name the policy key it measures");
+  }
+  if (typeof value.id !== "string" || value.id === "") {
+    fail(`${contract}.id`, "must be a non-empty identifier");
+  }
+  if (!COMPLIANCE_CHECK_IDS_SOURCE.includes(value.policyKey)) {
+    fail(`${contract}.policyKey`, "must be a policy key this build measures");
+  }
+
+  const vocabulary = COMPLIANCE_OBSERVED_VALUES_SOURCE[value.policyKey] ?? [];
+  const countedObservation = Number.isInteger(value.observed) && value.observed >= 0;
+  if (!vocabulary.includes(value.observed) && !countedObservation) {
+    fail(`${contract}.observed`, "must be one of the observations this key declares");
+  }
+  if (value.policyKey !== "ci.maxReleaseWorkflows" && countedObservation) {
+    fail(`${contract}.observed`, "must be a token for a key that observes no count");
+  }
+  if (!COMPLIANCE_STATUS_VALUES_SOURCE.includes(value.status)) {
+    fail(`${contract}.status`, "must be one of: pass, violation, unknown");
+  }
+  if (value.subject !== null && (typeof value.subject !== "string" || value.subject === "")) {
+    fail(`${contract}.subject`, "must name its subject or be null");
+  }
+  if (value.basis !== null && (typeof value.basis !== "string" || value.basis === "")) {
+    fail(`${contract}.basis`, "must name the basis it rests on, or be null");
+  }
+  if (value.rationale !== renderComplianceRationale(value)) {
+    fail(`${contract}.rationale`, "must be the sentence its own fields render");
+  }
+  if (!Array.isArray(value.evidenceIds) || !Array.isArray(value.policyEvidenceIds)) {
+    fail(`${contract}.evidenceIds`, "must be arrays");
+    throwProductionIssues(contract, issues);
+    return value;
+  }
+  if (value.status === COMPLIANCE_STATUSES_SOURCE.VIOLATION) {
+    if (value.evidenceIds.length === 0) {
+      fail(`${contract}.evidenceIds`, "must cite the observation a violation rests on");
+    }
+    if (value.policyEvidenceIds.length === 0) {
+      fail(`${contract}.policyEvidenceIds`, "must cite the policy a violation contradicts");
+    }
+  }
+  if (value.evidenceIds.length > COMPLIANCE_LIMITS_SOURCE.maxEvidencePerItem) {
+    fail(`${contract}.evidenceIds`, "must stay within the citation bound");
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a compliance section draft. */
+export function createComplianceSectionResult(input = {}) {
+  return createEnvelope(COMPLIANCE_SECTION_RESULT_FIELDS, {
+    name: input.name,
+    title: input.title,
+    state: input.state,
+    established: input.established === true,
+    policyDeclared: input.policyDeclared === true,
+    policyKeys: input.policyKeys ?? [],
+    items: input.items ?? [],
+    counts: input.counts ?? {},
+    evidenceIds: input.evidenceIds ?? [],
+    policyEvidenceIds: input.policyEvidenceIds ?? [],
+    unknown: input.unknown ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/** Validate one compliance section. */
+export function validateComplianceSectionResult(value) {
+  const contract = "ComplianceSectionResult";
+  requireProductionFields(value, contract, COMPLIANCE_SECTION_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!COMPLIANCE_SECTIONS_SOURCE.includes(value.name)) {
+    fail(`${contract}.name`, "must be a declared policy domain");
+  }
+  if (!COMPLIANCE_SECTION_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented section state");
+  }
+  for (const field of ["established", "policyDeclared"]) {
+    if (typeof value[field] !== "boolean") fail(`${contract}.${field}`, "must be a boolean");
+  }
+  if (!Array.isArray(value.policyKeys)) {
+    fail(`${contract}.policyKeys`, "must be an array");
+  } else {
+    for (const key of value.policyKeys) {
+      if (!(POLICY_DOCUMENT_KEYS_SOURCE[value.name] ?? []).includes(key)) {
+        fail(`${contract}.policyKeys`, "must be keys this domain declares");
+      }
+    }
+  }
+  if (!Array.isArray(value.items)) {
+    fail(`${contract}.items`, "must be an array");
+  } else {
+    value.items.forEach((item, index) => {
+      try {
+        validateComplianceItem(item);
+      } catch (error) {
+        const reported = error?.details?.issues;
+        if (Array.isArray(reported)) {
+          issues.push(...reported.map((issue) => `${contract}.items[${index}]: ${issue}`));
+        } else {
+          fail(`${contract}.items[${index}]`, "must be a well-formed compliance item");
+        }
+      }
+    });
+  }
+  if (!isPlainObject(value.counts)) fail(`${contract}.counts`, "must be a plain object");
+  if (!Array.isArray(value.evidenceIds)) fail(`${contract}.evidenceIds`, "must be an array");
+  if (!Array.isArray(value.policyEvidenceIds)) {
+    fail(`${contract}.policyEvidenceIds`, "must be an array");
+  }
+  if (!Array.isArray(value.unknown)) {
+    fail(`${contract}.unknown`, "must be an array");
+  } else {
+    value.unknown.forEach((record, index) => {
+      if (!isPlainObject(record)) {
+        fail(`${contract}.unknown[${index}]`, "must be a plain object");
+        return;
+      }
+      if (typeof record.reason !== "string" || record.reason === "") {
+        fail(`${contract}.unknown[${index}].reason`, "must name the reason");
+      }
+      if (!Number.isInteger(record.count) || record.count < 1) {
+        fail(`${contract}.unknown[${index}].count`, "must be a positive integer");
+      }
+    });
+  }
+  if (!isPlainObject(value.coverage)) fail(`${contract}.coverage`, "must be a plain object");
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a compliance report draft. */
+export function createComplianceReportResult(input = {}) {
+  return createEnvelope(COMPLIANCE_REPORT_RESULT_FIELDS, {
+    version: input.version ?? COMPLIANCE_VERSION,
+    state: input.state,
+    established: input.established === true,
+    sections: input.sections ?? [],
+    violations: input.violations ?? [],
+    passed: input.passed ?? [],
+    unknown: input.unknown ?? [],
+    coverage: input.coverage,
+  });
+}
+
+/**
+ * Validate a compliance report.
+ *
+ * The three item lists are checked against the sections that carry them, so `report.violations`
+ * and the sections cannot disagree about what was violated — the one inconsistency that would
+ * let a caller read a partial answer as the whole story.
+ */
+export function validateComplianceReportResult(value) {
+  const contract = "ComplianceReportResult";
+  requireProductionFields(value, contract, COMPLIANCE_REPORT_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (value.version !== COMPLIANCE_VERSION) {
+    fail(`${contract}.version`, "must be the report version this build produces");
+  }
+  if (!COMPLIANCE_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented compliance state");
+  }
+  if (typeof value.established !== "boolean") {
+    fail(`${contract}.established`, "must be a boolean");
+  }
+
+  if (!Array.isArray(value.sections)) {
+    fail(`${contract}.sections`, "must be an array");
+  } else {
+    if (value.sections.length !== COMPLIANCE_SECTIONS_SOURCE.length) {
+      fail(`${contract}.sections`, "must carry every policy domain exactly once");
+    }
+    value.sections.forEach((section, index) => {
+      try {
+        validateComplianceSectionResult(section);
+      } catch (error) {
+        const reported = error?.details?.issues;
+        if (Array.isArray(reported)) {
+          issues.push(...reported.map((issue) => `${contract}.sections[${index}]: ${issue}`));
+        } else {
+          fail(`${contract}.sections[${index}]`, "must be a well-formed compliance section");
+        }
+      }
+    });
+  }
+
+  const sections = Array.isArray(value.sections) ? value.sections : [];
+  for (const [field, status] of [
+    ["violations", COMPLIANCE_STATUSES_SOURCE.VIOLATION],
+    ["passed", COMPLIANCE_STATUSES_SOURCE.PASS],
+    ["unknown", COMPLIANCE_STATUSES_SOURCE.UNKNOWN],
+  ]) {
+    const expected = sections.flatMap((section) =>
+      (Array.isArray(section?.items) ? section.items : []).filter(
+        (item) => item?.status === status,
+      ),
+    );
+    if (!Array.isArray(value[field])) {
+      fail(`${contract}.${field}`, "must be an array");
+    } else if (
+      JSON.stringify(value[field].map((item) => item?.id)) !==
+      JSON.stringify(expected.map((item) => item?.id))
+    ) {
+      fail(`${contract}.${field}`, `must be every ${status} item the sections carry, in order`);
+    }
+  }
+
+  try {
+    validateComplianceCoverageResult(value.coverage);
+  } catch (error) {
+    const reported = error?.details?.issues;
+    if (Array.isArray(reported)) issues.push(...reported);
+    else fail(`${contract}.coverage`, "must be a well-formed coverage statement");
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a compliance coverage draft. */
+export function createComplianceCoverageResult(input = {}) {
+  return createEnvelope(COMPLIANCE_COVERAGE_RESULT_FIELDS, {
+    state: input.state,
+    established: input.established === true,
+    complete: input.complete === true,
+    truncated: input.truncated === true,
+    sections: input.sections ?? 0,
+    sectionsEstablished: input.sectionsEstablished ?? 0,
+    items: input.items ?? 0,
+    violations: input.violations ?? 0,
+    passed: input.passed ?? 0,
+    unknown: input.unknown ?? 0,
+    policyState: input.policyState ?? null,
+    policyEstablished: input.policyEstablished === true,
+    policyDomains: input.policyDomains ?? [],
+    policySettings: input.policySettings ?? 0,
+    evidence: input.evidence ?? [],
+    limits: input.limits ?? {},
+    unknownReasons: input.unknownReasons ?? {},
+  });
+}
+
+/**
+ * Validate a compliance coverage statement.
+ *
+ * The counts are checked as non-negative integers rather than merely present, because a coverage
+ * statement whose totals are wrong is exactly the document that lets a reader believe a bounded
+ * item list is a complete one. `unknownReasons` is a census, not a score, and it is validated as
+ * one: every key a count of the reason it names.
+ */
+export function validateComplianceCoverageResult(value) {
+  const contract = "ComplianceCoverageResult";
+  requireProductionFields(value, contract, COMPLIANCE_COVERAGE_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (!COMPLIANCE_STATE_VALUES_SOURCE.includes(value.state)) {
+    fail(`${contract}.state`, "must be a documented compliance state");
+  }
+  for (const field of ["established", "complete", "truncated", "policyEstablished"]) {
+    if (typeof value[field] !== "boolean") fail(`${contract}.${field}`, "must be a boolean");
+  }
+  for (const field of [
+    "sections",
+    "sectionsEstablished",
+    "items",
+    "violations",
+    "passed",
+    "unknown",
+    "policySettings",
+  ]) {
+    if (!Number.isInteger(value[field]) || value[field] < 0) {
+      fail(`${contract}.${field}`, "must be a non-negative integer");
+    }
+  }
+  if (!isPlainObject(value.unknownReasons)) {
+    fail(`${contract}.unknownReasons`, "must be a plain object");
+  } else {
+    for (const key of Object.keys(value.unknownReasons)) {
+      if (!Number.isInteger(value.unknownReasons[key]) || value.unknownReasons[key] < 0) {
+        fail(`${contract}.unknownReasons.${key}`, "must be a non-negative integer");
+      }
+    }
+  }
+  if (!isPlainObject(value.limits)) fail(`${contract}.limits`, "must be a plain object");
+  if (!Array.isArray(value.policyDomains)) {
+    fail(`${contract}.policyDomains`, "must be an array");
+  } else {
+    for (const domain of value.policyDomains) {
+      if (!COMPLIANCE_SECTIONS_SOURCE.includes(domain)) {
+        fail(`${contract}.policyDomains`, "must be declared policy domains");
+      }
+    }
+  }
+  if (!Array.isArray(value.evidence)) fail(`${contract}.evidence`, "must be an array");
+
+  throwProductionIssues(contract, issues);
+  return value;
 }
 
 // ── Production risk report (Phase 21) ────────────────────────────────────────

@@ -25,13 +25,14 @@
  *   - **Evidence-oriented.** Every signal records the repository-relative path it
  *     was observed at, so a later phase can trace a conclusion back to a file.
  *
- * Content reading is bounded and deliberate. Exactly five detectors read a file's
+ * Content reading is bounded and deliberate. Exactly six detectors read a file's
  * bytes: manifests (the shallow `package.json` subset), git (`.git/HEAD`), the
  * content detector — which inspects a closed candidate set under an explicit byte and
  * file budget and reports *which pattern shape* it observed, never a matched value,
- * line or byte — dependency acquisition, and import acquisition (Phase 16), which
+ * line or byte — dependency acquisition, import acquisition (Phase 16), which
  * tokenizes supported JavaScript/TypeScript module sources under its own file, byte
- * and token budgets. Nothing else in this layer parses source. File sizes and modification
+ * and token budgets, and policy acquisition (Phase 22), which reads the repository's own
+ * declared-requirements document. Nothing else in this layer parses source. File sizes and modification
  * times are still not recorded, and Git history, status and refs are out of scope —
  * see the git detector.
  *
@@ -325,6 +326,7 @@ export async function scanRepository(root, options = {}) {
     semantics: detection.semantics,
     api: detection.api,
     middleware: detection.middleware,
+    policy: detection.policy,
     statistics: {
       filesScanned: files.length,
       directoriesScanned: directories.length,

@@ -39,6 +39,13 @@ export {
   REPOSITORY_MODEL_BUILDER,
   REPOSITORY_MODEL_BUILDER_VERSION,
   collectModelEntities,
+  // Phase 22 — the two check-table functions the contract uses to guarantee that every declared
+  // policy setting has a measurement and that every measurement belongs to a declared setting.
+  // Exported so the focused suite can pin the tables together; the contract itself refuses to load
+  // when either direction is incomplete.
+  policyKeyIds,
+  unmeasuredPolicyKeys,
+  unknownPolicyCheckKeys,
   validateRepositoryModelGraph,
 } from "./contracts.js";
 
@@ -313,6 +320,64 @@ export {
   renderRiskRemediation,
   renderRiskStatement,
 } from "./production-risk-report.js";
+
+// Phase 22 — the repository policy area. The one *input* this architecture reads as a contract:
+// its document path, its closed domain schema, its read statuses and refusal reasons, its five
+// states and its abstention vocabulary are all part of its interface — a consumer switches on
+// them — so all of them are exported rather than reached for through the area object.
+export {
+  MAX_RELEASE_WORKFLOWS,
+  POLICY_ANSWERED_STATES,
+  POLICY_BUILDER,
+  POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOMAINS,
+  POLICY_LIMITS,
+  POLICY_READ_FAILURE_REASONS,
+  POLICY_READ_STATUSES,
+  POLICY_READ_STATUS_VALUES,
+  POLICY_READ_UNSUPPORTED_REASONS,
+  POLICY_STATES,
+  POLICY_STATE_VALUES,
+  POLICY_UNKNOWN_REASONS,
+  POLICY_UNKNOWN_REASON_VALUES,
+  POLICY_VERSION,
+  buildPolicyArea,
+  emptyPolicyArea,
+  isEstablishedPolicyState,
+  policyDocumentDomains,
+  policyDocumentEvidenceId,
+  policyDocumentSettingCount,
+} from "./policy.js";
+
+// Phase 22 — the compliance report: one section per policy domain, each item measured against a
+// declared requirement. Its six domains, its three statuses, its four section states, its five
+// report states, its observed-value vocabulary, its requirement-binding table, its abstention
+// vocabulary, its bounds and the rationale renderer whose output the validator recomputes are all
+// part of its interface.
+export {
+  COMPLIANCE_BUILDER,
+  COMPLIANCE_CHECK_IDS,
+  COMPLIANCE_LIMITS,
+  COMPLIANCE_OBSERVED_VALUES,
+  COMPLIANCE_POLICY_READ_STATUSES,
+  COMPLIANCE_POLICY_SCHEMA,
+  COMPLIANCE_SECTIONS,
+  COMPLIANCE_SECTION_STATES,
+  COMPLIANCE_SECTION_STATE_VALUES,
+  COMPLIANCE_SECTION_TITLES,
+  COMPLIANCE_STATES,
+  COMPLIANCE_STATE_VALUES,
+  COMPLIANCE_STATUSES,
+  COMPLIANCE_STATUS_VALUES,
+  COMPLIANCE_UNKNOWN_REASONS,
+  COMPLIANCE_UNKNOWN_REASON_VALUES,
+  COMPLIANCE_VERSION,
+  POLICY_REQUIREMENT_BINDING,
+  buildComplianceReport,
+  renderComplianceRationale,
+} from "./compliance-report.js";
 
 export {
   GRAPH_ENTITY_KINDS,

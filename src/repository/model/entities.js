@@ -47,11 +47,25 @@ import {
   createImportSourceObservation,
   createInventoryObservation,
   createMiddlewareSourceObservation,
+  createPolicyDocumentObservation,
   createSymbolSourceObservation,
   createObservation,
   createSignalObservation,
 } from "./evidence.js";
 import { ENTITY_KINDS, GIT_ENTITY_ID, entityId } from "./identity.js";
+import {
+  MAX_RELEASE_WORKFLOWS,
+  POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOMAINS,
+  POLICY_READ_FAILURE_REASONS,
+  POLICY_READ_STATUSES,
+  POLICY_READ_STATUS_VALUES,
+  POLICY_READ_UNSUPPORTED_REASONS,
+  policyDocumentDomains,
+  policyDocumentSettingCount,
+} from "./policy.js";
 import {
   basenameOfPath,
   depthOfPath,
@@ -898,6 +912,156 @@ function projectContainerSection(section, observedFilePaths, issues, record) {
   }
 
   return { dockerfileStructures, unobservedBuildDeclarations, serviceImageDeclarations };
+}
+
+/**
+ * Re-validate a policy document against the model's own schema.
+ *
+ * The acquisition layer already refused everything outside the schema, so this is a second,
+ * independent check rather than a duplicate effort: the model's contract must hold for any
+ * handler of the scan record, and a document is the one payload in this section whose *contents*
+ * travel into compliance answers. Only declared domains, declared keys and correctly typed
+ * values survive; the result is rebuilt in canonical order, so what the model freezes is what the
+ * schema describes and nothing else.
+ *
+ * @returns {object|null} The canonical document, or `null` when it is not a valid one.
+ */
+function projectPolicyDocument(document, issues, at) {
+  if (!isPlainObject(document)) {
+    fail(issues, at, "must be a plain object when the policy was interpreted");
+    return null;
+  }
+
+  for (const domain of Object.keys(document)) {
+    if (!POLICY_DOMAINS.includes(domain)) {
+      fail(issues, `${at}.${domain}`, "must be a declared policy domain");
+      return null;
+    }
+  }
+
+  const canonical = {};
+  for (const domain of POLICY_DOMAINS) {
+    if (!Object.hasOwn(document, domain)) continue;
+    const settings = document[domain];
+    if (!isPlainObject(settings)) {
+      fail(issues, `${at}.${domain}`, "must be a plain object of declared settings");
+      return null;
+    }
+    const canonicalSettings = {};
+    for (const key of Object.keys(settings)) {
+      if (!POLICY_DOCUMENT_KEYS[domain].includes(key)) {
+        fail(issues, `${at}.${domain}.${key}`, "is not a setting this schema declares");
+        return null;
+      }
+      const value = settings[key];
+      const type = POLICY_DOCUMENT_SCHEMA[domain][key];
+      if (type === "boolean") {
+        if (typeof value !== "boolean") {
+          fail(issues, `${at}.${domain}.${key}`, "must be a boolean");
+          return null;
+        }
+      } else if (
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value > MAX_RELEASE_WORKFLOWS
+      ) {
+        fail(issues, `${at}.${domain}.${key}`, "must be a whole number within the declared bound");
+        return null;
+      }
+      canonicalSettings[key] = value;
+    }
+    canonical[domain] = canonicalSettings;
+  }
+
+  return canonical;
+}
+
+/**
+ * Project the repository's policy document.
+ *
+ * One record, and — when the contracted path was actually observed — exactly one observation,
+ * created here so the document becomes evidence with a real id a compliance finding can cite. An
+ * `absent` document produces **no** observation: a path that was not observed has no location to
+ * be observed at, and fabricating one would turn "we did not find a policy" into a record that
+ * looks like "we looked at a policy". `unsupported` and `unknown` are stated by the record's own
+ * status and reason, which the area turns into its state.
+ *
+ * @param {object} policy The scan result's `policy` section.
+ * @param {object} issues Accumulated issues.
+ * @param {Function} record Evidence registrar.
+ * @returns {{policy: object}}
+ */
+function projectPolicySection(policy, issues, record) {
+  const section = isPlainObject(policy) ? policy : {};
+  const rawPath = typeof section.path === "string" ? section.path : POLICY_DOCUMENT_PATH;
+  const path = requireRepositoryRelativePath(rawPath, "scanResult.policy.path");
+
+  const status = POLICY_READ_STATUS_VALUES.includes(section.status)
+    ? section.status
+    : POLICY_READ_STATUSES.ABSENT;
+  const reason = typeof section.reason === "string" ? section.reason : null;
+  const detail = typeof section.detail === "string" ? section.detail : null;
+
+  if (path !== POLICY_DOCUMENT_PATH) {
+    fail(issues, "scanResult.policy.path", "must be the contracted policy document path");
+  }
+  if (
+    status === POLICY_READ_STATUSES.FAILED &&
+    !POLICY_READ_FAILURE_REASONS.includes(reason)
+  ) {
+    fail(issues, "scanResult.policy.reason", "must record why the policy was not interpreted");
+  }
+  if (
+    status === POLICY_READ_STATUSES.UNSUPPORTED &&
+    !POLICY_READ_UNSUPPORTED_REASONS.includes(reason)
+  ) {
+    fail(issues, "scanResult.policy.reason", "must record why this build does not read the policy");
+  }
+
+  const document =
+    status === POLICY_READ_STATUSES.PARSED
+      ? projectPolicyDocument(section.document, issues, "scanResult.policy.document")
+      : null;
+  if (status !== POLICY_READ_STATUSES.PARSED && isPlainObject(section.document)) {
+    fail(issues, "scanResult.policy.document", "must be null unless the policy was interpreted");
+  }
+
+  const domains = policyDocumentDomains(document);
+  const settings = policyDocumentSettingCount(document);
+
+  // Evidence exists only for a document the scan actually observed. The three reasons a
+  // document can be unread are carried by `status`, `reason` and `detail`, all of them bounded
+  // tokens, so no uninterpreted text becomes a model fact.
+  const evidenceIds = [];
+  if (status === POLICY_READ_STATUSES.PARSED || status === POLICY_READ_STATUSES.FAILED) {
+    evidenceIds.push(
+      record(
+        createPolicyDocumentObservation({
+          path,
+          status,
+          reason,
+          detail,
+          domains,
+          settings,
+        }),
+      ),
+    );
+  }
+
+  return {
+    policy: {
+      path,
+      detected: section.detected === true,
+      inspected: section.inspected === true,
+      status,
+      reason,
+      detail,
+      document,
+      domains,
+      settings,
+      evidenceIds,
+    },
+  };
 }
 
 /**
@@ -3830,6 +3994,11 @@ export function buildEntities(scanResult, repositoryIdValue) {
     record,
   );
 
+  // Phase 22 — the repository's own declared requirements. One record and at most one
+  // observation, created here so the document is evidence with an id like every other
+  // observation the model carries.
+  const policySection = projectPolicySection(scanResult.policy, issues, record);
+
   // ── Languages ─────────────────────────────────────────────────────────────
 
   const languages = [];
@@ -4390,6 +4559,10 @@ export function buildEntities(scanResult, repositoryIdValue) {
     // file the inventory never saw.
     unobservedBuildDeclarations: containerSection.unobservedBuildDeclarations,
     serviceImageDeclarations: containerSection.serviceImageDeclarations,
+    // Phase 22 — the repository policy record and, when the document was observed, the
+    // observation that proves it. The model's compliance answers cite it beside the repository
+    // facts a policy requirement is measured against.
+    policy: policySection.policy,
     git,
     evidence: [...evidence].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   };

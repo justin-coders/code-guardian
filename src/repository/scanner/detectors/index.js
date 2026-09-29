@@ -7,11 +7,11 @@
  * language signals (a Python project may declare itself with `pyproject.toml`
  * before it has any `.py` file in scope).
  *
- * Every detector is a pure function of the view except the five that read file
- * content through the Phase 8A boundary (manifests, git, content, containers and
- * imports). None
- * of them spawn a process, touch the network, or write to the repository. `content`
- * and `containers` read files the scan did not have to read, so both budget
+ * Every detector is a pure function of the view except the six that read file
+ * content through the Phase 8A boundary (manifests, git, content, containers,
+ * imports and policy). None
+ * of them spawn a process, touch the network, or write to the repository. `content`,
+ * `containers` and `policy` read files the scan did not have to read, so all three budget
  * themselves and record what they could not interpret.
  */
 
@@ -27,12 +27,17 @@ import { detectImports } from "./imports.js";
 import { detectMiddleware } from "./middleware.js";
 import { detectLanguages } from "./languages.js";
 import { detectManifests } from "./manifests.js";
+// Phase 22 — the one detector that reads a document as a *contract* rather than as an
+// observation: `.codeguardian/policy.json`. It reads at most one file, through the same Phase
+// 8A boundary as every other reader, and records what it established or why it could not.
+import { detectPolicy } from "./policy.js";
 import { detectSemantics } from "./semantics.js";
 import { detectTesting } from "./testing.js";
 
 export { detectApi, detectCicd, detectConfiguration, detectContainers, detectContent };
 export { detectDependencies, detectDocumentation, detectGit, detectImports };
-export { detectLanguages, detectManifests, detectMiddleware, detectSemantics, detectTesting };
+export { detectLanguages, detectManifests, detectMiddleware, detectPolicy };
+export { detectSemantics, detectTesting };
 
 /**
  * Run all detectors.
@@ -77,5 +82,9 @@ export async function runDetectors(view) {
     // resolves nothing: a middleware name is recorded as written, and whether it denotes
     // a symbol is the model's question.
     middleware: await detectMiddleware(view),
+    // Phase 22 — policy acquisition. It runs last because it reads the *inventory* (to decide
+    // whether the contracted path exists at all) and then at most one file, so it depends on
+    // nothing the other detectors establish and can never change what they report.
+    policy: await detectPolicy(view),
   };
 }

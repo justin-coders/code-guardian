@@ -51,6 +51,15 @@ export const EVIDENCE_SUBJECTS = Object.freeze({
   API: "api",
   /** Phase 19 — a middleware registration observation. */
   MIDDLEWARE: "middleware",
+  /**
+   * Phase 22 — the repository's own declared-requirements document.
+   *
+   * It is a subject like any other, and that is the point of the phase: a policy is an
+   * *observation the repository made about itself*, so a compliance finding can cite the
+   * document that requires something beside the facts that contradict it. Nothing about it is
+   * privileged — it is read at one path, through the same boundary, and recorded the same way.
+   */
+  POLICY: "policy",
 });
 
 /**
@@ -92,6 +101,23 @@ export const EVIDENCE_TYPE_BY_SUBJECT = Object.freeze({
   // establishes between a receiver and a handler-shaped value, so the Core `graph` type
   // is exactly right and the Phase 7 vocabulary stays closed.
   [EVIDENCE_SUBJECTS.MIDDLEWARE]: "graph",
+  // A policy document is a configuration artifact the repository declares, so the Core
+  // `configuration` type is exactly right — the same reasoning that lets a content observation
+  // borrow it rather than inventing a type the Core vocabulary does not have.
+  [EVIDENCE_SUBJECTS.POLICY]: "configuration",
+});
+
+/**
+ * Signals recorded on policy observations.
+ *
+ * One signal, because there is one thing to record: what the repository's policy document
+ * established, or why it established nothing. The *status* distinguishes the four answers
+ * (`parsed` / `absent` / `failed` / `unsupported`), and no observation is ever made for the
+ * `absent` case — a file that does not exist has no location to be observed at, so the model
+ * states that absence through its coverage rather than through a fabricated record.
+ */
+export const POLICY_SIGNALS = Object.freeze({
+  DOCUMENT: "policy-document",
 });
 
 /**
@@ -832,6 +858,49 @@ export const MIDDLEWARE_SIGNALS = Object.freeze({
  * @param {boolean} input.truncated Whether a byte or token budget cut the file short.
  * @returns {object} A Core Evidence object.
  */
+/**
+ * Build the observation of the repository's policy document.
+ *
+ * The payload states *what the document established* — its status, the bounded reason it was
+ * not interpreted, and how much of the closed schema it declared — and never a setting's value
+ * as free text, because a setting is a declared requirement rather than observed repository
+ * content. It is the evidence a compliance finding cites beside the repository facts it
+ * contradicts, which is what makes "this project requires X, and X is not the case here" a
+ * two-sided statement rather than an inference.
+ *
+ * @param {object} input
+ * @param {string} input.path Canonical repository-relative path of the document.
+ * @param {string} input.status One of `POLICY_SOURCE_STATUSES`.
+ * @param {string|null} input.reason Why the document was not interpreted, or null.
+ * @param {string|null} input.detail Bounded identifier naming the cause, or null.
+ * @param {string[]} [input.domains] The domains the document declares.
+ * @param {number} [input.settings] How many settings it states.
+ * @returns {object}
+ */
+export function createPolicyDocumentObservation({
+  path,
+  status,
+  reason,
+  detail,
+  domains = [],
+  settings = 0,
+}) {
+  return createObservation({
+    subject: EVIDENCE_SUBJECTS.POLICY,
+    key: `${POLICY_SIGNALS.DOCUMENT}:${path}`,
+    type: EVIDENCE_TYPE_BY_SUBJECT[EVIDENCE_SUBJECTS.POLICY],
+    path,
+    data: {
+      signal: POLICY_SIGNALS.DOCUMENT,
+      status,
+      reason,
+      detail,
+      domains: [...domains],
+      settings,
+    },
+  });
+}
+
 export function createMiddlewareSourceObservation({
   path,
   language,

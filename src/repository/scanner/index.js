@@ -207,6 +207,35 @@ export {
 
 export { detectMiddleware } from "./detectors/middleware.js";
 
+// Phase 22 — the repository policy document: its contracted path, its closed schema, the
+// vocabulary its refusals use, the bound it is read under and the parser that enforces all of it.
+// It is exported from this boundary like every other acquisition policy, so a consumer validates
+// against one source rather than reaching into the policy module.
+export {
+  POLICY_DIRECTORY,
+  POLICY_DOCUMENT_PATH,
+  POLICY_DOMAINS,
+  POLICY_FAILURE_REASONS,
+  POLICY_FAILURE_REASON_VALUES,
+  POLICY_FORMAT,
+  POLICY_KEYS,
+  POLICY_KEYS_BY_DOMAIN,
+  POLICY_LIMITS,
+  POLICY_SCHEMA,
+  POLICY_SOURCE_STATUSES,
+  POLICY_SOURCE_STATUS_VALUES,
+  POLICY_UNREAD_FORMATS,
+  POLICY_UNSUPPORTED_REASONS,
+  POLICY_UNSUPPORTED_REASON_VALUES,
+  boundedPolicyToken,
+  isPolicyDocumentPath,
+  parsePolicyDocument,
+  policySettingCount,
+  unreadPolicyFormat,
+} from "./policies/policy.js";
+
+export { detectPolicy } from "./detectors/policy.js";
+
 export {
   SCAN_OPTION_KEYS,
   TRUNCATION_REASONS,
