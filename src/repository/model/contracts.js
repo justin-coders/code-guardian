@@ -158,8 +158,11 @@ import {
 import {
   MAX_RELEASE_WORKFLOWS,
   POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_PRESET_KEY,
   POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_LIMITS,
   POLICY_STATES,
@@ -169,6 +172,10 @@ import {
   policyDocumentDomains,
   policyDocumentSettingCount,
 } from "./policy.js";
+// Phase 23 — the preset layer is a leaf this model consumes. The contract re-resolves a published
+// policy to prove its effective document and provenance are *derived* from the declared one rather
+// than merely shaped like it, which is what keeps "never lose provenance" a property of the model.
+import { POLICY_PRESET_ORIGIN, effectivePolicyIssues } from "../../policy/index.js";
 import {
   COMPLIANCE_CHECK_IDS,
   COMPLIANCE_LIMITS,
@@ -392,6 +399,52 @@ function collectPolicyDocumentIssues(document, fail, path) {
 }
 
 /**
+ * Validate the *declared* policy document — what the repository wrote, before it was resolved.
+ *
+ * It is the same closed schema the model already checks, plus the two document-level fields Phase 23
+ * added: the pinned `version` and the optional `preset` name. Both are metadata about the document,
+ * and the preset name is deliberately *not* checked against a registry here: whether a preset exists
+ * is the resolver's question, and a validator that answered it would need the registry it is meant
+ * to be checking the result of.
+ */
+function collectDeclaredPolicyIssues(document, fail, path) {
+  if (!isPlainObject(document)) {
+    fail(path, "must be a plain object or null");
+    return;
+  }
+  const keys = Object.keys(document);
+  const metadata = keys.filter((key) => POLICY_DOCUMENT_METADATA_KEYS.includes(key));
+  const domains = keys.filter((key) => POLICY_DOMAINS.includes(key));
+  if (metadata.length + domains.length !== keys.length) {
+    fail(path, "must state only its version, its preset and declared domains");
+    return;
+  }
+  if (
+    metadata.join("\u0000") !==
+    POLICY_DOCUMENT_METADATA_KEYS.filter((key) => metadata.includes(key)).join("\u0000")
+  ) {
+    fail(path, "must state its version and preset in the declared order");
+  }
+  if (keys.slice(0, metadata.length).join("\u0000") !== metadata.join("\u0000")) {
+    fail(path, "must state its version and preset before its domains");
+  }
+  if (document.version !== POLICY_DOCUMENT_VERSION) {
+    fail(`${path}.version`, `must be "${POLICY_DOCUMENT_VERSION}"`);
+  }
+  if (Object.hasOwn(document, POLICY_DOCUMENT_PRESET_KEY)) {
+    const preset = document[POLICY_DOCUMENT_PRESET_KEY];
+    if (typeof preset !== "string" || preset === "") {
+      fail(`${path}.${POLICY_DOCUMENT_PRESET_KEY}`, "must name a preset");
+    }
+  }
+  const projected = {};
+  for (const domain of POLICY_DOMAINS) {
+    if (Object.hasOwn(document, domain)) projected[domain] = document[domain];
+  }
+  collectPolicyDocumentIssues(projected, fail, path);
+}
+
+/**
  * Validate the repository policy area.
  *
  * Every field is pinned to the state it claims. The two that carry the phase's weight are the
@@ -399,6 +452,14 @@ function collectPolicyDocumentIssues(document, fail, path) {
  * `established` is true for exactly the two states that answer "what does this repository
  * declare?" — `established` and `absent`. So a model can neither claim an answer about a
  * document it did not read, nor present an unreadable document as an answer.
+ *
+ * Phase 23 adds four fields to the area without loosening any of that. `document` is now the
+ * *effective* policy — the preset merged with the repository's own values — and it is the only
+ * thing the compliance engine ever sees. `declared`, `preset` and `provenance` are carried exactly
+ * when an effective policy exists, and the last of the checks here **re-resolves** the declared
+ * document and compares the result: a published effective policy that is not the one its own
+ * declaration resolves to is a validation failure, so provenance cannot be hand-written into a
+ * model any more than a compliance item can.
  */
 function collectPolicyAreaIssues(model, fail) {
   const area = model.policy;
@@ -421,6 +482,55 @@ function collectPolicyAreaIssues(model, fail) {
   if (document !== null) collectPolicyDocumentIssues(document, fail, "policy.document");
   if ((document !== null) !== (area.state === POLICY_STATES.ESTABLISHED)) {
     fail("policy.document", "must be carried exactly when the state is established");
+  }
+
+  // Phase 23 — the declared document, the preset that was applied and the provenance of every
+  // effective value. All three are carried exactly when an effective policy was resolved.
+  const declaredDocument = area.declared ?? null;
+  const presetRecord = area.preset ?? null;
+  const provenanceRecord = area.provenance ?? null;
+  if ((declaredDocument !== null) !== (document !== null)) {
+    fail("policy.declared", "must be carried exactly when an effective policy was resolved");
+  }
+  if (declaredDocument !== null) {
+    collectDeclaredPolicyIssues(declaredDocument, fail, "policy.declared");
+  }
+  if ((provenanceRecord !== null) !== (document !== null)) {
+    fail("policy.provenance", "must be carried exactly when an effective policy was resolved");
+  }
+  if (presetRecord !== null) {
+    if (!isPlainObject(presetRecord)) {
+      fail("policy.preset", "must be a plain object or null");
+    } else {
+      if (typeof presetRecord.name !== "string" || presetRecord.name === "") {
+        fail("policy.preset.name", "must name the preset that was applied");
+      }
+      if (presetRecord.version !== POLICY_DOCUMENT_VERSION) {
+        fail("policy.preset.version", "must be the pinned policy version");
+      }
+      if (presetRecord.origin !== POLICY_PRESET_ORIGIN) {
+        fail("policy.preset.origin", "must name the built-in origin");
+      }
+    }
+  }
+  if (document !== null && presetRecord === null && provenanceRecord !== null) {
+    if (provenanceRecord.preset !== null) {
+      fail("policy.preset", "must name the preset the provenance records");
+    }
+  }
+  if (presetRecord !== null && provenanceRecord !== null) {
+    if (provenanceRecord.preset !== presetRecord.name) {
+      fail("policy.preset.name", "must be the preset the provenance records");
+    }
+  }
+  if (declaredDocument !== null && provenanceRecord !== null) {
+    for (const issue of effectivePolicyIssues({
+      declared: declaredDocument,
+      effective: document,
+      provenance: provenanceRecord,
+    })) {
+      fail("policy", issue);
+    }
   }
 
   const coverage = area.coverage;

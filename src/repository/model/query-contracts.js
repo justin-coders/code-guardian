@@ -44,6 +44,7 @@ import {
 import {
   POLICY_DOCUMENT_KEYS as POLICY_DOCUMENT_KEYS_SOURCE,
   POLICY_DOCUMENT_PATH as POLICY_DOCUMENT_PATH_SOURCE,
+  POLICY_DOCUMENT_VERSION as POLICY_DOCUMENT_VERSION_SOURCE,
   POLICY_STATE_VALUES as POLICY_STATE_VALUES_SOURCE,
   POLICY_UNKNOWN_REASON_VALUES as POLICY_UNKNOWN_REASON_VALUES_SOURCE,
 } from "./policy.js";
@@ -1894,13 +1895,49 @@ function throwProductionIssues(contract, issues) {
 // items. The query layer adds no interpretation — it re-validates the shape it is about to hand
 // a caller, so a consumer cannot receive a report the model itself would refuse.
 
-/** Fields every policy result declares. */
+/**
+ * Fields every policy result declares.
+ *
+ * Phase 23 adds three: the repository-authored `declared` document, the built-in `preset` that was
+ * applied, and the per-key `provenance` of the effective policy. `document` remains the *effective*
+ * document, so a consumer that only ever read the policy area in Phase 22 reads exactly what it read
+ * then — and the three new fields are the only way the preset answer is visible at all.
+ */
 export const POLICY_RESULT_FIELDS = Object.freeze([
   "detected",
   "established",
   "state",
   "document",
+  "declared",
+  "preset",
+  "provenance",
   "coverage",
+]);
+
+/** Fields a `policyPreset()` answer declares. */
+export const POLICY_PRESET_RESULT_FIELDS = Object.freeze([
+  "name",
+  "version",
+  "origin",
+  "active",
+]);
+
+/** Fields an `effectivePolicy()` answer declares. */
+export const EFFECTIVE_POLICY_RESULT_FIELDS = Object.freeze([
+  "version",
+  "preset",
+  "document",
+  "domains",
+  "settings",
+]);
+
+/** Fields a `policyProvenance()` answer declares. */
+export const POLICY_PROVENANCE_RESULT_FIELDS = Object.freeze([
+  "version",
+  "preset",
+  "sources",
+  "inherited",
+  "overridden",
 ]);
 
 /** Fields every compliance item declares. */
@@ -1986,6 +2023,9 @@ export function createPolicyResult(input = {}) {
     established: input.established === true,
     state: input.state,
     document: input.document ?? null,
+    declared: input.declared ?? null,
+    preset: input.preset ?? null,
+    provenance: input.provenance ?? null,
     coverage: input.coverage,
   });
 }
@@ -2018,6 +2058,26 @@ export function validatePolicyResult(value) {
   if ((value.document !== null) !== (value.state === "established")) {
     fail(`${contract}.document`, "must be carried exactly when the state is established");
   }
+  // Phase 23 — the declared document, the applied preset and the provenance are carried exactly
+  // when an effective document is, and the provenance must name the same preset the area does.
+  if ((value.declared !== null) !== (value.document !== null)) {
+    fail(`${contract}.declared`, "must be carried exactly when an effective policy is");
+  }
+  if ((value.provenance !== null) !== (value.document !== null)) {
+    fail(`${contract}.provenance`, "must be carried exactly when an effective policy is");
+  }
+  if (value.preset !== null && !isPlainObject(value.preset)) {
+    fail(`${contract}.preset`, "must be a plain object or null");
+  }
+  if (value.preset !== null && value.document === null) {
+    fail(`${contract}.preset`, "must be null when no effective policy was resolved");
+  }
+  if (isPlainObject(value.provenance) && isPlainObject(value.preset)) {
+    if (value.provenance.preset !== value.preset.name) {
+      fail(`${contract}.provenance.preset`, "must name the preset the area carries");
+    }
+  }
+
   if (isPlainObject(value.document)) {
     for (const domain of Object.keys(value.document)) {
       if (!COMPLIANCE_SECTIONS_SOURCE.includes(domain)) {
@@ -2072,6 +2132,220 @@ export function validatePolicyResult(value) {
 /** Whether a policy state answers what the repository declares. */
 function isEstablishedPolicyResultState(state) {
   return state === "established" || state === "absent";
+}
+
+// ── Policy presets, effective policy and provenance (Phase 23) ───────────────
+//
+// Three answers, and a deliberate split between them: `policyPreset` names the preset that was
+// applied, `effectivePolicy` is the policy the repository is actually measured against, and
+// `policyProvenance` says where every one of its values came from. They are separate because they
+// answer different questions — which preset, what it requires, and who stated it — and because
+// collapsing them into one object would make it easy to read a preset name and assume the document
+// beside it came from that preset.
+
+/** Build a `policyPreset()` answer. */
+export function createPolicyPresetResult(input = {}) {
+  return createEnvelope(POLICY_PRESET_RESULT_FIELDS, {
+    name: input.name ?? null,
+    version: input.version ?? null,
+    origin: input.origin ?? null,
+    active: input.active === true,
+  });
+}
+
+/**
+ * Validate a `policyPreset()` answer.
+ *
+ * `active` is pinned to `name`: a preset is either named or it is not, and an answer that claimed a
+ * preset was applied without naming it — or named one while reporting itself inactive — would be
+ * the one thing this contract exists to prevent.
+ */
+export function validatePolicyPresetResult(value) {
+  const contract = "PolicyPresetResult";
+  requireProductionFields(value, contract, POLICY_PRESET_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  for (const field of ["name", "version", "origin"]) {
+    const token = value[field];
+    if (token !== null && (typeof token !== "string" || token === "")) {
+      fail(`${contract}.${field}`, "must be a non-empty string or null");
+    }
+  }
+  if (typeof value.active !== "boolean") fail(`${contract}.active`, "must be a boolean");
+  if (value.active !== (value.name !== null)) {
+    fail(`${contract}.active`, "must agree with whether a preset is named");
+  }
+  if (value.version !== null && value.version !== POLICY_DOCUMENT_VERSION_SOURCE) {
+    fail(`${contract}.version`, "must be the pinned policy version");
+  }
+  if ((value.name === null) !== (value.origin === null)) {
+    fail(`${contract}.origin`, "must name an origin exactly when a preset is named");
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build an `effectivePolicy()` answer. */
+export function createEffectivePolicyResult(input = {}) {
+  return createEnvelope(EFFECTIVE_POLICY_RESULT_FIELDS, {
+    version: input.version ?? null,
+    preset: input.preset ?? null,
+    document: input.document ?? {},
+    domains: input.domains ?? [],
+    settings: input.settings ?? 0,
+  });
+}
+
+/**
+ * Validate an `effectivePolicy()` answer.
+ *
+ * The document's domains and its setting count are recomputed from the document itself, so an
+ * answer that claimed more (or fewer) settings than it carried cannot be handed to a caller. The
+ * document is checked against the closed schema for the same reason every other policy document is.
+ */
+export function validateEffectivePolicyResult(value) {
+  const contract = "EffectivePolicyResult";
+  requireProductionFields(value, contract, EFFECTIVE_POLICY_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (value.version !== POLICY_DOCUMENT_VERSION_SOURCE) {
+    fail(`${contract}.version`, "must be the pinned policy version");
+  }
+  if (value.preset !== null && (typeof value.preset !== "string" || value.preset === "")) {
+    fail(`${contract}.preset`, "must name the applied preset or be null");
+  }
+  if (!isPlainObject(value.document)) {
+    fail(`${contract}.document`, "must be a plain object");
+  } else {
+    const domains = [];
+    let settings = 0;
+    for (const domain of Object.keys(value.document)) {
+      if (!COMPLIANCE_SECTIONS_SOURCE.includes(domain)) {
+        fail(`${contract}.document.${domain}`, "must be a declared policy domain");
+        continue;
+      }
+      const stated = value.document[domain];
+      if (!isPlainObject(stated)) {
+        fail(`${contract}.document.${domain}`, "must be a plain object of settings");
+        continue;
+      }
+      domains.push(domain);
+      settings += Object.keys(stated).length;
+      for (const key of Object.keys(stated)) {
+        if (!POLICY_DOCUMENT_KEYS_SOURCE[domain].includes(key)) {
+          fail(`${contract}.document.${domain}.${key}`, "is not a declared setting");
+        }
+      }
+    }
+    if (!Array.isArray(value.domains) || value.domains.join("\u0000") !== domains.join("\u0000")) {
+      fail(`${contract}.domains`, "must be the domains the document states, in declared order");
+    }
+    if (value.settings !== settings) {
+      fail(`${contract}.settings`, "must count the settings the document states");
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a `policyProvenance()` answer. */
+export function createPolicyProvenanceResult(input = {}) {
+  return createEnvelope(POLICY_PROVENANCE_RESULT_FIELDS, {
+    version: input.version ?? null,
+    preset: input.preset ?? null,
+    sources: input.sources ?? {},
+    inherited: input.inherited ?? [],
+    overridden: input.overridden ?? [],
+  });
+}
+
+/**
+ * Validate a `policyProvenance()` answer.
+ *
+ * The three lists must agree with each other and with `sources`: every `domain.key` a preset
+ * supplied appears in `inherited`, every one the repository replaced appears in `overridden`, and
+ * each carries the source token `sources` records for it. That makes "never lose provenance" a
+ * checkable property of the answer rather than a claim about the resolver.
+ */
+export function validatePolicyProvenanceResult(value) {
+  const contract = "PolicyProvenanceResult";
+  requireProductionFields(value, contract, POLICY_PROVENANCE_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (value.version !== POLICY_DOCUMENT_VERSION_SOURCE) {
+    fail(`${contract}.version`, "must be the pinned policy version");
+  }
+  if (value.preset !== null && (typeof value.preset !== "string" || value.preset === "")) {
+    fail(`${contract}.preset`, "must name the applied preset or be null");
+  }
+  for (const field of ["inherited", "overridden"]) {
+    const list = value[field];
+    if (!Array.isArray(list)) {
+      fail(`${contract}.${field}`, "must be an array");
+      continue;
+    }
+    if (JSON.stringify([...new Set(list)].sort()) !== JSON.stringify(list)) {
+      fail(`${contract}.${field}`, "must be sorted and unique");
+    }
+  }
+  if (!isPlainObject(value.sources)) {
+    fail(`${contract}.sources`, "must be a plain object");
+  } else {
+    const sources = Object.keys(value.sources);
+    if (JSON.stringify([...sources].sort()) !== JSON.stringify(sources)) {
+      fail(`${contract}.sources`, "must be keyed in sorted order");
+    }
+    for (const id of sources) {
+      const [domain, key] = id.split(".");
+      if (!COMPLIANCE_SECTIONS_SOURCE.includes(domain) || !(POLICY_DOCUMENT_KEYS_SOURCE[domain] ?? []).includes(key)) {
+        fail(`${contract}.sources`, `must name a declared policy setting (${id})`);
+        continue;
+      }
+      const token = value.sources[id];
+      if (typeof token !== "string" || token === "") {
+        fail(`${contract}.sources.${id}`, "must name where the value came from");
+        continue;
+      }
+      if (Array.isArray(value.inherited) && value.inherited.includes(id)) {
+        if (token === "user") fail(`${contract}.sources.${id}`, "an inherited value cannot be user-stated");
+      }
+      if (Array.isArray(value.overridden) && value.overridden.includes(id)) {
+        if (token !== "user") fail(`${contract}.sources.${id}`, "an overridden value must be user-stated");
+      }
+    }
+    if (Array.isArray(value.inherited)) {
+      for (const id of value.inherited) {
+        if (!Object.hasOwn(value.sources, id)) {
+          fail(`${contract}.inherited`, `must be a value the provenance records (${id})`);
+        }
+      }
+    }
+    if (Array.isArray(value.overridden)) {
+      for (const id of value.overridden) {
+        if (!Object.hasOwn(value.sources, id)) {
+          fail(`${contract}.overridden`, `must be a value the provenance records (${id})`);
+        }
+      }
+    }
+    if (value.preset === null) {
+      if (value.inherited.length > 0 || value.overridden.length > 0) {
+        fail(`${contract}.preset`, "must be named when anything was inherited or overridden");
+      }
+      for (const id of sources) {
+        if (value.sources[id] !== "user") {
+          fail(`${contract}.sources.${id}`, "must be user-stated when no preset was applied");
+        }
+      }
+    }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
 }
 
 /** Build a compliance item draft. */

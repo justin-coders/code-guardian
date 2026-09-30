@@ -201,7 +201,15 @@ import {
   validateComplianceReportResult,
   validateComplianceSectionResult,
   validatePolicyResult,
+  // Phase 23 — the preset answer, the effective policy and its provenance.
+  createEffectivePolicyResult,
+  createPolicyPresetResult,
+  createPolicyProvenanceResult,
+  validateEffectivePolicyResult,
+  validatePolicyPresetResult,
+  validatePolicyProvenanceResult,
 } from "./query-contracts.js";
+import { POLICY_DOCUMENT_VERSION } from "./policy.js";
 import { PRODUCTION_SECTIONS } from "./production-report.js";
 import { PRODUCTION_RISK_SECTIONS } from "./production-risk-report.js";
 import { COMPLIANCE_SECTIONS } from "./compliance-report.js";
@@ -4074,6 +4082,92 @@ export function createRepositoryQuery(model) {
       if (section === null) return null;
       validateComplianceSectionResult(section);
       return section;
+    },
+
+    // ── Preset resolution (Phase 23) ─────────────────────────────────────────
+    /**
+     * Which built-in preset governs this repository's policy, if any.
+     *
+     * `active` is false and `name` is `null` for a repository whose policy named no preset — which
+     * is an answer, not a failure. A policy that named a preset this build does not hold resolved
+     * nothing at all: `policy()` reports `unknown` with the reason, and this answer is inactive
+     * because no preset governed anything. The answer never ranks, scores or compares presets, and
+     * it never recommends one.
+     *
+     * @returns {object|null} A frozen preset answer, or `null` when this model says nothing about
+     *   policy at all.
+     */
+    policyPreset() {
+      const area = policyAreaOf(model);
+      if (area === null) return null;
+      const preset = area.preset ?? null;
+      const result = createPolicyPresetResult({
+        name: preset?.name ?? null,
+        version: preset?.version ?? null,
+        origin: preset?.origin ?? null,
+        active: preset !== null,
+      });
+      validatePolicyPresetResult(result);
+      return Object.freeze({ ...result });
+    },
+
+    /**
+     * The effective policy the compliance report measures against: the applied preset's values with
+     * the repository's own values on top.
+     *
+     * `null` means this model resolved no effective policy — either it carries no policy area, or
+     * the reading established none. A document with no preset yields its own document here, which is
+     * exactly what Phase 22 published; the effective answer and the declared one differ only when a
+     * preset was applied.
+     *
+     * @returns {object|null} A frozen effective-policy result, or `null`.
+     */
+    effectivePolicy() {
+      const area = policyAreaOf(model);
+      if (area === null) return null;
+      const document = area.document;
+      if (document === null || typeof document !== "object") return null;
+      const result = createEffectivePolicyResult({
+        version: POLICY_DOCUMENT_VERSION,
+        preset: area.preset?.name ?? null,
+        document,
+        domains: [...(area.coverage?.domains ?? [])],
+        settings: area.coverage?.settings ?? 0,
+      });
+      validateEffectivePolicyResult(result);
+      Object.freeze(result.document);
+      Object.freeze(result.domains);
+      return Object.freeze(result);
+    },
+
+    /**
+     * Where every effective policy value came from: `user` when the repository's own document
+     * stated it, `preset:<name>` when the applied preset did.
+     *
+     * `inherited` and `overridden` are the same fact read two ways, so a consumer can answer "which
+     * requirements did this preset supply?" and "which did the repository replace?" without
+     * reconstructing either by diffing two documents.
+     *
+     * @returns {object|null} A frozen provenance result, or `null` when no effective policy was
+     *   resolved.
+     */
+    policyProvenance() {
+      const area = policyAreaOf(model);
+      if (area === null) return null;
+      const provenance = area.provenance;
+      if (provenance === null || typeof provenance !== "object") return null;
+      const result = createPolicyProvenanceResult({
+        version: provenance.version,
+        preset: provenance.preset ?? null,
+        sources: { ...provenance.sources },
+        inherited: [...provenance.inherited],
+        overridden: [...provenance.overridden],
+      });
+      validatePolicyProvenanceResult(result);
+      Object.freeze(result.sources);
+      Object.freeze(result.inherited);
+      Object.freeze(result.overridden);
+      return Object.freeze(result);
     },
 
     // ── Coverage questions ──────────────────────────────────────────────────

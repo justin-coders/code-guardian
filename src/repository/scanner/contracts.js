@@ -91,7 +91,9 @@ import {
   MIDDLEWARE_UNRESOLVED_REASON_VALUES,
 } from "./policies/middleware.js";
 import {
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_FAILURE_REASON_VALUES,
   POLICY_KEYS_BY_DOMAIN,
@@ -217,7 +219,9 @@ export {
  * two sides can never drift.
  */
 export {
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_FAILURE_REASONS,
   POLICY_FORMAT,
@@ -1925,16 +1929,39 @@ function collectPolicyDocumentIssues(document, ctx, path) {
     return;
   }
 
-  const domains = Object.keys(document);
-  for (const domain of domains) {
-    if (!POLICY_DOMAINS.includes(domain)) {
-      ctx.fail(`${path}.${domain}`, "must be a declared policy domain");
-      return;
-    }
+  const declared = Object.keys(document);
+  for (const key of declared) {
+    if (POLICY_DOMAINS.includes(key)) continue;
+    if (POLICY_DOCUMENT_METADATA_KEYS.includes(key)) continue;
+    ctx.fail(`${path}.${key}`, "must be a declared policy domain");
+    return;
   }
+
+  // The document-level fields a policy may state beside its domains. `version` is pinned and
+  // `preset` is a name; whether the registry holds that name is a resolution question, and this
+  // contract deliberately does not carry a preset vocabulary.
+  const metadata = POLICY_DOCUMENT_METADATA_KEYS.filter((key) => Object.hasOwn(document, key));
+  if (Object.hasOwn(document, "version") && document.version !== POLICY_DOCUMENT_VERSION) {
+    ctx.fail(`${path}.version`, `must be "${POLICY_DOCUMENT_VERSION}"`);
+  }
+  if (
+    Object.hasOwn(document, "preset") &&
+    (typeof document.preset !== "string" ||
+      document.preset === "" ||
+      document.preset.length > POLICY_LIMITS.maxPresetNameLength)
+  ) {
+    ctx.fail(`${path}.preset`, "must name a preset, or be absent");
+  }
+
+  const domains = declared.filter((key) => POLICY_DOMAINS.includes(key));
   const canonical = POLICY_DOMAINS.filter((domain) => domains.includes(domain));
   if (domains.join("\u0000") !== canonical.join("\u0000")) {
     ctx.fail(path, "must state its domains in the declared order");
+  }
+  if (
+    declared.slice(0, metadata.length).join("\u0000") !== metadata.join("\u0000")
+  ) {
+    ctx.fail(path, "must state its version and preset before its domains");
   }
 
   for (const domain of domains) {

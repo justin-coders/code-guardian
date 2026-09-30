@@ -510,15 +510,21 @@ export function buildRepositoryModel(scanResult) {
       report: productionRiskReport,
       coverage: { ...productionRiskReport.coverage },
     },
-    // Phase 22 — the declared-requirements substrate. `document` carries the validated policy
-    // document or `null`, and `state` says what the reading established: a policy, the absence
-    // of one, or one of the three ways this build could not tell. No setting is interpreted
-    // here — the area states what the repository *declares*, never whether it complies.
+    // Phase 22/23 — the declared-requirements substrate. `document` carries the **effective**
+    // policy (the applied preset with the repository's own values on top) or `null`, and `state`
+    // says what the reading established: a policy, the absence of one, or one of the three ways
+    // this build could not tell. `declared` keeps what the repository literally wrote, `preset`
+    // names the built-in preset that was applied, and `provenance` records, for every effective
+    // value, whether the repository or the preset stated it. No setting is interpreted here — the
+    // area states what the repository *requires*, never whether it complies.
     policy: {
       detected: policyArea.detected,
       established: policyArea.established,
       state: policyArea.state,
       document: policyArea.document,
+      declared: policyArea.declared,
+      preset: policyArea.preset,
+      provenance: policyArea.provenance,
       coverage: { ...policyArea.coverage },
     },
     // Phase 22 — the compliance substrate: one section per policy domain, each item citing the

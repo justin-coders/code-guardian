@@ -213,7 +213,9 @@ export { detectMiddleware } from "./detectors/middleware.js";
 // against one source rather than reaching into the policy module.
 export {
   POLICY_DIRECTORY,
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_FAILURE_REASONS,
   POLICY_FAILURE_REASON_VALUES,

@@ -66,6 +66,7 @@ import {
   MAX_RELEASE_WORKFLOWS,
   POLICY_DOCUMENT_KEYS,
   POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_LIMITS as MODEL_POLICY_LIMITS,
   POLICY_READ_FAILURE_REASONS,
@@ -529,15 +530,38 @@ describe("policy parsing", () => {
 // ─── The model's policy area ─────────────────────────────────────────────────
 
 describe("model: policy area", () => {
-  it("publishes only the five contracted fields, preserving validated values", async () => {
+  it("publishes only the contracted fields, preserving validated values", async () => {
     const { policy } = await scanOf({ ...policyFile(FULL_POLICY), "package.json": pkg() });
+    // Phase 23 adds three fields to the area and changes none of the five: `document` is still the
+    // policy the model acts on, `declared` is what the repository wrote, `preset` is the built-in
+    // preset that was applied, and `provenance` says where every effective value came from. A
+    // document that names no preset resolves to exactly the domains it stated (plus the pinned
+    // version on the declared side), so `preset` is null and every value is user-stated here.
     assert.deepEqual(Object.keys(policy).sort(), [
       "coverage",
+      "declared",
       "detected",
       "document",
       "established",
+      "preset",
+      "provenance",
       "state",
     ]);
+    assert.deepEqual(policy.document, FULL_POLICY);
+    // The declared document is the same policy plus the version the model pins to it; no preset was
+    // named, so nothing is inherited and every value is the repository's own.
+    assert.equal(policy.declared.version, POLICY_DOCUMENT_VERSION);
+    assert.equal(policy.preset, null);
+    assert.equal(policy.provenance.preset, null);
+    assert.deepEqual(policy.provenance.inherited, []);
+    assert.deepEqual(policy.provenance.overridden, []);
+    assert.deepEqual(
+      Object.keys(policy.provenance.sources),
+      Object.keys(policy.document)
+        .flatMap((domain) => Object.keys(policy.document[domain]).map((key) => `${domain}.${key}`))
+        .sort(),
+    );
+    assert.equal(policy.provenance.sources["ci.requireTestsForRelease"], "user");
     assert.equal(policy.state, POLICY_STATES.ESTABLISHED);
     assert.equal(policy.established, true);
     assert.equal(isEstablishedPolicyState(policy.state), true);

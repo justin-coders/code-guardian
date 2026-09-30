@@ -1516,7 +1516,16 @@ describe("model: architectural boundary", () => {
     "tools.js",
     "tool-registry",
   ];
-  const ALLOWED_PREFIXES = ["../../core/index.js", "../scanner/index.js"];
+  // Phase 23 adds one permitted dependency: the policy preset layer. It is a *leaf* — it imports
+  // nothing at all — so allowing it here preserves the property this test exists to protect (the
+  // model reaches no filesystem, process, network or clock) while letting the model resolve a
+  // declared policy into an effective one. A test in `tests/policy-presets.test.js` pins the
+  // leaf property from the other side, so the permission cannot quietly become a hole.
+  const ALLOWED_PREFIXES = [
+    "../../core/index.js",
+    "../scanner/index.js",
+    "../../policy/index.js",
+  ];
 
   const sources = readdirSync(MODEL_DIR)
     .filter((name) => name.endsWith(".js"))

@@ -56,8 +56,11 @@ import { ENTITY_KINDS, GIT_ENTITY_ID, entityId } from "./identity.js";
 import {
   MAX_RELEASE_WORKFLOWS,
   POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_PRESET_KEY,
   POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_READ_FAILURE_REASONS,
   POLICY_READ_STATUSES,
@@ -932,14 +935,22 @@ function projectPolicyDocument(document, issues, at) {
     return null;
   }
 
-  for (const domain of Object.keys(document)) {
-    if (!POLICY_DOMAINS.includes(domain)) {
-      fail(issues, `${at}.${domain}`, "must be a declared policy domain");
-      return null;
-    }
+  const declared = Object.keys(document);
+  for (const key of declared) {
+    // Phase 23 — a policy may state its contract version and the preset it starts from beside its
+    // domains. They are document metadata, not settings, so they are preserved here and never
+    // projected into a domain.
+    if (POLICY_DOMAINS.includes(key) || POLICY_DOCUMENT_METADATA_KEYS.includes(key)) continue;
+    fail(issues, `${at}.${key}`, "must be a declared policy domain");
+    return null;
   }
 
+  // The declared domains, in the order the schema declares them, keep the metadata ahead of them.
   const canonical = {};
+  if (Object.hasOwn(document, "version")) canonical.version = POLICY_DOCUMENT_VERSION;
+  if (Object.hasOwn(document, POLICY_DOCUMENT_PRESET_KEY)) {
+    canonical[POLICY_DOCUMENT_PRESET_KEY] = document[POLICY_DOCUMENT_PRESET_KEY];
+  }
   for (const domain of POLICY_DOMAINS) {
     if (!Object.hasOwn(document, domain)) continue;
     const settings = document[domain];

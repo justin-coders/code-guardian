@@ -38,6 +38,18 @@
 /** The contracted policy path. Exactly one, and it decides the document. */
 export const POLICY_DOCUMENT_PATH = ".codeguardian/policy.json";
 
+/**
+ * The one policy document version this build interprets.
+ *
+ * The version is pinned rather than negotiated: a document that states another one is *refused*, not
+ * read on a best-effort basis, because a policy this build only partly understands is exactly the
+ * policy a compliance answer must not be measured against.
+ */
+export const POLICY_DOCUMENT_VERSION = "1";
+
+/** The top-level keys a policy document may state beside its domains. */
+export const POLICY_DOCUMENT_METADATA_KEYS = Object.freeze(["version", "preset"]);
+
 /** The directory the policy document lives in. */
 export const POLICY_DIRECTORY = ".codeguardian";
 
@@ -122,12 +134,13 @@ export const POLICY_LIMITS = Object.freeze({
   /** Keys any one domain declares. */
   maxKeysPerDomain: Math.max(
     ...POLICY_DOMAINS.map((domain) => POLICY_KEYS_BY_DOMAIN[domain].length),
-  ),
-  /** Largest accepted `maxReleaseWorkflows`. */
-  maxReleaseWorkflows: 1000,
-  /** Characters retained from a key name in a failure `detail`. */
-  maxDetailLength: 48,
-});
+  ),    /** Largest accepted `maxReleaseWorkflows`. */
+    maxReleaseWorkflows: 1000,
+    /** Characters retained from a key name in a failure `detail`. */
+    maxDetailLength: 48,
+    /** Characters a declared preset name may occupy. */
+    maxPresetNameLength: 32,
+  });
 
 /** What the acquisition established about the policy document. */
 export const POLICY_SOURCE_STATUSES = Object.freeze({
@@ -162,6 +175,10 @@ export const POLICY_FAILURE_REASONS = Object.freeze({
   UNKNOWN_KEY: "unknown-key",
   WRONG_TYPE: "wrong-type",
   OUT_OF_RANGE: "out-of-range",
+  // Phase 23 — the document states a policy version this build does not interpret. Like every
+  // other refusal here it is a statement about the *reading*: the document may be perfectly good
+  // policy for a later build, and this one says so rather than guessing at its meaning.
+  UNSUPPORTED_VERSION: "unsupported-version",
 });
 
 /** The failure vocabulary as a list, for validation. */
@@ -245,17 +262,55 @@ export function parsePolicyDocument(text) {
     return { ok: false, reason: POLICY_FAILURE_REASONS.NOT_AN_OBJECT, detail: null };
   }
 
-  for (const domain of Object.keys(parsed)) {
-    if (!POLICY_DOMAINS.includes(domain)) {
+  for (const key of Object.keys(parsed)) {
+    if (POLICY_DOMAINS.includes(key)) continue;
+    // Phase 23 — the two document-level fields a policy may state beside its domains. They are
+    // interpreted here and resolved by the model; they are *not* domains, and nothing about them
+    // reaches the compliance engine as a requirement.
+    if (POLICY_DOCUMENT_METADATA_KEYS.includes(key)) continue;
+    return {
+      ok: false,
+      reason: POLICY_FAILURE_REASONS.UNKNOWN_DOMAIN,
+      detail: boundedPolicyToken(key),
+    };
+  }
+
+  // The pinned version, refused rather than negotiated. A missing version means the contracted one:
+  // the schema's own default, so a document need not restate the only version this build reads.
+  if (Object.hasOwn(parsed, "version")) {
+    if (parsed.version !== POLICY_DOCUMENT_VERSION) {
       return {
         ok: false,
-        reason: POLICY_FAILURE_REASONS.UNKNOWN_DOMAIN,
-        detail: boundedPolicyToken(domain),
+        reason: POLICY_FAILURE_REASONS.UNSUPPORTED_VERSION,
+        detail: boundedPolicyToken(parsed.version),
       };
     }
   }
 
+  // A declared preset is a name, and only a name. Whether the registry holds it is a *resolution*
+  // question the model answers: the acquisition layer knows no preset vocabulary, and teaching it
+  // one would put the closed list in two places.
+  if (Object.hasOwn(parsed, "preset")) {
+    const preset = parsed.preset;
+    if (
+      typeof preset !== "string" ||
+      preset === "" ||
+      preset.length > POLICY_LIMITS.maxPresetNameLength
+    ) {
+      return {
+        ok: false,
+        reason: POLICY_FAILURE_REASONS.WRONG_TYPE,
+        detail: boundedPolicyToken("preset"),
+      };
+    }
+  }
+
+  // The document is rebuilt in canonical order: the version when it was stated, the preset when one
+  // was named, then the domains in declared order. Two spellings of one policy therefore serialize
+  // identically, so every downstream id depends on the declaration and not on how a file was typed.
   const document = {};
+  if (Object.hasOwn(parsed, "version")) document.version = POLICY_DOCUMENT_VERSION;
+  if (Object.hasOwn(parsed, "preset")) document.preset = parsed.preset;
   for (const domain of POLICY_DOMAINS) {
     if (!Object.hasOwn(parsed, domain)) continue;
     const stated = parsed[domain];

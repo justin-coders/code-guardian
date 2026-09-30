@@ -330,8 +330,11 @@ export {
   POLICY_ANSWERED_STATES,
   POLICY_BUILDER,
   POLICY_DOCUMENT_KEYS,
+  POLICY_DOCUMENT_METADATA_KEYS,
   POLICY_DOCUMENT_PATH,
+  POLICY_DOCUMENT_PRESET_KEY,
   POLICY_DOCUMENT_SCHEMA,
+  POLICY_DOCUMENT_VERSION,
   POLICY_DOMAINS,
   POLICY_LIMITS,
   POLICY_READ_FAILURE_REASONS,
@@ -348,6 +351,7 @@ export {
   isEstablishedPolicyState,
   policyDocumentDomains,
   policyDocumentEvidenceId,
+  policyDocumentPresetName,
   policyDocumentSettingCount,
 } from "./policy.js";
 
@@ -568,6 +572,16 @@ export {
   validateSymbolTraversalResult,
   validateSymbolUnresolvedQueryResult,
   validateTraversalResult,
+  // Phase 23 — the preset, effective-policy and provenance answers.
+  EFFECTIVE_POLICY_RESULT_FIELDS,
+  POLICY_PRESET_RESULT_FIELDS,
+  POLICY_PROVENANCE_RESULT_FIELDS,
+  createEffectivePolicyResult,
+  createPolicyPresetResult,
+  createPolicyProvenanceResult,
+  validateEffectivePolicyResult,
+  validatePolicyPresetResult,
+  validatePolicyProvenanceResult,
 } from "./query-contracts.js";
 
 export {

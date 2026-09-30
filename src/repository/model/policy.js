@@ -42,11 +42,39 @@
  * the whole phase rests on, because a compliance rule must abstain over every one of them.
  */
 
+import {
+  DEFAULT_PRESET_REGISTRY,
+  POLICY_PRESET_VERSION,
+  POLICY_RESOLUTION_FAILURES,
+  resolvePolicyDocument,
+} from "../../policy/index.js";
+
 import { EVIDENCE_SUBJECTS } from "./evidence.js";
 import { evidenceId } from "./identity.js";
 
 /** Version of the policy area's contract. */
 export const POLICY_VERSION = "1";
+
+/**
+ * The one policy document version this model resolves, restated from the acquisition layer.
+ *
+ * Phase 23 pins it here as well because the model now *derives* an effective policy from the
+ * declared one: a document whose version this build does not resolve produces no effective policy
+ * at all, so the constant is part of the model's own contract and not only the reader's.
+ */
+export const POLICY_DOCUMENT_VERSION = POLICY_PRESET_VERSION;
+
+/**
+ * The document-level fields a policy may state beside its domains, in canonical order.
+ *
+ * They are metadata about the *document* — which version of the contract it speaks and which preset
+ * it starts from — never settings, so nothing here becomes a compliance requirement. They sit
+ * before the domains in the canonical order the acquisition layer rebuilds.
+ */
+export const POLICY_DOCUMENT_METADATA_KEYS = Object.freeze(["version", "preset"]);
+
+/** The one metadata key that names a preset. */
+export const POLICY_DOCUMENT_PRESET_KEY = "preset";
 
 /** Producer recorded in the model's metadata for this area. */
 export const POLICY_BUILDER = "phase-22-repository-policy";
@@ -130,6 +158,9 @@ export const POLICY_READ_FAILURE_REASONS = Object.freeze([
   "unknown-key",
   "wrong-type",
   "out-of-range",
+  // Phase 23 — the document states a version this build does not resolve. Restated from the
+  // acquisition layer like every other refusal, and pinned to it by a test.
+  "unsupported-version",
 ]);
 
 /** Why a document this build does not read was recorded as unsupported. */
@@ -177,6 +208,8 @@ export function isEstablishedPolicyState(state) {
 export const POLICY_UNKNOWN_REASONS = Object.freeze({
   DOCUMENT_NOT_INTERPRETED: "policy-document-not-interpreted",
   FORMAT_NOT_INTERPRETED: "policy-document-format-not-interpreted",
+  PRESET_NOT_ESTABLISHED: "policy-preset-not-established",
+  VERSION_NOT_SUPPORTED: "policy-version-not-supported",
   PATH_IGNORED: "policy-path-ignored",
   PATH_UNREADABLE: "policy-path-unreadable",
   COVERAGE_NOT_COMPLETE: "policy-coverage-not-complete",
@@ -244,6 +277,30 @@ function unknownReasonForFailure(reason) {
   return POLICY_UNKNOWN_REASONS.DOCUMENT_NOT_INTERPRETED;
 }
 
+/** The preset a declared document names, or `null` when it names none. */
+export function policyDocumentPresetName(document) {
+  if (!isPlainObject(document)) return null;
+  const preset = document[POLICY_DOCUMENT_PRESET_KEY];
+  return typeof preset === "string" && preset !== "" ? preset : null;
+}
+
+/**
+ * The reading reason a resolution failure is published under.
+ *
+ * A declared document that names a preset this build does not hold establishes **nothing**: the
+ * whole document is refused, not merely the preset. The alternative — applying the domains the
+ * document happened to state and quietly dropping the preset — would measure the repository
+ * against a policy it never declared, which is the one thing a policy reading must never do. The
+ * refusal is carried as a reading reason, so no consumer has to remember to check for it.
+ */
+const RESOLUTION_UNKNOWN_REASONS = Object.freeze({
+  [POLICY_RESOLUTION_FAILURES.PRESET_NOT_ESTABLISHED]:
+    POLICY_UNKNOWN_REASONS.PRESET_NOT_ESTABLISHED,
+  [POLICY_RESOLUTION_FAILURES.VERSION_NOT_SUPPORTED]: POLICY_UNKNOWN_REASONS.VERSION_NOT_SUPPORTED,
+  [POLICY_RESOLUTION_FAILURES.DOCUMENT_NOT_INTERPRETED]:
+    POLICY_UNKNOWN_REASONS.DOCUMENT_NOT_INTERPRETED,
+});
+
 /**
  * Build the model's policy area.
  *
@@ -264,12 +321,24 @@ function unknownReasonForFailure(reason) {
  * Steps 4–7 are why this is a *reading* state rather than a boolean: "no policy" is only a fact
  * when the scan could have seen one, and every case where it could not is named.
  *
+ * ### Phase 23 — the declared document is resolved before it is published
+ *
+ * A parsed document is no longer published as-is. It is handed to the preset resolver, which merges
+ * the preset it names (if any) with the values the repository stated and returns an *effective*
+ * policy plus a per-key provenance. `document` is that effective document — so the compliance engine
+ * below receives exactly what it always did, and is not aware that presets exist — while `declared`
+ * keeps the repository-authored document, `preset` names the built-in preset that was applied and
+ * `provenance` says, for every key, whether the repository or the preset stated it. A document that
+ * names a preset this build does not hold establishes nothing at all: the effective document is
+ * `null` and the reason is `policy-preset-not-established`.
+ *
  * @param {object} input
  * @param {object|null} input.policy The projected policy record from the entity layer.
  * @param {object} input.scan The model-shaped scan state (`complete`, `truncated`, `coverage`).
+ * @param {object} [input.registry] The preset registry to resolve against.
  * @returns {object} A deeply frozen policy area.
  */
-export function buildPolicyArea({ policy, scan }) {
+export function buildPolicyArea({ policy, scan, registry = DEFAULT_PRESET_REGISTRY }) {
   const observed = isPlainObject(policy) ? policy : {};
   const path = typeof observed.path === "string" ? observed.path : POLICY_DOCUMENT_PATH;
   const status = POLICY_READ_STATUS_VALUES.includes(observed.status)
@@ -277,7 +346,7 @@ export function buildPolicyArea({ policy, scan }) {
     : POLICY_READ_STATUSES.ABSENT;
   const reason = typeof observed.reason === "string" ? observed.reason : null;
   const detail = typeof observed.detail === "string" ? observed.detail : null;
-  const document =
+  const parsed =
     status === POLICY_READ_STATUSES.PARSED && isPlainObject(observed.document)
       ? observed.document
       : null;
@@ -295,12 +364,43 @@ export function buildPolicyArea({ policy, scan }) {
     ? [...observed.evidenceIds].sort()
     : [];
 
+  // Phase 23 — resolve the declared document into the effective policy this model measures. The
+  // resolution is a pure function of the two in-memory values, so it has no failure mode the
+  // reading does not already name.
+  let declared = null;
+  let document = null;
+  let provenance = null;
+  let preset = null;
+  let resolutionReason = null;
+  let resolutionDetail = null;
+  if (parsed !== null) {
+    const resolution = resolvePolicyDocument({ document: parsed, registry });
+    if (resolution.ok) {
+      declared = resolution.declared;
+      document = resolution.effective;
+      provenance = resolution.provenance;
+      preset = resolution.preset;
+    } else {
+      resolutionReason =
+        RESOLUTION_UNKNOWN_REASONS[resolution.reason] ??
+        POLICY_UNKNOWN_REASONS.PRESET_NOT_ESTABLISHED;
+      resolutionDetail = resolution.detail;
+    }
+  }
+
   let state;
   let unknownReason = null;
   let unknownDetail = null;
 
   if (document !== null) {
     state = POLICY_STATES.ESTABLISHED;
+  } else if (resolutionReason !== null) {
+    // A document was read, but this build could not turn it into a policy it can measure — most
+    // often because it names a preset the registry does not hold. It establishes nothing, and says
+    // exactly that, rather than publishing a partly-applied policy.
+    state = POLICY_STATES.UNKNOWN;
+    unknownReason = resolutionReason;
+    unknownDetail = resolutionDetail;
   } else if (status === POLICY_READ_STATUSES.UNSUPPORTED) {
     state = POLICY_STATES.UNSUPPORTED;
     unknownReason = POLICY_UNKNOWN_REASONS.FORMAT_NOT_INTERPRETED;
@@ -336,7 +436,16 @@ export function buildPolicyArea({ policy, scan }) {
     // nothing. A consumer that needs "there is a document" reads `state === established`.
     established: answered,
     state,
+    // The effective policy the compliance engine measures against: the preset's values with the
+    // repository's own values applied on top.
     document,
+    // The repository-authored document — version, preset and the domains it stated — or `null` when
+    // nothing was resolved. Carried so "what was declared" and "what is required" stay distinct.
+    declared,
+    // The built-in preset that was applied, or `null` when the document named none.
+    preset,
+    // Where every effective value came from. Null exactly when there is no effective document.
+    provenance,
     coverage: {
       state,
       established: answered,

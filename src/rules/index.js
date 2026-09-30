@@ -426,3 +426,39 @@ export {
   createComplianceAnalyzer,
   createComplianceRuleRegistry,
 } from "./compliance/index.js";
+
+// Phase 23 — the `policy.*` pack. One **informational** rule, `policy.preset.audit`, proving the
+// preset layer is consumable through the accepted Rule Engine: it names the built-in preset a
+// repository's policy applied, the keys that preset supplied and the keys the repository replaced,
+// and it abstains when no preset governs anything. Purely additive — the Rule Engine is unchanged,
+// every other pack is untouched, and this one carries no violation, score or recommendation.
+export {
+  MAX_POLICY_FINDINGS,
+  POLICY_ABSTENTION_REASON_VALUES,
+  POLICY_ABSTENTION_REASONS,
+  POLICY_ABSTENTION_WORDING,
+  POLICY_ANALYZER_ID,
+  POLICY_ANALYZER_NAME,
+  POLICY_ANALYZER_SCOPE,
+  POLICY_BASIS,
+  POLICY_CATEGORY,
+  POLICY_CONFIDENCE,
+  POLICY_DESCRIBED_STATES,
+  POLICY_RULE_ID_PREFIX,
+  POLICY_RULE_IDS,
+  POLICY_RULE_PACK_VERSION,
+  POLICY_RULE_SEVERITY,
+  POLICY_RULE_VERSION,
+  POLICY_SEVERITY_VALUES,
+  POLICY_STATE_WORDING,
+  activePreset,
+  createPolicyAnalyzer,
+  createPolicyRuleRegistry,
+  effectivePolicy,
+  hasPolicyArea,
+  policyArea,
+  policyAuditRules,
+  policyProvenance,
+  policyRules,
+  policyRuleSetIssues,
+} from "./policy/index.js";
