@@ -1075,10 +1075,24 @@ describe("preset layer: architectural boundary", () => {
 
   it("makes the preset layer a leaf: it imports only its own siblings", () => {
     const sources = sourcesOf(POLICY_DIR);
-    assert.equal(sources.length, 6);
+    // Phase 24 adds the three pack modules and the built-in pack definition. They are siblings of
+    // the preset modules and still leaf-bound: the pack layer imports the preset layer, never the
+    // other way round, so the package gains a distribution unit without gaining a dependency.
+    assert.equal(sources.length, 10);
     assert.deepEqual(
       sources.map((entry) => entry.name).sort(),
-      ["contracts.js", "errors.js", "index.js", "presets.js", "registry.js", "resolver.js"],
+      [
+        "contracts.js",
+        "errors.js",
+        "index.js",
+        "pack-registry.js",
+        "pack-resolution.js",
+        "pack-validation.js",
+        "packs.js",
+        "presets.js",
+        "registry.js",
+        "resolver.js",
+      ],
     );
     for (const { name, text } of sources) {
       for (const match of text.matchAll(/from\s+"([^"]+)"/g)) {

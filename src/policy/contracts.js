@@ -139,6 +139,15 @@ export const POLICY_RESOLUTION_FAILURES = Object.freeze({
   PRESET_NOT_ESTABLISHED: "preset-not-established",
   VERSION_NOT_SUPPORTED: "version-not-supported",
   DOCUMENT_NOT_INTERPRETED: "document-not-interpreted",
+  // Phase 24 — the four ways a *pack reference* fails to name a policy definition. They are
+  // separate from `preset-not-established` on purpose: "this build holds no preset called that"
+  // and "this pack does not exist, or does not hold that preset, or holds two versions of it" are
+  // different facts about the declaration, and a repository author can act on each one. Every one
+  // of them refuses the whole document, exactly as an unknown preset does.
+  PACK_REFERENCE_NOT_ESTABLISHED: "pack-reference-not-established",
+  PACK_NOT_ESTABLISHED: "pack-not-established",
+  PACK_VERSION_NOT_ESTABLISHED: "pack-version-not-established",
+  PACK_PRESET_NOT_ESTABLISHED: "pack-preset-not-established",
 });
 
 /** The resolution-failure vocabulary as a list, for validation and tests. */
@@ -181,4 +190,196 @@ export function isPresetName(value) {
 /** Whether a value is a plain object (and not an array). */
 export function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+// ── Policy packs (Phase 24) ─────────────────────────────────────────────────
+//
+// A pack is the *distribution* unit a preset arrives in. Phase 23 resolved a preset by name; a
+// name is unique only inside the registry that holds it, so two builds, two vendors or two
+// internal teams could each ship a preset called `web-production` and a document naming that name
+// would identify neither of them. A pack gives a preset a qualified identity — `name@version` —
+// and the preset is then addressed as `<pack>:<preset>` or `<pack>@<version>:<preset>`.
+//
+// The vocabulary below is the closed grammar of that identity. It is deliberately made of
+// characters that cannot appear in another part: a pack name cannot contain `@` or `:`, a version
+// cannot either, so a reference splits unambiguously and no two spellings identify one policy
+// definition.
+
+/**
+ * The pack contract version this build interprets.
+ *
+ * Pinned, like the policy document version: a pack that states another one is refused rather than
+ * read on a best-effort basis, because a pack this build only partly understands would supply
+ * policy values it cannot fully account for.
+ */
+export const POLICY_PACK_VERSION = "1";
+
+/**
+ * The pack this build ships, and the pack a bare preset name resolves against.
+ *
+ * Every Phase 23 document named a preset without naming a pack, because there was only one place a
+ * preset could come from. That stays true: an unqualified name means *this* pack, pinned to the
+ * version this build ships. It is a constant, never "the latest one", so a Phase 23 document keeps
+ * resolving to exactly what it resolved to then.
+ */
+export const BUILT_IN_PACK_NAME = "code-guardian-core";
+export const BUILT_IN_PACK_VERSION = "1";
+
+/** The separator between a pack name and its pinned version. */
+export const POLICY_PACK_REFERENCE_SEPARATOR = "@";
+
+/** The separator between a pack reference and the preset it selects. */
+export const POLICY_PACK_PRESET_SEPARATOR = ":";
+
+/** The canonical reference of the built-in pack: `code-guardian-core@1`. */
+export const BUILT_IN_PACK_REFERENCE = `${BUILT_IN_PACK_NAME}${POLICY_PACK_REFERENCE_SEPARATOR}${BUILT_IN_PACK_VERSION}`;
+
+/** The origin vocabulary a pack may claim. One value: this build's own registry. */
+export const POLICY_PACK_ORIGINS = Object.freeze({
+  BUILT_IN: "built-in",
+});
+
+/** The origin vocabulary as a list, for validation and tests. */
+export const POLICY_PACK_ORIGIN_VALUES = Object.freeze(Object.values(POLICY_PACK_ORIGINS));
+
+/**
+ * The exact fields a pack definition states, in declared order.
+ *
+ * A closed schema, like every other contract in this codebase: a pack stating a field this table
+ * does not declare is refused as a whole rather than carried with an extra key nobody validated —
+ * which is what makes "a pack is data" a checkable property rather than a promise.
+ */
+export const POLICY_PACK_FIELDS = Object.freeze([
+  "name",
+  "version",
+  "origin",
+  "title",
+  "purpose",
+  "presets",
+]);
+
+/** The pack's identity fields, in declared order — everything but the presets it carries. */
+export const POLICY_PACK_IDENTITY_FIELDS = Object.freeze(["name", "version", "origin"]);
+
+/**
+ * The exact fields a preset *definition* states inside a pack.
+ *
+ * A pack's presets are the policy definitions it distributes, so the same closed-schema rule applies
+ * one level down: a preset stating a field this table does not declare is refused with the pack that
+ * carries it. A preset is `{name, purpose, document}` and nothing else — there is no place in it for
+ * a condition, a reference to another preset or a note to a future phase.
+ */
+export const POLICY_PRESET_DEFINITION_FIELDS = Object.freeze(["name", "purpose", "document"]);
+
+/**
+ * Fields a *frozen* pack carries on top of the declared ones.
+ *
+ * `reference` is derived from `name` and `version` rather than stated, so it is not part of the
+ * declaration a caller writes — but a frozen pack has it, and validation covers both shapes. It is
+ * allowed to be absent and required to be correct when present, so `name@version` can never be
+ * spelled two ways.
+ */
+export const POLICY_PACK_DERIVED_FIELDS = Object.freeze(["reference"]);
+
+/** Bounds on what the pack layer will build and publish. */
+export const POLICY_PACK_LIMITS = Object.freeze({
+  /** Packs one registry carries. */
+  maxPacks: 32,
+  /** Versions one pack name may be registered under. */
+  maxVersionsPerPack: 16,
+  /** Presets one pack may carry. */
+  maxPresetsPerPack: POLICY_PRESET_LIMITS.maxPresets,
+  /** Characters a pack name may occupy. */
+  maxPackNameLength: 32,
+  /** Characters a pack version may occupy. */
+  maxPackVersionLength: 16,
+  /** Characters a pack's title may occupy. */
+  maxTitleLength: 80,
+  /** Characters a pack's purpose statement may occupy. */
+  maxPurposeLength: POLICY_PRESET_LIMITS.maxPurposeLength,
+  /** Characters of a reference retained in a resolution failure `detail`. */
+  maxDetailLength: 48,
+});
+
+/** A pack name is a lowercase identifier, with its own namespace and its own bounds. */
+export const POLICY_PACK_NAME_PATTERN = /^[a-z][a-z0-9-]*$/;
+
+/**
+ * A pack version is dot-separated whole numbers: `1`, `2`, `1.0`.
+ *
+ * Pinned rather than floating — no range, no `*`, no `latest`, no comparison. A document that
+ * names a version this registry does not hold is refused; this build never picks the nearest one.
+ */
+export const POLICY_PACK_VERSION_PATTERN = /^[0-9]+(\.[0-9]+)*$/;
+
+/** Whether a pack name is a well-formed identifier. */
+export function isPackName(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= POLICY_PACK_LIMITS.maxPackNameLength &&
+    POLICY_PACK_NAME_PATTERN.test(value)
+  );
+}
+
+/** Whether a pack version is a well-formed pinned version. */
+export function isPackVersion(value) {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= POLICY_PACK_LIMITS.maxPackVersionLength &&
+    POLICY_PACK_VERSION_PATTERN.test(value)
+  );
+}
+
+/** Whether an origin is one a pack may claim. */
+export function isPackOrigin(value) {
+  return POLICY_PACK_ORIGIN_VALUES.includes(value);
+}
+
+/** The canonical `name@version` reference of a pack. */
+export function packReference(name, version) {
+  return `${name}${POLICY_PACK_REFERENCE_SEPARATOR}${version}`;
+}
+
+/**
+ * Whether a value is a well-formed `name@version` reference.
+ *
+ * A predicate only, and it is total: the per-part bounds make the whole reference bounded too — a
+ * name of at most 32 characters, a version of at most 16 and one separator cannot exceed any other
+ * limit — so there is no extra total-length check here that a well-formed reference could fail.
+ * Deciding *which* pack it names is the registry's question, and splitting a reference into its
+ * parts is `parsePresetReference`'s — this layer owns the vocabulary, not the lookup.
+ */
+export function isPackReference(value) {
+  if (typeof value !== "string") return false;
+  const parts = value.split(POLICY_PACK_REFERENCE_SEPARATOR);
+  if (parts.length !== 2) return false;
+  return isPackName(parts[0]) && isPackVersion(parts[1]);
+}
+
+/**
+ * The canonical reference of a preset selected out of a pack: `pack@version:preset`.
+ *
+ * This is the *fully qualified* form of what a document may write. A document may also write the
+ * pack alone, or nothing at all, and the registry pins what is missing — but this is the form every
+ * resolved answer is reported in, so two spellings of one selection cannot produce two strings.
+ */
+export function packPresetReference(name, version, presetName) {
+  return `${packReference(name, version)}${POLICY_PACK_PRESET_SEPARATOR}${presetName}`;
+}
+
+/**
+ * Bound a repository-authored policy reference before it travels as a failure detail.
+ *
+ * The reference is the one repository-authored string this layer carries, and it travels as a
+ * bounded identifier rather than free text — the same discipline every other acquisition detail
+ * follows. `@`, `:` and `.` are kept because they are part of the grammar, so a detail can still
+ * show *which* reference failed to resolve.
+ */
+export function boundedPolicyReference(value) {
+  if (typeof value !== "string") return null;
+  const sanitized = value.replace(/[^A-Za-z0-9_.@:-]/g, "");
+  if (sanitized === "") return null;
+  return sanitized.slice(0, POLICY_PACK_LIMITS.maxDetailLength);
 }

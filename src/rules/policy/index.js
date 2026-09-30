@@ -5,10 +5,12 @@
  * job, a future aggregate analyzer — should import from here rather than reaching into the
  * individual rule modules.
  *
- * Phase 23 adds one **informational** rule, `policy.preset.audit`, which reports the built-in preset
- * a repository's policy named, the requirements it supplied and the requirements the repository
- * replaced. It is not a compliance rule: the pack carries no violation, no score, no grade, no
- * traffic light, no recommendation and no severity above `info`.
+ * Phase 23 adds one **informational** rule, `policy.preset.audit`, which reports the preset a
+ * repository's policy named, the requirements it supplied and the requirements the repository
+ * replaced. Phase 24 extends that same rule to name the **pack** and pinned version the preset came
+ * from and whether the repository pinned it — no new rule, because the pack is part of the same
+ * fact. It is not a compliance rule: the pack carries no violation, no score, no grade, no traffic
+ * light, no recommendation and no severity above `info`.
  *
  * Dependency direction, unchanged from Phase 10 and enforced by an architectural test in
  * `tests/policy-presets.test.js`:
@@ -46,6 +48,7 @@ export {
 } from "./contracts.js";
 
 export {
+  activePack,
   activePreset,
   effectivePolicy,
   hasPolicyArea,

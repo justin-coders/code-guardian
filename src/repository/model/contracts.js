@@ -175,7 +175,16 @@ import {
 // Phase 23 — the preset layer is a leaf this model consumes. The contract re-resolves a published
 // policy to prove its effective document and provenance are *derived* from the declared one rather
 // than merely shaped like it, which is what keeps "never lose provenance" a property of the model.
-import { POLICY_PRESET_ORIGIN, effectivePolicyIssues } from "../../policy/index.js";
+// Phase 24 extends the same recompute to the *pack* the preset came from, so a published pack
+// identity is derived too — a hand-edited `pack` is a validation failure, not an answer.
+import {
+  POLICY_PACK_ORIGIN_VALUES,
+  POLICY_PRESET_ORIGIN,
+  isPackReference,
+  isPackVersion,
+  packPolicyIssues,
+  packReference,
+} from "../../policy/index.js";
 import {
   COMPLIANCE_CHECK_IDS,
   COMPLIANCE_LIMITS,
@@ -460,6 +469,11 @@ function collectDeclaredPolicyIssues(document, fail, path) {
  * document and compares the result: a published effective policy that is not the one its own
  * declaration resolves to is a validation failure, so provenance cannot be hand-written into a
  * model any more than a compliance item can.
+ *
+ * Phase 24 adds one more field on the same terms. `pack` names the pack the preset came from, and
+ * the recompute above now covers it as well, so a published pack identity is *derived* from the
+ * declaration rather than trusted: naming a pack the declaration never asked for, or claiming the
+ * repository pinned a pack it named bare, fails validation.
  */
 function collectPolicyAreaIssues(model, fail) {
   const area = model.policy;
@@ -523,11 +537,66 @@ function collectPolicyAreaIssues(model, fail) {
       fail("policy.preset.name", "must be the preset the provenance records");
     }
   }
+
+  // Phase 24 — the pack the applied preset came from. It answers a question the preset name alone
+  // cannot: a name is unique only inside the pack that declares it. Every field is pinned, and the
+  // `explicit` flag is checked against the declaration itself — a repository that pinned a pack wrote
+  // a qualified reference, and one that did not wrote a bare name — so the flag cannot be asserted
+  // independently of the document it describes.
+  const packRecord = area.pack ?? null;
+  if ((packRecord !== null) !== (presetRecord !== null)) {
+    fail("policy.pack", "must be carried exactly when a preset was applied");
+  }
+  if (packRecord !== null) {
+    if (!isPlainObject(packRecord)) {
+      fail("policy.pack", "must be a plain object or null");
+    } else {
+      if (!isPackReference(packRecord.reference)) {
+        fail("policy.pack.reference", "must be a well-formed pack reference");
+      } else if (packRecord.reference !== packReference(packRecord.name, packRecord.version)) {
+        fail("policy.pack.reference", "must be the pack's own name and version");
+      }
+      if (!isPackVersion(packRecord.version)) {
+        fail("policy.pack.version", "must be a pinned pack version");
+      }
+      if (!POLICY_PACK_ORIGIN_VALUES.includes(packRecord.origin)) {
+        fail("policy.pack.origin", "must name a declared pack origin");
+      }
+      if (typeof packRecord.explicit !== "boolean") {
+        fail("policy.pack.explicit", "must say whether the repository named the pack");
+      }
+      const written = declaredDocument === null ? null : declaredDocument.preset;
+      if (typeof written !== "string") {
+        fail("policy.pack", "must be carried exactly when the declaration named a policy selection");
+      } else if (packRecord.explicit === true && !written.includes(":")) {
+        fail("policy.pack.explicit", "must be true only for a pack the declaration qualified");
+      } else if (packRecord.explicit === false && written !== packRecord.preset) {
+        fail("policy.pack.explicit", "must be false only for a bare preset name the declaration wrote");
+      } else if (!written.endsWith(`:${packRecord.preset}`) && written !== packRecord.preset) {
+        fail("policy.pack.preset", "must be the preset the declaration selects");
+      }
+      if (presetRecord !== null && packRecord.preset !== presetRecord.name) {
+        fail("policy.pack.preset", "must name the preset the pack supplied");
+      }
+    }
+  }
+  // The provenance names the pack that supplied the inherited values, and the check is two-way: a
+  // pack with no provenance entry, or an entry naming a different pack, is a model that disagrees
+  // with itself. A provenance with no `pack` field at all is a failure too — the field is a fact, not
+  // an optional annotation.
+  if (provenanceRecord !== null) {
+    const recorded = provenanceRecord.pack;
+    if (packRecord === null ? recorded !== null : recorded !== packRecord.reference) {
+      fail("policy.provenance.pack", "must name the pack the resolution used");
+    }
+  }
+
   if (declaredDocument !== null && provenanceRecord !== null) {
-    for (const issue of effectivePolicyIssues({
+    for (const issue of packPolicyIssues({
       declared: declaredDocument,
       effective: document,
       provenance: provenanceRecord,
+      pack: packRecord,
     })) {
       fail("policy", issue);
     }

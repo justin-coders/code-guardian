@@ -1938,8 +1938,10 @@ function collectPolicyDocumentIssues(document, ctx, path) {
   }
 
   // The document-level fields a policy may state beside its domains. `version` is pinned and
-  // `preset` is a name; whether the registry holds that name is a resolution question, and this
-  // contract deliberately does not carry a preset vocabulary.
+  // `preset` is a selection — a bare preset name (Phase 23) or a pack-qualified reference (Phase
+  // 24). Whether that selection names anything is a *resolution* question, and this contract
+  // deliberately carries neither a preset vocabulary nor a pack grammar; it checks the field's
+  // shape and its bound, which is what the acquisition layer can honestly decide.
   const metadata = POLICY_DOCUMENT_METADATA_KEYS.filter((key) => Object.hasOwn(document, key));
   if (Object.hasOwn(document, "version") && document.version !== POLICY_DOCUMENT_VERSION) {
     ctx.fail(`${path}.version`, `must be "${POLICY_DOCUMENT_VERSION}"`);
@@ -1948,9 +1950,9 @@ function collectPolicyDocumentIssues(document, ctx, path) {
     Object.hasOwn(document, "preset") &&
     (typeof document.preset !== "string" ||
       document.preset === "" ||
-      document.preset.length > POLICY_LIMITS.maxPresetNameLength)
+      document.preset.length > POLICY_LIMITS.maxPresetReferenceLength)
   ) {
-    ctx.fail(`${path}.preset`, "must name a preset, or be absent");
+    ctx.fail(`${path}.preset`, "must name a preset selection, or be absent");
   }
 
   const domains = declared.filter((key) => POLICY_DOMAINS.includes(key));

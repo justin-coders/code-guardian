@@ -208,6 +208,9 @@ import {
   validateEffectivePolicyResult,
   validatePolicyPresetResult,
   validatePolicyProvenanceResult,
+  // Phase 24 — the pack the applied preset came from.
+  createPolicyPackResult,
+  validatePolicyPackResult,
 } from "./query-contracts.js";
 import { POLICY_DOCUMENT_VERSION } from "./policy.js";
 import { PRODUCTION_SECTIONS } from "./production-report.js";
@@ -4141,12 +4144,46 @@ export function createRepositoryQuery(model) {
     },
 
     /**
+     * The pack the applied preset came from, and whether the repository named it.
+     *
+     * `active` is false and every field is `null` for a policy that named no preset — which is an
+     * answer, not a failure — and for a policy whose reading established nothing. When a pack did
+     * govern the policy, `reference` is the pack and its pinned version (`code-guardian-core@1`),
+     * `preset` is what it supplied, and `explicit` says whether the repository pinned the pack
+     * itself or wrote a bare preset name that this build resolved against its own pack.
+     *
+     * The answer names no other pack, holds no preset document and reaches no registry: it is a
+     * statement about *this* repository's policy, not a catalogue, and it never recommends a pack or
+     * compares one against another.
+     *
+     * @returns {object|null} A frozen pack answer, or `null` when this model says nothing about policy
+     *   at all.
+     */
+    policyPack() {
+      const area = policyAreaOf(model);
+      if (area === null) return null;
+      const pack = area.pack ?? null;
+      const result = createPolicyPackResult({
+        active: pack !== null,
+        name: pack?.name ?? null,
+        version: pack?.version ?? null,
+        origin: pack?.origin ?? null,
+        reference: pack?.reference ?? null,
+        explicit: pack?.explicit === true,
+        preset: pack?.preset ?? null,
+      });
+      validatePolicyPackResult(result);
+      return Object.freeze({ ...result });
+    },
+
+    /**
      * Where every effective policy value came from: `user` when the repository's own document
      * stated it, `preset:<name>` when the applied preset did.
      *
      * `inherited` and `overridden` are the same fact read two ways, so a consumer can answer "which
      * requirements did this preset supply?" and "which did the repository replace?" without
-     * reconstructing either by diffing two documents.
+     * reconstructing either by diffing two documents. `pack` names the pack and pinned version the
+     * inherited values came from — the same fact one level up — or `null` when nothing was inherited.
      *
      * @returns {object|null} A frozen provenance result, or `null` when no effective policy was
      *   resolved.
@@ -4159,6 +4196,7 @@ export function createRepositoryQuery(model) {
       const result = createPolicyProvenanceResult({
         version: provenance.version,
         preset: provenance.preset ?? null,
+        pack: provenance.pack ?? null,
         sources: { ...provenance.sources },
         inherited: [...provenance.inherited],
         overridden: [...provenance.overridden],

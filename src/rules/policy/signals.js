@@ -9,10 +9,10 @@
  *
  * ### Nothing here re-derives a preset answer
  *
- * `activePreset`, `effectivePolicy` and `policyProvenance` hand back exactly what the query layer
- * published. The rule never re-reads the declared document, never re-merges a preset and never
- * computes an inherited key by diffing two documents: provenance is produced once, by the resolver,
- * and this layer only reads it.
+ * `activePreset`, `activePack`, `effectivePolicy` and `policyProvenance` hand back exactly what the
+ * query layer published. The rule never re-reads the declared document, never re-merges a preset,
+ * never resolves a pack reference and never computes an inherited key by diffing two documents:
+ * provenance is produced once, by the resolver, and this layer only reads it.
  */
 
 import { createRepositoryQuery } from "../../repository/model/index.js";
@@ -32,9 +32,20 @@ export function policyArea(query) {
   return query.policy();
 }
 
-/** Which built-in preset governs the policy, or `null` when the model says nothing about policy. */
+/** Which preset governs the policy, or `null` when the model says nothing about policy. */
 export function activePreset(query) {
   return query.policyPreset();
+}
+
+/**
+ * Which pack supplied the preset, or `null` when the model says nothing about policy.
+ *
+ * A preset *name* is unique only inside the pack that declares it, so this is the answer that turns
+ * `web-production` into a policy definition. It is read from the model like every other signal; the
+ * pack registry itself is never reached from here.
+ */
+export function activePack(query) {
+  return query.policyPack();
 }
 
 /** The effective policy the compliance report measures against, or `null`. */

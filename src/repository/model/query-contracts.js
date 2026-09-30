@@ -48,6 +48,15 @@ import {
   POLICY_STATE_VALUES as POLICY_STATE_VALUES_SOURCE,
   POLICY_UNKNOWN_REASON_VALUES as POLICY_UNKNOWN_REASON_VALUES_SOURCE,
 } from "./policy.js";
+// Phase 24 — the pack vocabulary the policy answers are checked against. A pack reference is a
+// closed grammar, so a provenance or pack answer naming something outside it is refused here rather
+// than handed to a caller as a token that merely looks like a pack.
+import {
+  POLICY_PACK_ORIGIN_VALUES,
+  isPackReference,
+  isPresetName,
+  packReference,
+} from "../../policy/index.js";
 import { ARCHITECTURE_GRAPH_STATE_VALUES } from "./architecture-graph.js";
 import { DEPENDENCY_GRAPH_STATE_VALUES } from "./dependency-graph.js";
 import { IMPORT_GRAPH_STATE_VALUES } from "./import-graph.js";
@@ -1902,6 +1911,10 @@ function throwProductionIssues(contract, issues) {
  * applied, and the per-key `provenance` of the effective policy. `document` remains the *effective*
  * document, so a consumer that only ever read the policy area in Phase 22 reads exactly what it read
  * then — and the three new fields are the only way the preset answer is visible at all.
+ *
+ * Phase 24 adds a fourth, `pack`: the pack and pinned version the applied preset came from. The
+ * preset name alone does not identify a policy definition, so the identity a consumer needs in order
+ * to say *which* `web-production` was applied travels beside it.
  */
 export const POLICY_RESULT_FIELDS = Object.freeze([
   "detected",
@@ -1910,6 +1923,7 @@ export const POLICY_RESULT_FIELDS = Object.freeze([
   "document",
   "declared",
   "preset",
+  "pack",
   "provenance",
   "coverage",
 ]);
@@ -1935,9 +1949,29 @@ export const EFFECTIVE_POLICY_RESULT_FIELDS = Object.freeze([
 export const POLICY_PROVENANCE_RESULT_FIELDS = Object.freeze([
   "version",
   "preset",
+  "pack",
   "sources",
   "inherited",
   "overridden",
+]);
+
+/**
+ * Fields a `policyPack()` answer declares.
+ *
+ * Seven, and each answers something the preset answer cannot: which pack, which pinned version,
+ * which origin, the canonical reference, whether the *repository* named the pack or this build
+ * pinned it, which preset it supplied, and whether any pack governed the policy at all. The answer
+ * deliberately carries no preset documents, no pack title or purpose and no registry internals — it
+ * is an answer about *this* repository, not a catalogue.
+ */
+export const POLICY_PACK_RESULT_FIELDS = Object.freeze([
+  "active",
+  "name",
+  "version",
+  "origin",
+  "reference",
+  "explicit",
+  "preset",
 ]);
 
 /** Fields every compliance item declares. */
@@ -2025,6 +2059,7 @@ export function createPolicyResult(input = {}) {
     document: input.document ?? null,
     declared: input.declared ?? null,
     preset: input.preset ?? null,
+    pack: input.pack ?? null,
     provenance: input.provenance ?? null,
     coverage: input.coverage,
   });
@@ -2076,6 +2111,33 @@ export function validatePolicyResult(value) {
     if (value.provenance.preset !== value.preset.name) {
       fail(`${contract}.provenance.preset`, "must name the preset the area carries");
     }
+  }
+  // Phase 24 — the pack the preset came from. It is carried exactly when a preset was applied to a
+  // resolved policy, its reference must be the one its own name and version spell, and it must name
+  // the same preset the rest of the answer does.
+  if (value.pack !== null && !isPlainObject(value.pack)) {
+    fail(`${contract}.pack`, "must be a plain object or null");
+  }
+  if ((value.pack !== null) !== (isPlainObject(value.preset) && value.document !== null)) {
+    fail(`${contract}.pack`, "must be carried exactly when a preset was applied");
+  }
+  if (isPlainObject(value.pack)) {
+    if (!isPackReference(value.pack.reference)) {
+      fail(`${contract}.pack.reference`, "must be a well-formed pack reference");
+    } else if (value.pack.reference !== packReference(value.pack.name, value.pack.version)) {
+      fail(`${contract}.pack.reference`, "must be the pack's own name and version");
+    }
+    if (typeof value.pack.explicit !== "boolean") {
+      fail(`${contract}.pack.explicit`, "must say whether the repository named the pack");
+    }
+    if (isPlainObject(value.preset) && value.pack.preset !== value.preset.name) {
+      fail(`${contract}.pack.preset`, "must name the preset the pack supplied");
+    }
+    if (isPlainObject(value.provenance) && value.provenance.pack !== value.pack.reference) {
+      fail(`${contract}.provenance.pack`, "must name the pack the answer carries");
+    }
+  } else if (isPlainObject(value.provenance) && value.provenance.pack !== null) {
+    fail(`${contract}.provenance.pack`, "must be null when no pack supplied anything");
   }
 
   if (isPlainObject(value.document)) {
@@ -2257,6 +2319,7 @@ export function createPolicyProvenanceResult(input = {}) {
   return createEnvelope(POLICY_PROVENANCE_RESULT_FIELDS, {
     version: input.version ?? null,
     preset: input.preset ?? null,
+    pack: input.pack ?? null,
     sources: input.sources ?? {},
     inherited: input.inherited ?? [],
     overridden: input.overridden ?? [],
@@ -2270,6 +2333,11 @@ export function createPolicyProvenanceResult(input = {}) {
  * supplied appears in `inherited`, every one the repository replaced appears in `overridden`, and
  * each carries the source token `sources` records for it. That makes "never lose provenance" a
  * checkable property of the answer rather than a claim about the resolver.
+ *
+ * Phase 24 adds the pack the inherited values came from. One document names one preset, hence one
+ * pack, so the pack is a property of the provenance *record*: every inherited token is read against
+ * it and none repeats an identity that cannot differ per key. The pin is two-way — a pack with no
+ * preset, or a preset with no pack, is the same contradiction either way.
  */
 export function validatePolicyProvenanceResult(value) {
   const contract = "PolicyProvenanceResult";
@@ -2282,6 +2350,12 @@ export function validatePolicyProvenanceResult(value) {
   }
   if (value.preset !== null && (typeof value.preset !== "string" || value.preset === "")) {
     fail(`${contract}.preset`, "must name the applied preset or be null");
+  }
+  if (value.pack !== null && !isPackReference(value.pack)) {
+    fail(`${contract}.pack`, "must be a well-formed pack reference or null");
+  }
+  if ((value.pack === null) !== (value.preset === null)) {
+    fail(`${contract}.pack`, "must be carried exactly when a preset supplied values");
   }
   for (const field of ["inherited", "overridden"]) {
     const list = value[field];
@@ -2342,6 +2416,70 @@ export function validatePolicyProvenanceResult(value) {
         }
       }
     }
+  }
+
+  throwProductionIssues(contract, issues);
+  return value;
+}
+
+/** Build a `policyPack()` answer. */
+export function createPolicyPackResult(input = {}) {
+  return createEnvelope(POLICY_PACK_RESULT_FIELDS, {
+    active: input.active === true,
+    name: input.name ?? null,
+    version: input.version ?? null,
+    origin: input.origin ?? null,
+    reference: input.reference ?? null,
+    explicit: input.explicit === true,
+    preset: input.preset ?? null,
+  });
+}
+
+/**
+ * Validate a `policyPack()` answer.
+ *
+ * `active` is pinned to `name`: a pack either governed the policy or it did not. When one did, every
+ * identity field must be present and mutually consistent — the reference must be the one the pack's
+ * own name and version spell, the origin must be one a pack may claim, and the preset it supplied
+ * must be a well-formed preset name. When none did, every one of them must be absent, so an answer
+ * cannot describe a pack that governed nothing.
+ */
+export function validatePolicyPackResult(value) {
+  const contract = "PolicyPackResult";
+  requireProductionFields(value, contract, POLICY_PACK_RESULT_FIELDS);
+  const issues = [];
+  const fail = (path, message) => issues.push(`${path}: ${message}`);
+
+  if (typeof value.active !== "boolean") fail(`${contract}.active`, "must be a boolean");
+  if (typeof value.explicit !== "boolean") fail(`${contract}.explicit`, "must be a boolean");
+  for (const field of ["name", "version", "origin", "reference", "preset"]) {
+    const token = value[field];
+    if (token !== null && (typeof token !== "string" || token === "")) {
+      fail(`${contract}.${field}`, "must be a non-empty string or null");
+    }
+  }
+  if (value.active !== (value.name !== null)) {
+    fail(`${contract}.active`, "must agree with whether a pack is named");
+  }
+  if (!value.active) {
+    if (value.preset !== null) fail(`${contract}.preset`, "must be null when no pack is active");
+    if (value.explicit !== false) {
+      fail(`${contract}.explicit`, "must be false when no pack is active");
+    }
+    throwProductionIssues(contract, issues);
+    return value;
+  }
+
+  if (!isPackReference(value.reference)) {
+    fail(`${contract}.reference`, "must be a well-formed pack reference");
+  } else if (value.reference !== packReference(value.name, value.version)) {
+    fail(`${contract}.reference`, "must be the pack's own name and version");
+  }
+  if (!POLICY_PACK_ORIGIN_VALUES.includes(value.origin)) {
+    fail(`${contract}.origin`, "must name a declared pack origin");
+  }
+  if (!isPresetName(value.preset)) {
+    fail(`${contract}.preset`, "must name the preset the pack supplied");
   }
 
   throwProductionIssues(contract, issues);

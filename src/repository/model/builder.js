@@ -514,8 +514,9 @@ export function buildRepositoryModel(scanResult) {
     // policy (the applied preset with the repository's own values on top) or `null`, and `state`
     // says what the reading established: a policy, the absence of one, or one of the three ways
     // this build could not tell. `declared` keeps what the repository literally wrote, `preset`
-    // names the built-in preset that was applied, and `provenance` records, for every effective
-    // value, whether the repository or the preset stated it. No setting is interpreted here — the
+    // names the preset that was applied, `pack` names the pack and pinned version it came from, and
+    // `provenance` records, for every effective value, whether the repository or the preset stated
+    // it. No setting is interpreted here — the
     // area states what the repository *requires*, never whether it complies.
     policy: {
       detected: policyArea.detected,
@@ -524,6 +525,7 @@ export function buildRepositoryModel(scanResult) {
       document: policyArea.document,
       declared: policyArea.declared,
       preset: policyArea.preset,
+      pack: policyArea.pack,
       provenance: policyArea.provenance,
       coverage: { ...policyArea.coverage },
     },

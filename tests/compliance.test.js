@@ -533,16 +533,18 @@ describe("model: policy area", () => {
   it("publishes only the contracted fields, preserving validated values", async () => {
     const { policy } = await scanOf({ ...policyFile(FULL_POLICY), "package.json": pkg() });
     // Phase 23 adds three fields to the area and changes none of the five: `document` is still the
-    // policy the model acts on, `declared` is what the repository wrote, `preset` is the built-in
-    // preset that was applied, and `provenance` says where every effective value came from. A
-    // document that names no preset resolves to exactly the domains it stated (plus the pinned
-    // version on the declared side), so `preset` is null and every value is user-stated here.
+    // policy the model acts on, `declared` is what the repository wrote, `preset` is the preset that
+    // was applied, and `provenance` says where every effective value came from. Phase 24 adds
+    // `pack`, the pack and pinned version the preset came from. A document that names no preset
+    // resolves to exactly the domains it stated (plus the pinned version on the declared side), so
+    // `preset` and `pack` are null and every value is user-stated here.
     assert.deepEqual(Object.keys(policy).sort(), [
       "coverage",
       "declared",
       "detected",
       "document",
       "established",
+      "pack",
       "preset",
       "provenance",
       "state",
@@ -552,7 +554,9 @@ describe("model: policy area", () => {
     // named, so nothing is inherited and every value is the repository's own.
     assert.equal(policy.declared.version, POLICY_DOCUMENT_VERSION);
     assert.equal(policy.preset, null);
+    assert.equal(policy.pack, null);
     assert.equal(policy.provenance.preset, null);
+    assert.equal(policy.provenance.pack, null);
     assert.deepEqual(policy.provenance.inherited, []);
     assert.deepEqual(policy.provenance.overridden, []);
     assert.deepEqual(

@@ -138,8 +138,17 @@ export const POLICY_LIMITS = Object.freeze({
     maxReleaseWorkflows: 1000,
     /** Characters retained from a key name in a failure `detail`. */
     maxDetailLength: 48,
-    /** Characters a declared preset name may occupy. */
-    maxPresetNameLength: 32,
+    /**
+     * Characters a declared *preset selection* may occupy.
+     *
+     * Phase 23 read a bare preset name here, bounded at 32 characters. Phase 24 admits a
+     * pack-qualified selection — `code-guardian-core@1:web-production` — so the field's bound is the
+     * reference's, not the name's: the longest well-formed reference is a 32-character pack name, a
+     * 16-character version, a 32-character preset name and two separators (82), and this is the
+     * refusal for a field too long to be one. What a *name* may be is not the acquisition layer's
+     * question at all — it knows no pack grammar — so no second bound is declared here.
+     */
+    maxPresetReferenceLength: 96,
   });
 
 /** What the acquisition established about the policy document. */
@@ -287,15 +296,17 @@ export function parsePolicyDocument(text) {
     }
   }
 
-  // A declared preset is a name, and only a name. Whether the registry holds it is a *resolution*
-  // question the model answers: the acquisition layer knows no preset vocabulary, and teaching it
-  // one would put the closed list in two places.
+  // A declared preset is a *reference*, and only a string. Whether it names a preset this build
+  // holds — and whether the pack part of it exists — is a *resolution* question the model answers:
+  // the acquisition layer knows no preset vocabulary and no pack grammar, and teaching it either
+  // would put the closed list in two places. Phase 24 widened the bound to admit a pack-qualified
+  // selection; nothing else about the field changed, so a Phase 23 document reads identically.
   if (Object.hasOwn(parsed, "preset")) {
     const preset = parsed.preset;
     if (
       typeof preset !== "string" ||
       preset === "" ||
-      preset.length > POLICY_LIMITS.maxPresetNameLength
+      preset.length > POLICY_LIMITS.maxPresetReferenceLength
     ) {
       return {
         ok: false,

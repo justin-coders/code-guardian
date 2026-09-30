@@ -582,6 +582,15 @@ export {
   validateEffectivePolicyResult,
   validatePolicyPresetResult,
   validatePolicyProvenanceResult,
+  // Phase 24 — the pack the applied preset came from.
+  POLICY_PACK_RESULT_FIELDS,
+  createPolicyPackResult,
+  validatePolicyPackResult,
+  // Phase 22's policy and provenance result contracts, exported on the same terms as the Phase 23
+  // ones: a consumer validating a result it assembled itself needs the same closed contract the
+  // query layer applies.
+  createPolicyResult,
+  validatePolicyResult,
 } from "./query-contracts.js";
 
 export {

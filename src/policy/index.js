@@ -22,10 +22,33 @@
  *   - every resolved key carries a source, and an unknown preset refuses the whole document rather
  *     than applying part of it;
  *   - nothing here scores, recommends, ranks or compares one preset against another.
+ *
+ * ### Phase 24 — the pack layer sits under the preset layer, not over it
+ *
+ * A preset name is unique only inside the registry that holds it, so Phase 24 addresses a policy
+ * definition by pack: `code-guardian-core@1:web-production`. The pack modules added here
+ * (`packs.js`, `pack-validation.js`, `pack-registry.js`, `pack-resolution.js`) answer *identity* —
+ * which pack, which version, which preset — and then call the Phase 23 resolver to answer *policy*.
+ * The preset layer above them is unchanged, which is what keeps the compliance engine, which reads
+ * only the effective document, exactly as it was accepted.
  */
 
 export {
+  BUILT_IN_PACK_NAME,
+  BUILT_IN_PACK_REFERENCE,
+  BUILT_IN_PACK_VERSION,
   MAX_PRESET_RELEASE_WORKFLOWS,
+  POLICY_PACK_FIELDS,
+  POLICY_PACK_IDENTITY_FIELDS,
+  POLICY_PACK_LIMITS,
+  POLICY_PACK_NAME_PATTERN,
+  POLICY_PACK_ORIGINS,
+  POLICY_PACK_ORIGIN_VALUES,
+  POLICY_PACK_REFERENCE_SEPARATOR,
+  POLICY_PACK_PRESET_SEPARATOR,
+  POLICY_PACK_VERSION,
+  POLICY_PACK_VERSION_PATTERN,
+  POLICY_PRESET_DEFINITION_FIELDS,
   POLICY_PRESET_DOMAINS,
   POLICY_PRESET_KEY_IDS,
   POLICY_PRESET_KEYS,
@@ -38,18 +61,28 @@ export {
   POLICY_RESOLUTION_FAILURES,
   POLICY_RESOLUTION_FAILURE_VALUES,
   PRESET_SOURCE_PREFIX,
+  boundedPolicyReference,
+  isPackName,
+  isPackOrigin,
+  isPackReference,
+  isPackVersion,
   isPlainObject,
   isPresetName,
   isPresetSource,
   isUserSource,
+  packPresetReference,
+  packReference,
   presetSource,
   presetSourceName,
 } from "./contracts.js";
 
 export {
+  POLICY_PACK_ERROR_CODE,
+  POLICY_PACK_ERROR_KINDS,
   POLICY_PRESET_ERROR_CODE,
   POLICY_PRESET_ERROR_KINDS,
   POLICY_PRESET_ERROR_KIND_VALUES,
+  PolicyPackError,
   PolicyPresetError,
 } from "./errors.js";
 
@@ -69,3 +102,29 @@ export {
   effectivePolicyIssues,
   resolvePolicyDocument,
 } from "./resolver.js";
+
+// ── Policy packs (Phase 24) ──────────────────────────────────────────────────
+export {
+  BUILT_IN_PACK,
+  BUILT_IN_PACKS,
+  BUILT_IN_PACK_CONTRACT_VERSION,
+  BUILT_IN_PACK_PURPOSE,
+  BUILT_IN_PACK_TITLE,
+  builtInPackIssues,
+  freezePack,
+} from "./packs.js";
+
+export {
+  packDefinitionIssues,
+  parsePresetReference,
+  referenceFailure,
+  snapshotPackDefinition,
+} from "./pack-validation.js";
+
+export { DEFAULT_PACK_REGISTRY, createPolicyPackRegistry } from "./pack-registry.js";
+
+export {
+  packPolicyIssues,
+  resolvePackPolicyDocument,
+  resolvePackPreset,
+} from "./pack-resolution.js";

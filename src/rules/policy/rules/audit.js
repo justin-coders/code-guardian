@@ -7,9 +7,9 @@
  *
  * ### What the rule proves about the preset substrate
  *
- *   - it reads the answer **only** through the Phase 11 query API (`policyPreset`,
- *     `effectivePolicy`, `policyProvenance`, `policy`) — never the raw model area, never a preset
- *     registry, never a file;
+ *   - it reads the answer **only** through the Phase 11 query API (`policyPreset`, `policyPack`,
+ *     `effectivePolicy`, `policyProvenance`, `policy`) — never the raw model area, never a preset or
+ *     pack registry, never a file;
  *   - the finding cites the policy document's own observation, because the declaration is what made
  *     the preset active: a preset audit with no declaration behind it would be a claim about a
  *     configuration nobody stated;
@@ -47,6 +47,7 @@ import {
   POLICY_STATE_WORDING,
 } from "../contracts.js";
 import {
+  activePack,
   activePreset,
   effectivePolicy,
   policyArea,
@@ -76,6 +77,7 @@ function detectPreset(context) {
   const query = queryFor(context);
   const policy = policyArea(query);
   const preset = activePreset(query);
+  const pack = activePack(query);
   const effective = effectivePolicy(query);
   const provenance = policyProvenance(query);
 
@@ -88,6 +90,17 @@ function detectPreset(context) {
     preset: preset?.name ?? null,
     presetVersion: preset?.version ?? null,
     presetOrigin: preset?.origin ?? null,
+    // Phase 24 — the pack the preset came from. A preset name is unique only inside the pack that
+    // declares it, so these are what turn `web-production` into a policy definition. `packExplicit`
+    // distinguishes a repository that pinned the pack itself from one that wrote a bare preset name
+    // and had this build's own pack pinned for it, which is a difference in the declaration.
+    packActive: pack?.active === true,
+    pack: pack?.name ?? null,
+    packVersion: pack?.version ?? null,
+    packOrigin: pack?.origin ?? null,
+    packReference: pack?.reference ?? null,
+    packExplicit: pack?.explicit === true,
+    packPreset: pack?.preset ?? null,
     effectiveVersion: effective?.version ?? null,
     effectiveDomains: [...(effective?.domains ?? [])],
     effectiveSettings: effective?.settings ?? 0,
@@ -125,12 +138,20 @@ function detectPreset(context) {
   const overridden = [...provenance.overridden];
   const resolved = Object.keys(provenance.sources).length;
   const reported = Math.min(1, MAX_POLICY_FINDINGS);
+  // How the pack reached the resolution, stated as the declaration it was: a repository that pinned
+  // the pack, or one that wrote a bare preset name this build resolved against its own pack.
+  const selection =
+    pack === null || pack.active !== true
+      ? `the built-in "${preset.name}" preset`
+      : pack.explicit === true
+        ? `the "${preset.name}" preset of the pack this repository pinned (${pack.reference})`
+        : `the built-in "${preset.name}" preset of this build's own pack (${pack.reference})`;
 
   const finding = {
     severity: POLICY_RULE_SEVERITY,
     title: `Active policy preset: ${preset.name}`,
     description:
-      `The repository's policy starts from the built-in "${preset.name}" preset. ${inherited.length} of the ${resolved} requirements it resolves to came from the preset and ${overridden.length} were stated by the repository itself. This is an informational statement about the configuration the repository declared — it is not a violation, it is not scored or compared against any other preset, and no preset is recommended.`,
+      `The repository's policy starts from ${selection}. ${inherited.length} of the ${resolved} requirements it resolves to came from the preset and ${overridden.length} were stated by the repository itself. This is an informational statement about the configuration the repository declared — it is not a violation, it is not scored or compared against any other preset, and no preset or pack is recommended.`,
     confidence: POLICY_CONFIDENCE.RESOLVED_PRESET,
     // The declaration that made the preset active. A preset audit with no declaration behind it
     // would be a claim about a configuration nobody stated.
@@ -140,8 +161,13 @@ function detectPreset(context) {
       findings: 1,
       reported,
       // One preset governs one policy, so the run produces a single finding; the key exists so the
-      // canonical fingerprint is derived from the preset's own identity rather than from position.
-      fingerprintKey: `policy:preset:${stabilityHash(`${preset.name}@${preset.version}`)}`,
+      // canonical fingerprint is derived from the policy definition's own identity — the pack and its
+      // pinned version, then the preset — rather than from position. A bare `web-production` in one
+      // pack and a `web-production` in another are therefore different findings, which is exactly what
+      // identifying the definition rather than the word means.
+      fingerprintKey: `policy:preset:${stabilityHash(
+        `${pack?.reference ?? "no-pack"}:${preset.name}@${preset.version}`,
+      )}`,
     },
   };
 
@@ -156,7 +182,7 @@ const NO_RECOMMENDATION =
   "No preset is recommended, ranked, scored or compared: a finding names the preset the repository chose, the keys it supplied and the keys the repository replaced, and stops there.";
 
 const NOT_READ =
-  "Nothing here reads a file, ignores a path, loads a preset from disk, evaluates an expression, contacts a registry or a network, or reads a clock or the environment: every statement comes from the repository model's already-resolved policy, preset and provenance, and the finding cites the declaration behind them.";
+  "Nothing here reads a file, ignores a path, loads a preset or a pack from disk, resolves a pack reference, evaluates an expression, contacts a registry or a network, or reads a clock or the environment: every statement comes from the repository model's already-resolved policy, preset, pack and provenance, and the finding cites the declaration behind them.";
 
 export const policyRules = Object.freeze([
   createRule({
@@ -174,9 +200,10 @@ export const policyRules = Object.freeze([
     remediation: {},
     metadata: {
       basis: POLICY_BASIS,
-      tags: ["policy", "preset", "configuration", "audit"],
+      tags: ["policy", "preset", "pack", "configuration", "audit"],
       falsePositives: [
-        "the active preset is reported from the repository's own declaration, so a repository that starts from `strict` and overrides nothing is reported as satisfying a policy it declared — this rule makes no claim about whether the repository actually satisfies it (the compliance pack does)",
+        "the active preset and pack are reported from the repository's own declaration, so a repository that starts from `strict` and overrides nothing is reported as satisfying a policy it declared — this rule makes no claim about whether the repository actually satisfies it (the compliance pack does)",
+        "a bare preset name is reported as this build's own pack, because that is exactly what a bare name resolves to — the rule does not treat an unqualified name as an unqualified claim about any other pack",
         "a value the repository restates with the same value the preset already states is still reported as `overridden`, because provenance records who stated it, not whether it changed anything",
         "a policy that names a preset this build does not hold resolves to nothing, so this rule abstains rather than reporting a preset that was never applied",
       ],

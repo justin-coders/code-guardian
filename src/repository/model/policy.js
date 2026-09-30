@@ -19,6 +19,15 @@
  * pinned together by a test, so a rename on either side fails the suite instead of silently
  * retiring a value.
  *
+ * ### Phase 24 — the effective policy is resolved through a pack
+ *
+ * Phase 23 resolved a preset by name; Phase 24 addresses the policy definition by pack, so the same
+ * merge now runs with the pack (and its pinned version) known. Nothing about the *policy* changed:
+ * the resolver still merges a preset's values with the repository's own and still records a source
+ * per key, and a document that names no preset still yields exactly what it declared. What is added
+ * is identity — `pack` names the pack the preset came from, and the provenance records its reference
+ * — so a requirement can be traced to a pack and a version and not merely to a word.
+ *
  * ### Malformed policy never enters the model
  *
  * A document that could not be parsed, or that the schema refuses, produces **no** document in
@@ -43,10 +52,10 @@
  */
 
 import {
-  DEFAULT_PRESET_REGISTRY,
+  DEFAULT_PACK_REGISTRY,
   POLICY_PRESET_VERSION,
   POLICY_RESOLUTION_FAILURES,
-  resolvePolicyDocument,
+  resolvePackPolicyDocument,
 } from "../../policy/index.js";
 
 import { EVIDENCE_SUBJECTS } from "./evidence.js";
@@ -210,6 +219,15 @@ export const POLICY_UNKNOWN_REASONS = Object.freeze({
   FORMAT_NOT_INTERPRETED: "policy-document-format-not-interpreted",
   PRESET_NOT_ESTABLISHED: "policy-preset-not-established",
   VERSION_NOT_SUPPORTED: "policy-version-not-supported",
+  // Phase 24 — the same refusal, one layer down: the document named a *pack* this build could not
+  // establish, so the preset it selects could not be read. Four reasons rather than one because they
+  // are four different things a repository author can fix (a malformed reference, a pack this build
+  // does not hold, a version it does not hold, a preset that pack does not declare), and collapsing
+  // them would lose the only actionable part of the message.
+  PACK_REFERENCE_NOT_ESTABLISHED: "policy-pack-reference-not-established",
+  PACK_NOT_ESTABLISHED: "policy-pack-not-established",
+  PACK_VERSION_NOT_ESTABLISHED: "policy-pack-version-not-established",
+  PACK_PRESET_NOT_ESTABLISHED: "policy-pack-preset-not-established",
   PATH_IGNORED: "policy-path-ignored",
   PATH_UNREADABLE: "policy-path-unreadable",
   COVERAGE_NOT_COMPLETE: "policy-coverage-not-complete",
@@ -299,6 +317,15 @@ const RESOLUTION_UNKNOWN_REASONS = Object.freeze({
   [POLICY_RESOLUTION_FAILURES.VERSION_NOT_SUPPORTED]: POLICY_UNKNOWN_REASONS.VERSION_NOT_SUPPORTED,
   [POLICY_RESOLUTION_FAILURES.DOCUMENT_NOT_INTERPRETED]:
     POLICY_UNKNOWN_REASONS.DOCUMENT_NOT_INTERPRETED,
+  // Phase 24 — one reason per way a pack reference can fail to name a policy definition.
+  [POLICY_RESOLUTION_FAILURES.PACK_REFERENCE_NOT_ESTABLISHED]:
+    POLICY_UNKNOWN_REASONS.PACK_REFERENCE_NOT_ESTABLISHED,
+  [POLICY_RESOLUTION_FAILURES.PACK_NOT_ESTABLISHED]:
+    POLICY_UNKNOWN_REASONS.PACK_NOT_ESTABLISHED,
+  [POLICY_RESOLUTION_FAILURES.PACK_VERSION_NOT_ESTABLISHED]:
+    POLICY_UNKNOWN_REASONS.PACK_VERSION_NOT_ESTABLISHED,
+  [POLICY_RESOLUTION_FAILURES.PACK_PRESET_NOT_ESTABLISHED]:
+    POLICY_UNKNOWN_REASONS.PACK_PRESET_NOT_ESTABLISHED,
 });
 
 /**
@@ -323,22 +350,25 @@ const RESOLUTION_UNKNOWN_REASONS = Object.freeze({
  *
  * ### Phase 23 — the declared document is resolved before it is published
  *
- * A parsed document is no longer published as-is. It is handed to the preset resolver, which merges
- * the preset it names (if any) with the values the repository stated and returns an *effective*
- * policy plus a per-key provenance. `document` is that effective document — so the compliance engine
- * below receives exactly what it always did, and is not aware that presets exist — while `declared`
- * keeps the repository-authored document, `preset` names the built-in preset that was applied and
- * `provenance` says, for every key, whether the repository or the preset stated it. A document that
- * names a preset this build does not hold establishes nothing at all: the effective document is
- * `null` and the reason is `policy-preset-not-established`.
+ * A parsed document is no longer published as-is. It is handed to the pack resolver, which selects
+ * the policy definition the document names, merges it with the values the repository stated and
+ * returns an *effective* policy plus a per-key provenance. `document` is that effective document —
+ * so the compliance engine below receives exactly what it always did, and is not aware that presets
+ * or packs exist — while `declared` keeps the repository-authored document, `preset` names the
+ * preset that was applied, `pack` names the pack that supplied it and `provenance` says, for every
+ * key, whether the repository or the preset stated it. A document that names a preset or pack this
+ * build does not hold establishes nothing at all: the effective document is `null` and the reason
+ * says which part of the selection failed.
  *
  * @param {object} input
  * @param {object|null} input.policy The projected policy record from the entity layer.
  * @param {object} input.scan The model-shaped scan state (`complete`, `truncated`, `coverage`).
- * @param {object} [input.registry] The preset registry to resolve against.
+ * @param {object} [input.packs] The pack registry to resolve against. Phase 23's `registry` parameter
+ *   named a *preset* registry; the resolution it fed now happens one layer down, inside the pack
+ *   registry's own preset registry, so this is the pack registry and nothing else changed.
  * @returns {object} A deeply frozen policy area.
  */
-export function buildPolicyArea({ policy, scan, registry = DEFAULT_PRESET_REGISTRY }) {
+export function buildPolicyArea({ policy, scan, packs = DEFAULT_PACK_REGISTRY }) {
   const observed = isPlainObject(policy) ? policy : {};
   const path = typeof observed.path === "string" ? observed.path : POLICY_DOCUMENT_PATH;
   const status = POLICY_READ_STATUS_VALUES.includes(observed.status)
@@ -364,22 +394,24 @@ export function buildPolicyArea({ policy, scan, registry = DEFAULT_PRESET_REGIST
     ? [...observed.evidenceIds].sort()
     : [];
 
-  // Phase 23 — resolve the declared document into the effective policy this model measures. The
-  // resolution is a pure function of the two in-memory values, so it has no failure mode the
-  // reading does not already name.
+  // Phase 23 (extended in Phase 24) — resolve the declared document into the effective policy this
+  // model measures. The resolution is a pure function of in-memory values, so it has no failure
+  // mode the reading does not already name.
   let declared = null;
   let document = null;
   let provenance = null;
   let preset = null;
+  let pack = null;
   let resolutionReason = null;
   let resolutionDetail = null;
   if (parsed !== null) {
-    const resolution = resolvePolicyDocument({ document: parsed, registry });
+    const resolution = resolvePackPolicyDocument({ document: parsed, packs });
     if (resolution.ok) {
       declared = resolution.declared;
       document = resolution.effective;
       provenance = resolution.provenance;
       preset = resolution.preset;
+      pack = resolution.pack;
     } else {
       resolutionReason =
         RESOLUTION_UNKNOWN_REASONS[resolution.reason] ??
@@ -442,8 +474,13 @@ export function buildPolicyArea({ policy, scan, registry = DEFAULT_PRESET_REGIST
     // The repository-authored document — version, preset and the domains it stated — or `null` when
     // nothing was resolved. Carried so "what was declared" and "what is required" stay distinct.
     declared,
-    // The built-in preset that was applied, or `null` when the document named none.
+    // The preset that was applied, or `null` when the document named none.
     preset,
+    // The pack the preset came from — name, pinned version, origin, canonical reference, whether the
+    // repository named it and the preset it supplied — or `null` when no preset was applied. The
+    // preset's *name* is not enough to identify a policy definition: a name is unique only inside
+    // the pack that declares it.
+    pack,
     // Where every effective value came from. Null exactly when there is no effective document.
     provenance,
     coverage: {
