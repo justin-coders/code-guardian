@@ -1,7 +1,8 @@
 /**
- * Code Guardian — Phase 12 Correction Tests
+ * Code Guardian — Security Acquisition Correction Tests
  *
- * Focused tests for the three recorded Phase 12 gaps:
+ * Focused tests for the three security acquisition gaps the security rule pack
+ * depends on (the pack itself is the official roadmap Phase 10 analyzer):
  *
  *   1. symlink escape detection      (filesystem `readLink` → scanner target
  *                                     classification → model → security rule)

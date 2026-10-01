@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Security Rule Pack Tests (Phase 12)
+ * Code Guardian — Security Rule Pack Tests (Official Roadmap Phase 10)
  *
  * The pack is exercised against **real** Phase 8D models built from hand-built
  * ScanResults, so every rule runs against the contract it will actually receive —
@@ -377,7 +377,7 @@ describe("security pack: rule set", () => {
       // Universally applicable: a selector here would skip the check on exactly the
       // repositories that look unusual, which is where a missed secret hurts most.
       assert.deepEqual({ ...rule.applicability }, {});
-      // Phase 12 detects; remediation belongs to a later phase.
+      // This pack detects; remediation belongs to a later phase.
       assert.deepEqual({ ...rule.remediation }, {});
       // Every rule states which kind of observation it rests on.
       assert.ok(Object.values(FINDING_BASES).includes(rule.metadata.basis), rule.id);

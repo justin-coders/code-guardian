@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Sensitive-File Security Rules (Phase 12)
+ * Code Guardian — Sensitive-File Security Rules (Official Roadmap Phase 10)
  *
  * Seven rules that report a *named* security-relevant artifact observed in the
  * repository inventory. They share one detection shape, so the only thing that
@@ -23,7 +23,7 @@
  *
  * ### There is no remediation field, on purpose
  *
- * Phase 12 detects and evidences; generating fixes, patches or PRs is a later
+ * This pack detects and evidences; generating fixes, patches or PRs is a later
  * phase's job (and Phase 10 already treats `remediation` as an optional contract
  * field). The rules therefore declare an explicitly empty `remediation` rather than
  * inventing guidance text that nothing consumes yet.

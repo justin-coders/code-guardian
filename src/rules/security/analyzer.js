@@ -1,12 +1,16 @@
 /**
- * Code Guardian — Security Analyzer (Phase 12)
+ * Code Guardian — Security Analyzer (Official Roadmap Phase 10)
  *
- * The security domain's entry point into the accepted analyzer framework. It is a
- * thin composition — build the pack's registry, hand it to the Phase 10
- * `RuleAnalyzer` adapter, and expose the result — because everything an analyzer
- * needs already exists: the adapter turns rules into an Analyzer, the Phase 9 engine
- * runs analyzers with isolation and fail-fast, and the Phase 9 Finding Engine
- * canonicalizes the raw drafts the rules produce.
+ * The security domain's entry point into the accepted analyzer framework, and the entry
+ * point the official roadmap's Phase 10 names:
+ *
+ *   Repository → RepositoryModel → SecurityAnalyzer → applicable rules → evidence → findings
+ *
+ * It is a thin composition — build the pack's registry, hand it to the rules layer's
+ * `RuleAnalyzer` adapter, and expose the result — because everything an analyzer needs
+ * already exists: the adapter turns rules into an Analyzer, the analyzer engine runs
+ * analyzers with isolation and fail-fast, and the Finding Engine canonicalizes the raw
+ * drafts the rules produce.
  *
  * Nothing here re-implements orchestration, applicability, evidence validation or
  * fingerprinting. `createSecurityAnalyzer()` returns a normal Analyzer descriptor,
@@ -14,7 +18,7 @@
  * without a special case.
  *
  * `failFast` defaults to `false`: one security rule that throws or returns malformed
- * output must not stop the other seven from reporting.
+ * output must not stop the other rules from reporting.
  */
 
 import { createRuleAnalyzer } from "../analyzer.js";

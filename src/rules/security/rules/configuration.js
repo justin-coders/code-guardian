@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Configuration Security Rules (Phase 12, corrected)
+ * Code Guardian — Configuration Security Rules (Official Roadmap Phase 10)
  *
  * One rule, and it is the pack's only *derived* check: it compares observed paths
  * rather than naming one artifact.
@@ -22,7 +22,7 @@
  * So the rule only concludes when the repository states the context:
  *
  *   **declared**      a Compose `build` configuration names this Dockerfile and its
- *                     context root (Phase 12 acquisition records that as an
+ *                     context root (the container acquisition records that as an
  *                     observation on the Dockerfile). The applicable `.dockerignore` is
  *                     the one at that root, and no other.
  *   **root default**  the Dockerfile itself sits at the repository root, so the root

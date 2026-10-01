@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Exposure Security Rules (Phase 12 correction)
+ * Code Guardian — Exposure Security Rules (Official Roadmap Phase 10)
  *
  * One rule, and it is the pack's only finding that is *about a link*:
  *

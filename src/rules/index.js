@@ -76,9 +76,12 @@ export {
 
 export { createRuleAnalyzer } from "./analyzer.js";
 
-// Phase 12 — the first domain rule pack. Purely additive: the Rule Engine above is
-// unchanged, and the security pack is a *consumer* of it (rules, registry, analyzer
-// adapter), so a single import boundary still covers the whole rules layer.
+// Official roadmap Phase 10 — the first production analyzer, and the first domain rule
+// pack. Purely additive: the Rule Engine above is unchanged, and the security pack is a
+// *consumer* of it (rules, registry, analyzer adapter), so a single import boundary still
+// covers the whole rules layer. The pack's own files label itself "Official Roadmap Phase
+// 10"; references to a "Phase 9"/"Phase 10"/"Phase 11" component inside it name this
+// repository's internal architecture layers, not official roadmap phases.
 export {
   AUTHORIZING_CLASSIFICATIONS,
   CONFIGURATION_SIGNALS,

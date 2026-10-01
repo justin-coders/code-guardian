@@ -1,9 +1,9 @@
 /**
- * Code Guardian — Security Filename Matching (Phase 12)
+ * Code Guardian — Security Filename Matching (Official Roadmap Phase 10)
  *
  * A tiny, declarative matcher over the *names* the RepositoryModel already recorded.
- * It exists so the eight security rules share one matching implementation — and one
- * set of tests — instead of each inventing its own `endsWith` chain, and so the
+ * It exists so the filename rules share one matching implementation — and one set of
+ * tests — instead of each inventing its own `endsWith` chain, and so the
  * matching policy is inspectable data rather than behaviour hidden in a predicate.
  *
  * ### Data, not a language

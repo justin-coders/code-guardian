@@ -1,12 +1,12 @@
 /**
- * Code Guardian — Security Rule Registry (Phase 12)
+ * Code Guardian — Security Rule Registry (Official Roadmap Phase 10)
  *
  * The generic Phase 10 registry plus one domain guarantee: the pack's declared rules
  * are actually present.
  *
  * A rule id is a long-term identity — it appears in every fingerprint the rule
- * produces — so "the security analyzer silently evaluates seven rules instead of
- * eight because someone renamed one" is a security regression that no test of the
+ * produces — so "the security analyzer silently evaluates every rule but one because
+ * someone renamed it" is a security regression that no test of the
  * remaining rules would catch. `securityRuleSetIssues()` turns that into a
  * registration failure:
  *

@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Sensitive Content Security Rules (Phase 12 correction)
+ * Code Guardian — Sensitive Content Security Rules (Official Roadmap Phase 10)
  *
  * Two rules over the model's bounded content observations. They exist because a
  * name is not a fact: a `.npmrc` with a registry token and a `.npmrc` that only

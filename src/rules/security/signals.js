@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Security Repository Signals (Phase 12)
+ * Code Guardian — Security Repository Signals (Official Roadmap Phase 10)
  *
  * The one place the security rules ask the repository questions. Every read goes
  * through the Phase 11 query API over the frozen RepositoryModel: no filesystem, no
@@ -8,7 +8,7 @@
  *
  * ### The absence question, and why it has an answer at all
  *
- * Six of the eight rules can only conclude "not present", and "not present" is a
+ * The absence-shaped rules can only conclude "not present", and "not present" is a
  * claim, not an observation. `inventoryAbsence()` decides whether the model supports
  * it, and it is deliberately conservative:
  *

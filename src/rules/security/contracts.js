@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Security Rule Pack Contracts (Phase 12)
+ * Code Guardian — Security Rule Pack Contracts (Official Roadmap Phase 10)
  *
  * The security domain's vocabulary: which rules exist, what filenames count as
  * security-relevant, which model signals the pack consumes, and the confidence
@@ -19,8 +19,8 @@
  *
  * ### Filename matching, never content
  *
- * Phase 12 reads no file contents: the RepositoryModel records paths, names and
- * extensions, and that is all these rules use. A spec therefore matches *names*,
+ * The filename rules read no file contents: the RepositoryModel records paths, names and
+ * extensions, and that is all they use. A spec therefore matches *names*,
  * and the findings are worded to say exactly that — "a file whose name indicates
  * X was observed", never "a secret was found". A `.pem` may be a public
  * certificate, so the pack says so rather than guessing.
@@ -221,7 +221,7 @@ export const SENSITIVE_FILE_SPECS = Object.freeze({
  * The basis names *what was observed*, so a consumer can tell a finding that rests
  * on a path from one that rests on bytes:
  *
- *   filename  a name was observed in the inventory (Phase 12)
+ *   filename  a name was observed in the inventory
  *   content   bounded content inspection matched a pattern (correction 2)
  *   link      a symlink target was classified (correction 1)
  *   build-context  the container rule compared observed paths (correction 3)

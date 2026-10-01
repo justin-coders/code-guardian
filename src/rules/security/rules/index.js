@@ -1,5 +1,5 @@
 /**
- * Code Guardian — Security Rule Set (Phase 12)
+ * Code Guardian — Security Rule Set (Official Roadmap Phase 10)
  *
  * The shipped rules, frozen and sorted by id. Ordering is stated here (and again by
  * the registry) so no consumer can inherit an ordering from module-evaluation order:

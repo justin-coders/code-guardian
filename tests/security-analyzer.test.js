@@ -33,6 +33,8 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { createRule } from "../src/core/index.js";
+
 import { SCAN_SIGNALS, createScanResult, scanRepository } from "../src/repository/scanner/index.js";
 import {
   MIDDLEWARE_CLASSIFICATION_VALUES,
@@ -189,6 +191,20 @@ const UNINTERPRETED = {
   "src/App.jsx": "export default function App() { return <div>hi</div>; }\n",
 };
 
+/** Several observed conditions at once, so a single run must fingerprint them apart. */
+const MIXED = {
+  "package.json": MANIFEST,
+  "src/app.js": appSource({
+    routes: [
+      ["get", "/admin/users"],
+      ["post", "/internal/export"],
+      ["get", "/debug/heap"],
+    ],
+  }),
+  ".env": "EXAMPLE=1\n",
+  "id_rsa": "-----BEGIN OPENSSH PRIVATE KEY-----\n",
+};
+
 // ─── Fixtures: hand-built scans for coverage states ─────────────────────────
 
 const ISO = "2026-01-01T00:00:00.000Z";
@@ -265,10 +281,8 @@ const TRUNCATED = inventoryModel({ paths: BASE_PATHS, complete: false, truncated
 
 const contextOf = (model) => buildAnalysisContext({ repository: model });
 
-async function runRules(model) {
-  const engine = createRuleEngine({
-    registry: createSecurityRuleRegistry({ rules: securityRules }),
-  });
+async function runRules(model, { rules = securityRules } = {}) {
+  const engine = createRuleEngine({ registry: createSecurityRuleRegistry({ rules }) });
   return engine.runAll(contextOf(model));
 }
 
@@ -568,6 +582,125 @@ describe("security analyzer: diagnostic endpoints", () => {
   });
 });
 
+// ─── Applicability and the unknown boundary ─────────────────────────────────
+
+/**
+ * The pack's outcome invariant, asserted over any run.
+ *
+ * The Rule Engine owns four outcome values a rule can reach (`pass`, `violation`,
+ * `unknown`, `not-applicable` — plus `failed`/`skipped` for framework-level outcomes).
+ * These rules produce three of them, because every rule declares an empty selector object
+ * and answers "does this apply?" from evidence instead:
+ *
+ *   - the outcome is pass, violation or unknown — never not-applicable;
+ *   - the engine's own applicability answer is the universal one, so an abstention is
+ *     expressed as UNKNOWN with the rule's reason, not by skipping the rule;
+ *   - UNKNOWN and the engine's UNKNOWN coverage are the same fact, and a non-unknown
+ *     outcome carries no reason;
+ *   - a run containing an abstention is not complete.
+ */
+function assertCoherentOutcomes(run) {
+  assert.equal(run.rules.length, securityRules.length);
+  for (const entry of run.rules) {
+    const id = entry.rule.id;
+    assert.ok(
+      [
+        RULE_OUTCOME_STATUSES.PASS,
+        RULE_OUTCOME_STATUSES.VIOLATION,
+        RULE_OUTCOME_STATUSES.UNKNOWN,
+      ].includes(entry.status),
+      `${id}: unexpected status ${entry.status}`,
+    );
+    assert.equal(entry.applicability.applicable, true, id);
+    assert.equal(
+      entry.status === RULE_OUTCOME_STATUSES.UNKNOWN,
+      entry.applicability.coverage === APPLICABILITY_COVERAGE.UNKNOWN,
+      id,
+    );
+    if (entry.status === RULE_OUTCOME_STATUSES.UNKNOWN) {
+      assert.equal(typeof entry.applicability.reason, "string", id);
+      assert.ok(entry.applicability.reason.length > 0, id);
+    } else {
+      assert.equal(entry.applicability.reason, null, id);
+    }
+  }
+  assert.equal(
+    run.complete,
+    run.rules.every((entry) => entry.status !== RULE_OUTCOME_STATUSES.UNKNOWN),
+  );
+}
+
+describe("security analyzer: applicability and the unknown boundary", () => {
+  it("answers every rule as pass, violation or unknown — never as not-applicable", async () => {
+    const models = [
+      (await scanModel(GUARDED)).model,
+      (await scanModel(UNGUARDED)).model,
+      (await scanModel(UNINTERPRETED)).model,
+      UNREADABLE,
+      TRUNCATED,
+    ];
+    for (const model of models) assertCoherentOutcomes(await runRules(model));
+  });
+
+  it("keeps `not-applicable` available and distinguishable, so the pack's choice is visible", async () => {
+    // A rule that declares a selector the repository does not satisfy gets the engine's
+    // not-applicable answer in the very same run, which proves the three outcomes are
+    // different facts rather than one undifferentiated "no finding".
+    const probe = createRule({
+      id: "security.probe.react-only",
+      version: SECURITY_RULE_VERSION,
+      category: SECURITY_CATEGORY,
+      title: "Probe rule with an unsatisfied selector",
+      description: "Exists only to pin the engine's not-applicable outcome.",
+      severity: "low",
+      applicability: { frameworks: ["react"] },
+      detect: () => [],
+      remediation: {},
+      metadata: {},
+    });
+
+    const { model } = await scanModel(GUARDED);
+    const run = await runRules(model, { rules: [...securityRules, probe] });
+
+    const probed = run.rules.find((entry) => entry.rule.id === "security.probe.react-only");
+    assert.equal(probed.status, RULE_OUTCOME_STATUSES.NOT_APPLICABLE);
+    assert.equal(probed.applicability.applicable, false);
+    assert.equal(probed.applicability.coverage, APPLICABILITY_COVERAGE.COMPLETE);
+    assert.ok(probed.applicability.reason.includes("requires framework: react"));
+
+    // …while every shipped rule stays applicable and reaches an outcome of its own.
+    assert.equal(run.rules.length, securityRules.length + 1);
+    for (const entry of run.rules) {
+      if (entry.rule.id === "security.probe.react-only") continue;
+      assert.notEqual(entry.status, RULE_OUTCOME_STATUSES.NOT_APPLICABLE, entry.rule.id);
+      assert.equal(entry.status, RULE_OUTCOME_STATUSES.PASS, entry.rule.id);
+    }
+  });
+
+  it("returns unknown, not a clean pass, whenever the repository was not read in full", async () => {
+    for (const model of [UNREADABLE, TRUNCATED]) {
+      const run = await runRules(model);
+      assert.equal(run.complete, false);
+      assert.equal(
+        run.rules.every((entry) => entry.status === RULE_OUTCOME_STATUSES.UNKNOWN),
+        true,
+      );
+    }
+  });
+
+  it("records the subject count on a clean outcome, so an empty pass is auditable", async () => {
+    const guarded = resultOf(await runRules((await scanModel(GUARDED)).model), PRIVILEGED_RULE);
+    const plain = resultOf(await runRules((await scanModel(PLAIN_APP)).model), PRIVILEGED_RULE);
+
+    // Both are `pass`, and the metadata is what distinguishes "one privileged route, and
+    // authorization reaches it" from "this repository declares no privileged route".
+    assert.equal(guarded.status, RULE_OUTCOME_STATUSES.PASS);
+    assert.equal(plain.status, RULE_OUTCOME_STATUSES.PASS);
+    assert.equal(guarded.metadata.privilegedRoutes, 1);
+    assert.equal(plain.metadata.privilegedRoutes, 0);
+  });
+});
+
 // ─── Pipeline: RepositoryModel → Analyzer → Findings ────────────────────────
 
 describe("security analyzer: pipeline", () => {
@@ -601,6 +734,20 @@ describe("security analyzer: pipeline", () => {
         assert.equal(record.location.path.startsWith("/"), false);
       }
     }
+  });
+
+  it("gives every finding of one run its own fingerprint, across rules and files", async () => {
+    const { model } = await scanModel(MIXED);
+    const result = await runAnalyzer(model);
+
+    const fingerprints = result.findings.map((finding) => finding.fingerprint);
+    assert.ok(fingerprints.length >= 4, `expected several findings, got ${fingerprints.length}`);
+    assert.equal(new Set(fingerprints).size, fingerprints.length);
+    assert.deepEqual(fingerprints, [...fingerprints].sort());
+
+    // Two routes in the same file are the case that needs the analyzer-supplied key.
+    const privileged = result.findings.filter((finding) => finding.ruleId === PRIVILEGED_RULE);
+    assert.equal(privileged.length, 2);
   });
 
   it("is deterministic: the same repository twice gives the same fingerprints", async () => {
