@@ -80,11 +80,14 @@ export { createRuleAnalyzer } from "./analyzer.js";
 // unchanged, and the security pack is a *consumer* of it (rules, registry, analyzer
 // adapter), so a single import boundary still covers the whole rules layer.
 export {
+  AUTHORIZING_CLASSIFICATIONS,
   CONFIGURATION_SIGNALS,
   CONTENT_CANDIDATE_FILES,
   CONTENT_PATTERNS,
+  DIAGNOSTIC_ROUTE_SEGMENTS,
   FINDING_BASES,
   FINDING_BASIS,
+  PRIVILEGED_ROUTE_SEGMENTS,
   SECURITY_ANALYZER_ID,
   SECURITY_ANALYZER_NAME,
   SECURITY_ANALYZER_SCOPE,
@@ -106,7 +109,12 @@ export {
   inventoryAbsence,
   isCompleteContentInspection,
   matchesFileSpec,
+  matchesRoutePath,
+  middlewareSourceEvidenceId,
   queryFor,
+  routeInventory,
+  routeProtections,
+  routeRules,
   securityRuleSetIssues,
   securityRules,
   symlinkInventory,

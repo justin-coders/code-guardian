@@ -326,7 +326,9 @@ const ruleIdsOf = (run) => run.rules.map((entry) => entry.rule.id);
 const findingPaths = (findings) => findings.map((finding) => finding.metadata.path).sort();
 
 const EXPECTED_RULE_IDS = [
+  "security.authorization.unprotected-privileged-route",
   "security.configuration.container-ignore",
+  "security.exposure.diagnostic-endpoint",
   "security.exposure.symlink-escape",
   "security.sensitive-content.credential-assignment",
   "security.sensitive-content.private-key-material",
@@ -338,6 +340,23 @@ const EXPECTED_RULE_IDS = [
   "security.sensitive-file.service-account",
   "security.sensitive-file.terraform-state",
 ];
+
+/**
+ * The two rules that read the API and middleware graphs rather than the file inventory.
+ *
+ * The fixtures in this file predate that acquisition: they describe an inventory, so the
+ * route rules see an established-but-empty route set every time and pass, and the assertions
+ * below that speak about *the inventory's* rules exclude them deliberately instead of
+ * weakening what they check. The route rules' own fixtures live in
+ * `tests/security-analyzer.test.js`.
+ */
+const ROUTE_RULE_IDS = [
+  "security.authorization.unprotected-privileged-route",
+  "security.exposure.diagnostic-endpoint",
+];
+
+/** Every rule whose claim rests on the observed file inventory. */
+const INVENTORY_RULE_IDS = EXPECTED_RULE_IDS.filter((id) => !ROUTE_RULE_IDS.includes(id));
 
 // ─── Rule set ────────────────────────────────────────────────────────────────
 
@@ -543,6 +562,13 @@ describe("security pack: clean repository", () => {
         assert.equal(entry.metadata.dockerfiles, 0);
         continue;
       }
+      if (ROUTE_RULE_IDS.includes(entry.rule.id)) {
+        // The route rules rest on the API and middleware graphs. This fixture declares
+        // no module source, so both graphs are established and empty and the rules pass
+        // on their own subject rather than on the inventory.
+        assert.equal(entry.metadata.basis, FINDING_BASES.ROUTE, entry.rule.id);
+        continue;
+      }
       // The clean fixture carries no symlink and no content candidate, so the rules
       // that could have said something about either rest on the file inventory.
       assert.equal(entry.metadata.observedFiles, BASE_PATHS.length, entry.rule.id);
@@ -577,7 +603,7 @@ describe("security pack: sensitive repository", () => {
       byRule.set(finding.ruleId, [...(byRule.get(finding.ruleId) ?? []), finding]);
     }
 
-    assert.deepEqual([...byRule.keys()].sort(), EXPECTED_RULE_IDS);
+    assert.deepEqual([...byRule.keys()].sort(), INVENTORY_RULE_IDS);
     assert.deepEqual(findingPaths(byRule.get(SECURITY_RULE_IDS.DOTENV)), [
       ".env",
       "apps/web/.env",
@@ -829,7 +855,7 @@ describe("security pack: canonical findings", () => {
     }
     assert.deepEqual(
       [...new Set(result.findings.map((finding) => finding.ruleId))].sort(),
-      EXPECTED_RULE_IDS,
+      INVENTORY_RULE_IDS,
     );
   });
 
@@ -1042,7 +1068,9 @@ describe("security pack: determinism", () => {
     const analyzer = result.analyzers.find((entry) => entry.analyzer.id === SECURITY_ANALYZER_ID);
     assert.deepEqual(analyzer.metadata.ruleSet, EXPECTED_RULE_IDS);
     assert.equal(analyzer.metrics.rulesSelected, EXPECTED_RULE_IDS.length);
-    assert.equal(analyzer.metrics.rulesViolated, EXPECTED_RULE_IDS.length);
+    // The route rules are selected and evaluated too; they simply have no route to report
+    // in a fixture that declares none, so they pass rather than violate.
+    assert.equal(analyzer.metrics.rulesViolated, INVENTORY_RULE_IDS.length);
     assert.deepEqual(analyzer.metadata.ruleFailures, []);
   });
 

@@ -21,11 +21,14 @@
  */
 
 export {
+  AUTHORIZING_CLASSIFICATIONS,
   CONFIGURATION_SIGNALS,
   CONTENT_CANDIDATE_FILES,
   CONTENT_PATTERNS,
+  DIAGNOSTIC_ROUTE_SEGMENTS,
   FINDING_BASES,
   FINDING_BASIS,
+  PRIVILEGED_ROUTE_SEGMENTS,
   SECURITY_ANALYZER_ID,
   SECURITY_ANALYZER_NAME,
   SECURITY_ANALYZER_SCOPE,
@@ -38,7 +41,12 @@ export {
   SENSITIVE_FILE_SPECS,
 } from "./contracts.js";
 
-export { FILE_SPEC_CRITERIA, defineFileSpec, matchesFileSpec } from "./matching.js";
+export {
+  FILE_SPEC_CRITERIA,
+  defineFileSpec,
+  matchesFileSpec,
+  matchesRoutePath,
+} from "./matching.js";
 
 export {
   configurationEntities,
@@ -47,12 +55,15 @@ export {
   filesMatching,
   inventoryAbsence,
   isCompleteContentInspection,
+  middlewareSourceEvidenceId,
   queryFor,
+  routeInventory,
+  routeProtections,
   symlinkInventory,
   symlinkTargets,
 } from "./signals.js";
 
-export { securityRules } from "./rules/index.js";
+export { routeRules, securityRules } from "./rules/index.js";
 
 export { createSecurityRuleRegistry, securityRuleSetIssues } from "./registry.js";
 

@@ -42,6 +42,7 @@ import {
   CONTENT_STATUSES,
   COVERAGE_GUARANTEES,
   ENTITY_KINDS,
+  MIDDLEWARE_SIGNALS,
   SYMLINK_TARGET_KINDS,
   createRepositoryQuery,
 } from "../../repository/model/index.js";
@@ -295,4 +296,104 @@ export function inventoryAbsence(query) {
     observedFiles: inventory.entities.length,
     ignoredPaths: summary.ignoredCount,
   });
+}
+
+/**
+ * The repository's declared routes, qualified by the API graph state that establishes them.
+ *
+ * A route node is an endpoint the repository *declares*: a path, a method, the frameworks
+ * and receivers that declared it, the module(s) that declare it and the evidence id of
+ * each declaring module's route scan. Nothing here says a route responds, or what it
+ * returns — the graph states the declaration, and that is the fact the rules reason from.
+ *
+ * `unresolvedRoutes` are the route-shaped occurrences the graph could **not** establish: a
+ * computed path, an unsupported framework, a receiver that is not a registrar. They are
+ * returned separately, because a rule that is about to conclude "no privileged route
+ * exists" has to know that a route-shaped something was left unread. `state`, `complete`
+ * and `truncated` are the graph's own, unchanged.
+ *
+ * `inventory` is the file-inventory absence answer the rest of the pack already uses. It is
+ * reported here because the API graph states its own completeness from the *scan* and its own
+ * sources, and a path that could not be read is a module source that was never scanned — so
+ * "this repository declares no route with that name" is only as sound as the inventory it
+ * was read from. A rule that closes over the route set therefore consults both.
+ *
+ * @param {object} query
+ * @returns {{routes: object[], state: string, established: boolean, complete: boolean,
+ *   truncated: boolean, unresolvedRoutes: object[], unresolvedLimited: boolean,
+ *   inventory: {established: boolean, reason: string|null, observedFiles: number,
+ *   ignoredPaths: number}}} Frozen.
+ */
+export function routeInventory(query) {
+  const graph = query.apiGraph();
+  const unresolved = query.unresolvedRoutes();
+
+  return Object.freeze({
+    routes: graph.nodes,
+    state: graph.state,
+    established: graph.established === true,
+    complete: graph.coverage === COVERAGE_GUARANTEES.COMPLETE,
+    truncated: graph.truncated === true,
+    unresolvedRoutes: unresolved.unresolved,
+    unresolvedLimited: unresolved.limited === true,
+    inventory: inventoryAbsence(query),
+  });
+}
+
+/**
+ * Every route's structural protection, and the middleware nodes it names.
+ *
+ * `routes` are the middleware graph's per-route views: the route id, its declared method and
+ * path, its `protection` state (`protected` / `unresolved` / `none-observed` / `unknown`),
+ * the middleware ids established for it, how many middleware-shaped occurrences could not be
+ * established, whether its chain was truncated, and the `protectionBasis` the graph derived
+ * the state from. `middleware` are the graph's nodes, each carrying the `classification` the
+ * graph assigned from its **name alone**.
+ *
+ * The two are returned together because a rule needs both to ask its question: which routes
+ * have no authorization-shaped middleware reaching them, and what the repository established
+ * about it. Neither the map nor the join is built here — a rule builds what it needs, so this
+ * layer hands out the graph's own frozen records and nothing of its own.
+ *
+ * @param {object} query
+ * @returns {{routes: object[], middleware: object[], state: string, established: boolean,
+ *   complete: boolean, truncated: boolean}} Frozen.
+ */
+export function routeProtections(query) {
+  const graph = query.middlewareGraph();
+
+  return Object.freeze({
+    routes: graph.routes,
+    middleware: graph.nodes,
+    state: graph.state,
+    established: graph.established === true,
+    complete: graph.coverage === COVERAGE_GUARANTEES.COMPLETE,
+    truncated: graph.truncated === true,
+  });
+}
+
+/**
+ * The middleware-source observation id for one module path, or `null`.
+ *
+ * The record this returns is the file's own middleware scan: which receivers it bound, how
+ * many registrations it declared and how many middleware-shaped occurrences it could not
+ * establish. It is what makes "no middleware reaches this route" a two-sided statement — the
+ * route's declaration *and* the registration record for the file that declares it — and it is
+ * read from the model rather than re-derived, so it is the same observation every other
+ * consumer cites.
+ *
+ * `null` means the file carries no middleware observation at all (a non-module file, or a
+ * scan that ran no middleware acquisition), which a rule must treat as `unknown` rather than
+ * as an empty registration set.
+ *
+ * @param {object} query
+ * @param {unknown} path A repository-relative module path.
+ * @returns {string|null} The evidence id, or `null`.
+ */
+export function middlewareSourceEvidenceId(query, path) {
+  if (typeof path !== "string" || path === "") return null;
+  for (const record of query.getEvidenceForEntity(`file:${path}`).evidence ?? []) {
+    if (record?.data?.signal === MIDDLEWARE_SIGNALS.SOURCE) return record.id;
+  }
+  return null;
 }

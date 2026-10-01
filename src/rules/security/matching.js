@@ -183,3 +183,33 @@ export function matchesFileSpec(spec, file) {
   }
   return matchesCriteria(spec, name, extension, directorySegments(file.path));
 }
+
+/**
+ * Whether a declared route path names one of a closed vocabulary of words.
+ *
+ * The path is split on `/` and each segment on anything that is not a letter or a digit, so
+ * a word matches a whole word inside any segment: `/api/admin/users` matches `admin`,
+ * `/admin-panel` matches it too, and `/candidate` does not. Comparisons are case-folded,
+ * because a path is a repository's own spelling rather than a protocol token.
+ *
+ * A *bounded, total* function: no regular expression is built from the vocabulary, every
+ * comparison is a fixed string test over a fixed number of words, and a non-string or
+ * empty path simply does not match. A `null` path (`unresolvedRoutes` records one for a
+ * shape whose address was computed) matches nothing, which is the honest answer: nothing
+ * established what that route is called.
+ *
+ * @param {unknown} path A route path as the API graph recorded it.
+ * @param {readonly string[]} words A closed vocabulary of lower-case words.
+ * @returns {boolean}
+ */
+export function matchesRoutePath(path, words) {
+  if (typeof path !== "string" || path === "") return false;
+  if (!Array.isArray(words) || words.length === 0) return false;
+  const vocabulary = new Set(words.map((word) => String(word).toLowerCase()));
+  for (const segment of path.toLowerCase().split("/")) {
+    for (const word of segment.split(/[^a-z0-9]+/)) {
+      if (word !== "" && vocabulary.has(word)) return true;
+    }
+  }
+  return false;
+}

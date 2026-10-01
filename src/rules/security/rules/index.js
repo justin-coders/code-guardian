@@ -9,6 +9,7 @@
 
 import { configurationRules } from "./configuration.js";
 import { exposureRules } from "./exposure.js";
+import { routeRules } from "./routes.js";
 import { sensitiveContentRules } from "./sensitive-content.js";
 import { sensitiveFileRules } from "./sensitive-files.js";
 
@@ -17,9 +18,16 @@ function byId(a, b) {
   return a.id < b.id ? -1 : 1;
 }
 
+/** The route rules this pack ships, sorted by rule id. */
+export { routeRules } from "./routes.js";
+
 /** Every rule this pack ships, sorted by rule id. */
 export const securityRules = Object.freeze(
-  [...sensitiveFileRules, ...configurationRules, ...sensitiveContentRules, ...exposureRules].sort(
-    byId,
-  ),
+  [
+    ...sensitiveFileRules,
+    ...configurationRules,
+    ...sensitiveContentRules,
+    ...exposureRules,
+    ...routeRules,
+  ].sort(byId),
 );

@@ -65,6 +65,7 @@ export const SECURITY_RULE_ID_PREFIX = "security.";
  * literal order.
  */
 export const SECURITY_RULE_IDS = Object.freeze({
+  UNPROTECTED_PRIVILEGED_ROUTE: "security.authorization.unprotected-privileged-route",
   DOTENV: "security.sensitive-file.dotenv",
   PRIVATE_KEY: "security.sensitive-file.private-key",
   KEY_MATERIAL: "security.sensitive-file.key-material",
@@ -73,6 +74,7 @@ export const SECURITY_RULE_IDS = Object.freeze({
   SERVICE_ACCOUNT: "security.sensitive-file.service-account",
   TERRAFORM_STATE: "security.sensitive-file.terraform-state",
   CONTAINER_IGNORE: "security.configuration.container-ignore",
+  DIAGNOSTIC_ENDPOINT: "security.exposure.diagnostic-endpoint",
   CREDENTIAL_CONTENT: "security.sensitive-content.credential-assignment",
   PRIVATE_KEY_CONTENT: "security.sensitive-content.private-key-material",
   SYMLINK_ESCAPE: "security.exposure.symlink-escape",
@@ -99,12 +101,19 @@ export const SECURITY_RULE_IDS = Object.freeze({
  *   OBSERVED_LINK      the model classified a symlink's target as escaping the
  *                      repository, which is a recorded fact about the link rather
  *                      than an inference from its name.
+ *   NAME_DERIVED       the condition rests on a **declared name** — a route path, or a
+ *                      middleware name the model classified — and on nothing this pack
+ *                      read for itself. It is the weaker claim of the two route rules
+ *                      and is stated as such: a path that names a diagnostic surface is
+ *                      a fact about the declaration, never proof that the endpoint
+ *                      returns anything sensitive.
  */
 export const SECURITY_CONFIDENCE = Object.freeze({
   OBSERVED_ARTIFACT: 0.9,
   DERIVED_CONDITION: 0.6,
   OBSERVED_CONTENT: 0.95,
   OBSERVED_LINK: 0.9,
+  NAME_DERIVED: 0.5,
 });
 
 /**
@@ -224,6 +233,7 @@ export const FINDING_BASES = Object.freeze({
   CONTENT: "content",
   LINK: "link",
   BUILD_CONTEXT: "build-context",
+  ROUTE: "route",
 });
 
 /**
@@ -257,3 +267,65 @@ export const CONTENT_CANDIDATE_FILES = Object.freeze({
   namePrefixes: [".env."],
   nameSuffixes: [".tfvars", ".tfvars.json", ".sql"],
 });
+
+/**
+ * The route-path words that name a **privileged surface**.
+ *
+ * Matched as whole words inside one path segment (lower-cased, split on anything that is
+ * not a letter or a digit), so `/api/admin/users` and `/_internal/export` match while
+ * `/candidate` does not. The vocabulary is deliberately about the *address a repository
+ * chooses*, not about any framework: whether the handler behind the route enforces
+ * anything is a different question, answered by the middleware evidence the rule cites.
+ *
+ * Membership is not a security judgment, and the two vocabularies below are disjoint by
+ * construction — a path that names both a privileged and a diagnostic surface would
+ * otherwise be reported twice for the same address, by two rules that mean different
+ * things by it.
+ */
+export const PRIVILEGED_ROUTE_SEGMENTS = Object.freeze([
+  "admin",
+  "administrator",
+  "backoffice",
+  "console",
+  "internal",
+  "manage",
+  "management",
+  "ops",
+  "private",
+  "staff",
+  "superuser",
+]);
+
+/**
+ * The route-path words that name a **diagnostic surface**.
+ *
+ * A debug endpoint, a metrics scrape target, a heap dump, a profiler or a server-status
+ * page. Like the privileged vocabulary it decides only *what the address is called*, and
+ * the finding says exactly that: an endpoint whose declared path names a diagnostic
+ * surface was observed, with the protection the middleware graph established beside it so
+ * a reader can tell an exposed one from a guarded one.
+ */
+export const DIAGNOSTIC_ROUTE_SEGMENTS = Object.freeze([
+  "actuator",
+  "debug",
+  "debugger",
+  "diagnostics",
+  "heapdump",
+  "metrics",
+  "phpinfo",
+  "profiler",
+  "server-status",
+  "trace",
+]);
+
+/**
+ * The middleware classifications that establish **authorization** over a route.
+ *
+ * Re-declared from the model's own vocabulary (a test pins them), because the rules layer
+ * matches on the classification the middleware graph assigned from the middleware's
+ * *name*: `authenticate`, `requireAuth`, `authorize`, `requireRole`. A middleware the
+ * graph classified `unknown` is deliberately absent — "this middleware is not known to
+ * authorize" is not "this route is unguarded", and the authorization rule abstains rather
+ * than guess.
+ */
+export const AUTHORIZING_CLASSIFICATIONS = Object.freeze(["authentication", "authorization"]);
