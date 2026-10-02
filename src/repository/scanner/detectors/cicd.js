@@ -26,6 +26,7 @@
  */
 
 import { capEvidence, compareEvidence, SCAN_SIGNALS } from "../contracts.js";
+import { classifyQualityCommand } from "../policies/quality.js";
 import { classifyTestCommand, looksBinary } from "../policies/testing.js";
 import { matchEntries } from "./match.js";
 
@@ -120,6 +121,10 @@ export async function detectCicd(view) {
       testRunners: [],
       testLevels: [],
       coverageCommands: [],
+      // Phase 12 — the code-quality tools this workflow's content invokes. Kept
+      // separate from the test vocabulary so a consumer never reads a linter as a
+      // test runner.
+      qualityCommands: [],
       reason: null,
     };
   });
@@ -165,6 +170,7 @@ export async function detectCicd(view) {
     entry.coverageCommands = [...classification.coverage];
     entry.testExecution =
       classification.runners.length > 0 ? CI_TEST_EXECUTION.DETECTED : CI_TEST_EXECUTION.NONE;
+    entry.qualityCommands = [...classifyQualityCommand(content).tools];
     entry.reason = read.truncated === true ? "too-large" : null;
   }
 

@@ -28,7 +28,9 @@ jobs:
       # `test:integration` (integration.test.js) reach, so the analyzer had no CI evidence
       # at all. The official roadmap Phase 11 Testing Analyzer is added here for the same
       # reason: its acquisition (scanner content reads), model projections and rule pack
-      # are reached by no other included suite.
+      # are reached by no other included suite. The official roadmap Phase 12 Code Quality
+      # Analyzer joins for the same reason: its CI quality-command classification, model
+      # projections and rule pack are reached by no other included suite.
       #
       # This is a named set rather than `npm test`, because the full suite is not yet clean
       # on hosted runners: filesystem.test.js (working-directory/permission cases),
@@ -48,6 +50,8 @@ jobs:
           tests/security-analyzer.test.js
           tests/testing-rules.test.js
           tests/testing-analyzer.test.js
+          tests/code-quality-rules.test.js
+          tests/code-quality-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 

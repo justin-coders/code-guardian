@@ -4457,9 +4457,30 @@ export function buildEntities(scanResult, repositoryIdValue) {
       const testRunners = identifierArray(entry.testRunners, MAX_RUNNERS_PER_RECORD);
       const testLevels = identifierArray(entry.testLevels, 8);
       const coverageCommands = identifierArray(entry.coverageCommands, MAX_RUNNERS_PER_RECORD);
+      // Phase 12 — the code-quality tools this workflow invokes, classified by the
+      // acquisition layer into a closed vocabulary. `undefined` (an older scan) reads
+      // as an empty list, which a rule must treat as "not established", never as "this
+      // workflow runs no linter".
+      const qualityCommands = identifierArray(entry.qualityCommands, MAX_RUNNERS_PER_RECORD);
       return {
-        data: { provider, testExecution, testRunners, testLevels, coverageCommands, reason },
-        fields: { provider, testExecution, testRunners, testLevels, coverageCommands, reason },
+        data: {
+          provider,
+          testExecution,
+          testRunners,
+          testLevels,
+          coverageCommands,
+          qualityCommands,
+          reason,
+        },
+        fields: {
+          provider,
+          testExecution,
+          testRunners,
+          testLevels,
+          coverageCommands,
+          qualityCommands,
+          reason,
+        },
       };
     },
   );

@@ -74,6 +74,7 @@ export {
   IMPORT_SIGNALS,
   INVENTORY_KINDS,
   MIDDLEWARE_SIGNALS,
+  SYMBOL_SIGNALS,
   contentObservationKind,
   createBuildContextObservation,
   createContentInspectionObservation,
