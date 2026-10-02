@@ -112,6 +112,29 @@ export function ciInventory(query) {
 }
 
 /**
+ * Whether the repository has a testing subject at all.
+ *
+ * This is the prior question the *open* testing domains (integration, E2E,
+ * isolation) gate on. Their markers cannot establish the capability's absence — the
+ * capability can exist among the repository's tests without any marker this build
+ * recognises — so an unobserved open domain is `unknown` whenever there is any
+ * testing subject, and `not_applicable` only when the repository is not about testing
+ * at all. A test artifact, a framework identity, a declared test script or CI test
+ * execution all count.
+ *
+ * Pure and deterministic: it reads only the frozen model.
+ *
+ * @param {object} query A repository query handle.
+ * @returns {boolean}
+ */
+export function hasTestingSubject(query) {
+  if (testInventory(query).entities.length > 0) return true;
+  if (frameworkInventory(query).entities.length > 0) return true;
+  if (ciInventory(query).entities.some((entity) => entity.testExecution === "detected")) return true;
+  return nodeManifestFacts(query).some((record) => record.parsed && record.testScripts.length > 0);
+}
+
+/**
  * A compact view of the repository's testing-relevant model facts.
  *
  * Pure and deterministic: it reads only the frozen model, consults no clock,

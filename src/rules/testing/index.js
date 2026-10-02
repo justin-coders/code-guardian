@@ -37,7 +37,10 @@
  * `metadata.state`. `summarizeTesting()` aggregates both into the per-domain map the
  * analyzer attaches as `metadata.testingSummary`. `unknown` is never clean, and
  * `not_applicable` is only used when the domain genuinely has no subject over a
- * complete scan — never because evidence is missing.
+ * complete scan — never because evidence is missing. The *open* domains (integration,
+ * E2E, isolation) are therefore never `not_applicable` while a testing subject exists:
+ * absence of their markers does not establish absence of the capability, so they are
+ * `unknown` instead.
  *
  * ### Supported evidence
  *
@@ -85,7 +88,12 @@
  *     threshold is ever asserted.
  *   - **Test isolation is never established.** Isolation would need a test database,
  *     container, fixture lifecycle or parallel-execution setting, none of which the model
- *     records; the domain is `unknown` whenever tests exist.
+ *     records; the domain is `unknown` whenever a testing subject exists.
+ *   - **E2E and integration are never `verified`.** Neither domain has an execution
+ *     path in this phase. E2E is `detected` from a Playwright/Cypress configuration or
+ *     directory and `unknown` otherwise (never "verified" from a config alone);
+ *     integration is `detected` from a named `integration` artifact or an
+ *     integration-level command and `unknown` otherwise.
  *   - **Flaky patterns are structural.** The pack reports shapes
  *     (`Date.now()`, `Math.random()`, `sleep`, an outbound call, an explicit retry) as
  *     *potential* patterns; establishing flakiness would need repeated execution.
@@ -114,6 +122,7 @@ export {
   frameworkInventory,
   frameworkNamed,
   frameworkNames,
+  hasTestingSubject,
   inventoryAbsence,
   manifestInventory,
   nodeManifestFacts,

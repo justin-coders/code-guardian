@@ -27,13 +27,20 @@
  *                    configured and CI is observed executing a test command
  *   failed           an expected operation demonstrably failed (a configuration or
  *                    manifest that could not be parsed)
- *   unknown          the evidence needed was not established → Rule Engine `unknown`
- *   not_applicable   the domain genuinely does not apply → Rule Engine
- *                    `not-applicable`, produced only over *complete* coverage
+ *   unknown          the domain applies but the evidence does not establish the
+ *                    answer → Rule Engine `unknown`. This covers an incomplete scan
+ *                    and every *open* domain — integration, E2E, isolation — whose
+ *                    markers cannot prove the capability's absence
+ *   not_applicable   the domain genuinely has no subject → Rule Engine
+ *                    `not-applicable`
  *
  * `unknown` is never `clean`, and `not_applicable` is never used because evidence is
- * missing — the summary module derives both from the model's own coverage, exactly
- * as the Phase 10 security pack does.
+ * missing. Which of the two an unobserved domain gets depends on its *evidence model*:
+ * a **closed** domain (a named artifact — a file, a configuration, a coverage flag, a
+ * structural indicator) is `not_applicable` when a complete scan observed none of it,
+ * while an **open** domain applies whenever a testing subject exists and is therefore
+ * `unknown`. The summary module encodes both and derives the scan-dependent half from
+ * the model's own coverage.
  *
  * ### Runner vocabulary is re-declared, and pinned
  *

@@ -16,11 +16,30 @@
  *                   matching runner — the roadmap's own definition of verification
  *   failed           an expected operation demonstrably failed (a `package.json`
  *                   whose parse failed, so its declared scripts cannot be read)
- *   unknown          the evidence needed was not established — an incomplete scan, a
- *                   workflow that could not be read, or a framework identity the
- *                   files do not determine
- *   not_applicable   the domain has no subject over *complete* coverage (no tests, no
- *                   CI, no configuration to analyze)
+ *   unknown          the domain applies but the evidence does not establish the
+ *                   answer — an incomplete scan, a workflow that could not be read, a
+ *                   framework identity the files do not determine, or a capability
+ *                   whose markers cannot prove its absence
+ *   not_applicable   the domain genuinely has no subject over *complete* coverage
+ *
+ * Which state an unobserved domain gets is decided by the domain's *evidence model*,
+ * not by a single rule of thumb:
+ *
+ *   - A **closed** domain is named explicitly — a test file, a test configuration, a
+ *     coverage invocation, a structural indicator. A complete scan that observed none
+ *     of it establishes the domain has no subject here → `not_applicable`; an
+ *     incomplete scan cannot, and the answer is `unknown`.
+ *   - An **open** domain's markers cannot establish the capability's absence, because
+ *     the capability can exist among the repository's tests without any marker this
+ *     build recognises (integration tests named by no convention, E2E driven by a
+ *     harness the repository does not configure, a test lifecycle the model does not
+ *     record). When a testing subject exists, an unobserved open domain is `unknown`,
+ *     never `not_applicable`; only a repository with no testing subject at all makes
+ *     it `not_applicable`.
+ *
+ * The top-level `applicability` entry answers the prior question directly: whether the
+ * repository has a testing subject at all. `not_applicable` there means exactly that —
+ * there is nothing for the roadmap's testing domains to be about.
  *
  * Absence over an incomplete scan is `unknown`, never `not_applicable`: missing
  * evidence is not the same as a domain that does not apply.
@@ -31,6 +50,7 @@ import { ENTITY_KINDS } from "../../repository/model/index.js";
 import { TESTING_STATES } from "./contracts.js";
 import {
   frameworkNames,
+  hasTestingSubject,
   nodeManifestFacts,
   queryFor,
   testInventory,
@@ -60,18 +80,41 @@ function unionSorted(lists) {
 }
 
 /**
- * Choose a domain state from whether the artifact was observed and whether the
- * model's coverage is complete enough to conclude from its absence.
+ * The state of a domain whose evidence model is **closed**.
  *
- * Absence over an incomplete scan is `unknown`. Absence over a complete scan is
- * `not_applicable` — there is no artifact of this domain to analyze, which is the
- * Rule Engine's own reading of "this does not apply".
+ * A closed domain's artifact is named explicitly, so a complete scan that observed
+ * none of it establishes the domain has no subject here → `not_applicable`. Absence
+ * over an incomplete scan establishes nothing → `unknown`, never a clean absence.
+ *
+ * @param {{observed: boolean, coverageEstablished: boolean, failed?: boolean}} input
+ * @returns {string} One of the five official states.
  */
-function stateFrom({ observed, coverageEstablished, failed = false }) {
+function closedState({ observed, coverageEstablished, failed = false }) {
   if (failed) return STATES.FAILED;
   if (observed) return STATES.DETECTED;
-  if (coverageEstablished) return STATES.NOT_APPLICABLE;
-  return STATES.UNKNOWN;
+  return coverageEstablished ? STATES.NOT_APPLICABLE : STATES.UNKNOWN;
+}
+
+/**
+ * The state of a domain whose evidence model is **open**.
+ *
+ * An open domain's markers cannot establish the capability's absence: the capability
+ * can exist among the repository's tests without any marker this build recognises. So
+ * the applicability of the domain turns on whether a testing subject exists at all:
+ *
+ *   - no testing subject → `not_applicable` over complete coverage; `unknown` over an
+ *     incomplete scan, which cannot establish that either.
+ *   - testing subject exists but the domain was not observed → `unknown`. This is the
+ *     correction Official Phase 11's state semantics require: absence of evidence for
+ *     a capability that can exist without a marker is *not* `not_applicable`.
+ *
+ * @param {{observed: boolean, hasSubject: boolean, coverageEstablished: boolean}} input
+ * @returns {string} One of the five official states.
+ */
+function openState({ observed, hasSubject, coverageEstablished }) {
+  if (observed) return STATES.DETECTED;
+  if (hasSubject) return STATES.UNKNOWN;
+  return coverageEstablished ? STATES.NOT_APPLICABLE : STATES.UNKNOWN;
 }
 
 /**
@@ -123,9 +166,8 @@ export function summarizeTesting(context) {
 
   // ── Test files ────────────────────────────────────────────────────────────
   const filesEntry = {
-    state: stateFrom({
+    state: closedState({
       observed: testFiles.length > 0,
-      applicable: true,
       coverageEstablished: absence.established,
     }),
     count: testFiles.length,
@@ -134,9 +176,8 @@ export function summarizeTesting(context) {
 
   // ── Test configuration ────────────────────────────────────────────────────
   const configurationEntry = {
-    state: stateFrom({
+    state: closedState({
       observed: testConfigurations.length > 0,
-      applicable: anyTests,
       coverageEstablished: absence.established,
     }),
     configurations: testConfigurations.map((entity) => entity.path).sort(),
@@ -149,6 +190,20 @@ export function summarizeTesting(context) {
     record.testScripts.map((script) => ({ ...script, path: record.path })),
   );
   const scriptRunners = unionSorted(declaredTestScripts.map((script) => script.runners));
+
+  // Whether the repository has a testing subject at all — the prior question the
+  // open domains (integration, E2E, isolation) gate on, shared with the rules so a
+  // rule's outcome and the summary's state cannot disagree.
+  const subjectExists = hasTestingSubject(query);
+  const applicabilityEntry = {
+    state: subjectExists
+      ? STATES.DETECTED
+      : absence.established
+        ? STATES.NOT_APPLICABLE
+        : STATES.UNKNOWN,
+    hasSubject: subjectExists,
+    observedTests: tests.length,
+  };
   const scriptsVerified = scriptRunners.some((runner) => ciRunners.includes(runner));
   const scriptsEntry = {
     state: manifests.length === 0
@@ -189,9 +244,8 @@ export function summarizeTesting(context) {
     ciCoverage,
   ]);
   const coverageEntry = {
-    state: stateFrom({
+    state: closedState({
       observed: coverageCommands.length > 0,
-      applicable: anyTests,
       coverageEstablished: absence.established,
     }),
     // Deliberately never `verified`: this phase establishes coverage *configuration*
@@ -211,9 +265,9 @@ export function summarizeTesting(context) {
     integrationScripts.length > 0 ||
     ciLevels.includes("integration");
   const integrationEntry = {
-    state: stateFrom({
+    state: openState({
       observed: integrationObserved,
-      applicable: anyTests,
+      hasSubject: subjectExists,
       coverageEstablished: absence.established,
     }),
     artifacts: [...integrationArtifacts].sort(),
@@ -234,9 +288,9 @@ export function summarizeTesting(context) {
     e2eScripts.length > 0 ||
     ciLevels.includes("e2e");
   const e2eEntry = {
-    state: stateFrom({
+    state: openState({
       observed: e2eObserved,
-      applicable: anyTests,
+      hasSubject: subjectExists,
       coverageEstablished: absence.established,
     }),
     frameworks: e2eFrameworks,
@@ -247,10 +301,15 @@ export function summarizeTesting(context) {
   // ── Test isolation ────────────────────────────────────────────────────────
   // No evidence this build can read establishes isolation: it would require a test
   // database, a container, a fixture lifecycle or a parallel-execution setting,
-  // none of which the model records. The honest answer with tests present is
-  // `unknown`, never "isolated" and never "not applicable".
+  // none of which the model records. So isolation is an *open* domain — never
+  // observed, and `unknown` whenever a testing subject exists, never "isolated" and
+  // never `not_applicable` merely because the analyzer cannot determine it.
   const isolationEntry = {
-    state: anyTests ? STATES.UNKNOWN : STATES.NOT_APPLICABLE,
+    state: openState({
+      observed: false,
+      hasSubject: subjectExists,
+      coverageEstablished: absence.established,
+    }),
     evidence: [],
   };
 
@@ -262,9 +321,8 @@ export function summarizeTesting(context) {
   }
   const flakyIndicators = unionSorted(flakyByPath.map((entry) => entry.indicators));
   const flakyEntry = {
-    state: stateFrom({
+    state: closedState({
       observed: flakyIndicators.length > 0,
-      applicable: anyTests,
       coverageEstablished: absence.established,
     }),
     indicators: flakyIndicators,
@@ -272,6 +330,7 @@ export function summarizeTesting(context) {
   };
 
   return Object.freeze({
+    applicability: Object.freeze(applicabilityEntry),
     framework: Object.freeze(framework),
     testFiles: Object.freeze(filesEntry),
     testConfiguration: Object.freeze(configurationEntry),

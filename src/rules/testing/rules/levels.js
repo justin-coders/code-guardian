@@ -12,9 +12,12 @@
  *                             rather than inventing a category — the roadmap's §15.
  *   e2e.undetermined          E2E testing is established from a Playwright/Cypress
  *                             configuration or directory, an `e2e` artifact or an
- *                             E2E-level command. Absent over complete coverage the
- *                             domain is `not_applicable`; over an incomplete scan it
- *                             is `unknown`.
+ *                             E2E-level command. When tests exist but no E2E evidence
+ *                             was established, the rule abstains with `unknown` — the
+ *                             capability can exist among the tests without a marker,
+ *                             so its absence is not established (§7). Only a
+ *                             repository with no testing subject at all is
+ *                             `not_applicable`; an incomplete scan is `unknown`.
  *   isolation.undetermined    no evidence this build can read establishes isolation
  *                             (a test database, a container, a fixture lifecycle or a
  *                             parallel-execution setting are none of them model
@@ -33,7 +36,13 @@ import {
   TESTING_RULE_IDS,
   TESTING_RULE_VERSION,
 } from "../contracts.js";
-import { ciInventory, nodeManifestFacts, queryFor, frameworkNames } from "../signals.js";
+import {
+  ciInventory,
+  frameworkNames,
+  hasTestingSubject,
+  nodeManifestFacts,
+  queryFor,
+} from "../signals.js";
 
 import { absenceOutcome, evidenceIdsFor, testScope } from "./shared.js";
 
@@ -99,7 +108,7 @@ export const levelRules = Object.freeze([
       const query = queryFor(context);
       const { scope, artifacts, scripts, ciIntegration } = integrationEvidence(query);
 
-      if (!scope.anyTests) {
+      if (!hasTestingSubject(query)) {
         const gap = absenceOutcome(context, "no test artifacts were observed");
         if (gap.outcome) return gap.outcome;
         return {
@@ -138,7 +147,7 @@ export const levelRules = Object.freeze([
     category: TESTING_CATEGORY,
     title: "End-to-end testing is not established",
     description:
-      "No end-to-end testing evidence was established: no Playwright or Cypress configuration or directory, no `e2e` artifact, and no E2E-level command. A configuration file being present would be `detected`, not `verified`; its absence over a complete scan means the domain has no subject here.",
+      "No end-to-end testing evidence was established: no Playwright or Cypress configuration or directory, no `e2e` artifact, and no E2E-level command. A configuration file being present would be `detected`, not `verified`. When tests exist, the absence of an E2E marker does not establish the absence of E2E testing, so the domain is `unknown`; only a repository with no testing subject at all is `not_applicable`.",
     severity: "info",
     applicability: {},
     detect: (context) => {
@@ -152,7 +161,7 @@ export const levelRules = Object.freeze([
           metadata: { basis: TESTING_BASES.CONFIGURATION, state: "detected", frameworks },
         };
       }
-      if (!scope.anyTests) {
+      if (!hasTestingSubject(query)) {
         const gap = absenceOutcome(context, "no test artifacts were observed");
         if (gap.outcome) return gap.outcome;
         return {
@@ -161,12 +170,16 @@ export const levelRules = Object.freeze([
           metadata: { basis: TESTING_BASES.CONFIGURATION, state: "not_applicable" },
         };
       }
-      const gap = absenceOutcome(context, "no end-to-end testing evidence was observed");
-      if (gap.outcome) return gap.outcome;
+
+      // Tests exist but no E2E evidence was established. The domain applies — the
+      // capability can exist among the repository's tests without any marker this
+      // build recognises — so the answer is `unknown`, never `not_applicable`. This is
+      // the correction Official Phase 11's state semantics require.
       return {
         findings: [],
         evidence: [],
-        metadata: { basis: TESTING_BASES.CONFIGURATION, state: "not_applicable" },
+        coverage: "unknown",
+        reason: "tests were observed but no end-to-end testing evidence was established",
       };
     },
     remediation: {},
@@ -185,13 +198,24 @@ export const levelRules = Object.freeze([
     detect: (context) => {
       const query = queryFor(context);
       const scope = testScope(query);
-      if (!scope.anyTests) {
+      if (!hasTestingSubject(query)) {
         const gap = absenceOutcome(context, "no test artifacts were observed");
         if (gap.outcome) return gap.outcome;
         return {
           findings: [],
           evidence: [],
           metadata: { basis: TESTING_BASES.FILE_INVENTORY, state: "not_applicable" },
+        };
+      }
+      if (scope.tests.length === 0) {
+        // A testing subject exists (a declared script, a framework identity or CI test
+        // execution) but no test artifact was observed to reason about, so there is no
+        // evidence to cite: abstain rather than emit an evidence-less finding.
+        return {
+          findings: [],
+          evidence: [],
+          coverage: "unknown",
+          reason: "a testing subject was observed, but no test artifact is available to establish isolation",
         };
       }
       // An informational finding whose state is `unknown`: the observation is

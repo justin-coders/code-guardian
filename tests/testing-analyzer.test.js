@@ -8,10 +8,12 @@
  * Fixtures A–K from the Phase 11 handoff live here as real repositories written to a
  * temporary directory and scanned through the accepted Phase 8A/8C/8D boundary. The
  * suite's central claims are the roadmap's exit criteria: the five states are
- * distinguished, the Node built-in runner is detected from evidence, absence over an
- * incomplete scan is `unknown` rather than clean, every finding cites model evidence,
- * fingerprints are stable and unique, and the analyzer imports no filesystem,
- * process, network or MCP module.
+ * distinguished, a subject-less repository is `not_applicable` while an unestablished
+ * *open* domain (integration, E2E, isolation) over a repository that *has* a testing
+ * subject is `unknown`, the Node built-in runner is detected from evidence, absence
+ * over an incomplete scan is `unknown` rather than clean, every finding cites model
+ * evidence, fingerprints are stable and unique, and the analyzer imports no
+ * filesystem, process, network or MCP module.
  *
  * Run with: node --test tests/testing-analyzer.test.js
  */
@@ -132,6 +134,9 @@ const FIXTURE_H = { "package.json": pkg(), "playwright.config.ts": "export defau
 const FIXTURE_J = { "README.md": "# docs only\n" };
 // Fixture K — malformed configuration.
 const FIXTURE_K = { "package.json": "{ not json" };
+// Fixture L — ordinary tests, but no E2E or integration evidence. The correction:
+// a testing subject exists, so the open domains are `unknown`, never `not_applicable`.
+const FIXTURE_L = { "package.json": pkg(), "tests/unit.test.js": PLAIN_TEST };
 // Mixed — several observations at once.
 const FIXTURE_MIXED = {
   "package.json": pkg({ scripts: { test: "node --test" } }),
@@ -222,9 +227,39 @@ describe("testing analyzer: golden fixtures", () => {
     const result = await runAnalyzer(model);
     assert.deepEqual(result.findings, []);
     const summary = summaryOf(result);
+    // No testing subject at all: the domain genuinely does not apply here, which is
+    // what `not_applicable` means — not "the scan was complete and found nothing".
+    assert.equal(summary.applicability.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(summary.applicability.hasSubject, false);
     assert.equal(summary.framework.state, TESTING_STATES.NOT_APPLICABLE);
     assert.equal(summary.e2e.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(summary.integration.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(summary.isolation.state, TESTING_STATES.NOT_APPLICABLE);
     assert.equal(summary.ciExecution.state, TESTING_STATES.NOT_APPLICABLE);
+  });
+
+  it("L: tests without E2E evidence are `unknown`, never `not_applicable`", async () => {
+    const { model } = await scanModel(FIXTURE_L);
+    const run = await runRules(model);
+    assert.equal(statusOf(run, TESTING_RULE_IDS.E2E_UNDETERMINED), "unknown");
+    const e2e = summaryOf(await runAnalyzer(model)).e2e;
+    assert.equal(e2e.state, TESTING_STATES.UNKNOWN);
+    assert.notEqual(e2e.state, TESTING_STATES.NOT_APPLICABLE);
+  });
+
+  it("L: tests without integration evidence are `unknown`, never `not_applicable`", async () => {
+    const { model } = await scanModel(FIXTURE_L);
+    const run = await runRules(model);
+    assert.equal(statusOf(run, TESTING_RULE_IDS.INTEGRATION_UNDETERMINED), "unknown");
+    const integration = summaryOf(await runAnalyzer(model)).integration;
+    assert.equal(integration.state, TESTING_STATES.UNKNOWN);
+    assert.notEqual(integration.state, TESTING_STATES.NOT_APPLICABLE);
+  });
+
+  it("L: test isolation is `unknown` while a testing subject exists, never a claim of isolation", async () => {
+    const { model } = await scanModel(FIXTURE_L);
+    const isolation = summaryOf(await runAnalyzer(model)).isolation;
+    assert.equal(isolation.state, TESTING_STATES.UNKNOWN);
   });
 
   it("K: a malformed configuration is `failed`/`unknown`, never `not detected`", async () => {
@@ -232,6 +267,43 @@ describe("testing analyzer: golden fixtures", () => {
     const run = await runRules(model);
     assert.equal(statusOf(run, TESTING_RULE_IDS.SCRIPT_MISSING), "unknown");
     assert.equal(summaryOf(await runAnalyzer(model)).testScripts.state, TESTING_STATES.FAILED);
+  });
+});
+
+// ─── State semantics ─────────────────────────────────────────────────────────
+
+describe("testing analyzer: state semantics", () => {
+  it("separates a subject-less repository from an unestablished open domain", async () => {
+    // No testing subject at all: `not_applicable`.
+    const none = summaryOf(await runAnalyzer((await scanModel(FIXTURE_J)).model));
+    assert.equal(none.applicability.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(none.e2e.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(none.integration.state, TESTING_STATES.NOT_APPLICABLE);
+    assert.equal(none.isolation.state, TESTING_STATES.NOT_APPLICABLE);
+
+    // A testing subject exists but the open domains are unestablished: `unknown`.
+    const { model } = await scanModel(FIXTURE_L);
+    const summary = summaryOf(await runAnalyzer(model));
+    assert.equal(summary.applicability.state, TESTING_STATES.DETECTED);
+    assert.equal(summary.applicability.hasSubject, true);
+    assert.equal(summary.e2e.state, TESTING_STATES.UNKNOWN);
+    assert.equal(summary.integration.state, TESTING_STATES.UNKNOWN);
+    assert.equal(summary.isolation.state, TESTING_STATES.UNKNOWN);
+  });
+
+  it("declares a testing subject from a declared test script alone, before any test file", async () => {
+    const { model } = await scanModel({ "package.json": pkg({ scripts: { test: "jest" } }) });
+    const summary = summaryOf(await runAnalyzer(model));
+    assert.equal(summary.applicability.hasSubject, true);
+    assert.equal(summary.applicability.state, TESTING_STATES.DETECTED);
+    assert.equal(summary.e2e.state, TESTING_STATES.UNKNOWN);
+  });
+
+  it("keeps a detected open domain at `detected`, never `verified`", async () => {
+    const { model } = await scanModel(FIXTURE_H);
+    const e2e = summaryOf(await runAnalyzer(model)).e2e;
+    assert.equal(e2e.state, TESTING_STATES.DETECTED);
+    assert.notEqual(e2e.state, TESTING_STATES.VERIFIED);
   });
 });
 
