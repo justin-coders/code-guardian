@@ -26,7 +26,9 @@ jobs:
       # The official roadmap Phase 10 security analyzer, plus the engine, framework and
       # model/query surfaces it depends on — none of which `test:unit` (tools.test.js) or
       # `test:integration` (integration.test.js) reach, so the analyzer had no CI evidence
-      # at all.
+      # at all. The official roadmap Phase 11 Testing Analyzer is added here for the same
+      # reason: its acquisition (scanner content reads), model projections and rule pack
+      # are reached by no other included suite.
       #
       # This is a named set rather than `npm test`, because the full suite is not yet clean
       # on hosted runners: filesystem.test.js (working-directory/permission cases),
@@ -44,6 +46,8 @@ jobs:
           tests/security-acquisition.test.js
           tests/security-rules.test.js
           tests/security-analyzer.test.js
+          tests/testing-rules.test.js
+          tests/testing-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 
