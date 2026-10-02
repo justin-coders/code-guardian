@@ -164,6 +164,62 @@ export {
   testingSignals,
 } from "./testing/index.js";
 
+// Official roadmap Phase 12 — the Code Quality Analyzer, and the third official-roadmap
+// production analyzer. Purely additive: the Rule Engine is unchanged, the security and
+// testing packs are untouched, and the code-quality pack is a *consumer* of the same generic
+// framework (rules, registry, analyzer adapter). Its own files label it "Official Roadmap
+// Phase 12"; a bare `Phase 8C`/`Phase 10` inside it names this repository's internal
+// architecture layer, not an official roadmap phase.
+export {
+  CODE_QUALITY_ANALYZER_ID,
+  CODE_QUALITY_ANALYZER_NAME,
+  CODE_QUALITY_ANALYZER_SCOPE,
+  CODE_QUALITY_BASES,
+  CODE_QUALITY_CATEGORY,
+  CODE_QUALITY_CONFIDENCE,
+  CODE_QUALITY_LIMITS,
+  CODE_QUALITY_RULE_ID_PREFIX,
+  CODE_QUALITY_RULE_IDS,
+  CODE_QUALITY_RULE_PACK_VERSION,
+  CODE_QUALITY_RULE_VERSION,
+  CODE_QUALITY_STATES,
+  QUALITY_CONFIGURATION_SIGNALS,
+  QUALITY_DEPENDENCY_NAMES,
+  QUALITY_LANGUAGE_IDS,
+  QUALITY_LANGUAGE_PROFILES,
+  QUALITY_SIGNALS,
+  QUALITY_TOOLING,
+  QUALITY_TOOLING_DOMAINS,
+  QUALITY_TOOL_DOMAINS,
+  QUALITY_TOOL_IDS,
+  TOOLING_DOMAINS,
+  TYPE_CHECK_CONFIG_BASENAMES,
+  basenameOf,
+  ciQualityObservation,
+  codeQualityRuleSetIssues,
+  codeQualityRules,
+  configurationBySignal,
+  configurationInventory,
+  createCodeQualityAnalyzer,
+  createCodeQualityRuleRegistry,
+  declaredDependencyNames,
+  declaredScriptNames,
+  declaresDependency,
+  dependenciesInEcosystem,
+  fileEntities,
+  fileEvidenceIds,
+  hasSourceSubject,
+  importGraphEvidence,
+  languageEntities,
+  languageIds,
+  manifestFacts,
+  scriptNamesMatching,
+  sourceAbsence,
+  summarizeCodeQuality,
+  symbolGraphEvidence,
+  toolingEvidence,
+} from "./code-quality/index.js";
+
 // Phase 15 — the architecture rule pack. The minimum integration that proves the
 // Phase 15 architecture graph is consumable through the accepted Rule Engine: one
 // informational inventory rule, its own registry and analyzer adapter. Purely
