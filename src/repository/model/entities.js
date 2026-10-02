@@ -83,6 +83,31 @@ export const TEST_KINDS = Object.freeze({
   CONFIGURATION: "configuration",
 });
 
+/**
+ * Structural flaky indicators a test file's source can establish (Official Roadmap
+ * Phase 11).
+ *
+ * Re-declared here rather than imported from the acquisition layer, exactly like
+ * `SYMLINK_TARGET_KINDS`: the model must not depend on the scanner. A test pins the
+ * two vocabularies together, so a rename on either side fails the suite instead of
+ * silently retiring a value. These are *shapes*, never verdicts — an indicator says a
+ * timer, a random source or a retry is present, not that a test is flaky.
+ */
+export const TEST_FLAKY_INDICATORS = Object.freeze([
+  "time-dependent",
+  "uncontrolled-randomness",
+  "sleep-based-sync",
+  "network-dependent",
+  "retry-configuration",
+]);
+
+/** How a CI file's test-execution evidence was established (Phase 11). */
+export const CI_TEST_EXECUTION_STATES = Object.freeze([
+  "detected",
+  "none",
+  "unknown",
+]);
+
 /** Manifest parse statuses the scanner can report. */
 export const MANIFEST_PARSE_STATUSES = Object.freeze([
   "parsed",
@@ -268,6 +293,11 @@ const MAX_DOCKERFILE_STAGES = 32;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._/-]{1,120}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{7,64}$/;
 const MAX_SCRIPT_KEYS = 100;
+const MAX_TEST_SCRIPTS = 50;
+const MAX_SCRIPT_COMMAND_LENGTH = 500;
+const MAX_RUNNERS_PER_RECORD = 16;
+/** A script name may carry `:` (npm's `test:unit` convention), unlike an identifier. */
+const SCRIPT_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,200}$/;
 const MAX_DEPENDENCY_SECTIONS = 8;
 const MAX_LANGUAGES_PER_MANIFEST = 16;
 const MAX_EXTENSIONS_PER_LANGUAGE = 64;
@@ -312,6 +342,28 @@ function identifierArray(value, limit) {
     if (projected !== null) out.push(projected);
   }
   return out;
+}
+
+/** Project one bounded script name (letters, digits, `.`, `-`, `_`, `:`, `/`). */
+function scriptName(value) {
+  return typeof value === "string" && SCRIPT_NAME_PATTERN.test(value) ? value : null;
+}
+
+/**
+ * Project one bounded command string.
+ *
+ * A command is untrusted text copied from a manifest or workflow: it must be a
+ * bounded string free of control characters, so hostile text cannot smuggle an
+ * escape sequence into a model identity. A command that cannot be represented is
+ * recorded as `null`, never silently dropped.
+ */
+function boundedCommand(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.length > MAX_SCRIPT_COMMAND_LENGTH) return null;
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+  return trimmed;
 }
 
 /**
@@ -365,7 +417,37 @@ function projectManifestMetadata(value, issues, path) {
     scripts: identifierArray(value.scripts, MAX_SCRIPT_KEYS),
     scriptsTruncated: value.scriptsTruncated === true,
     dependencySections,
+    testScript: value.testScript === undefined || value.testScript === null ? null : boundedCommand(value.testScript),
+    testScripts: projectTestScripts(value.testScripts, path),
+    testScriptsTruncated: value.testScriptsTruncated === true,
   };
+}
+
+/**
+ * Project the test-related script records the scanner classified.
+ *
+ * A record that cannot be represented is dropped rather than half-described; the
+ * runner/level/coverage lists are bounded identifier arrays the scanner already
+ * classified, so a rule reads ids and never re-parses a command.
+ */
+function projectTestScripts(value, path) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const entry of value) {
+    if (out.length >= MAX_TEST_SCRIPTS) break;
+    if (!isPlainObject(entry)) continue;
+    const name = scriptName(entry.name);
+    if (name === null) continue;
+    out.push({
+      name,
+      command: entry.command === undefined || entry.command === null ? null : boundedCommand(entry.command),
+      commandTruncated: entry.commandTruncated === true,
+      runners: identifierArray(entry.runners, MAX_RUNNERS_PER_RECORD),
+      levels: identifierArray(entry.levels, 8),
+      coverage: identifierArray(entry.coverage, MAX_RUNNERS_PER_RECORD),
+    });
+  }
+  return out;
 }
 
 /**
@@ -4240,12 +4322,34 @@ export function buildEntities(scanResult, repositoryIdValue) {
     }
     if (frameworkName !== null) frameworkIds.add(frameworkName);
 
+    const indicators = [];
+    if (Array.isArray(entry.indicators)) {
+      for (const raw of entry.indicators) {
+        if (indicators.length >= TEST_FLAKY_INDICATORS.length) break;
+        const indicator = identifier(raw);
+        if (indicator === null || !TEST_FLAKY_INDICATORS.includes(indicator)) {
+          fail(
+            issues,
+            "scanResult.tests.evidence[].indicators",
+            "must be documented flaky-pattern indicators",
+          );
+          continue;
+        }
+        indicators.push(indicator);
+      }
+    }
+    const flakyIndicators = [...new Set(indicators)].sort();
+
     record(
       createSignalObservation({
         subject: EVIDENCE_SUBJECTS.TEST,
         path,
         signal,
-        data: { testKind: resolvedKind, framework: frameworkName },
+        data: {
+          testKind: resolvedKind,
+          framework: frameworkName,
+          indicators: flakyIndicators,
+        },
       }),
     );
 
@@ -4259,6 +4363,7 @@ export function buildEntities(scanResult, repositoryIdValue) {
       testKind: resolvedKind,
       frameworkId:
         frameworkName === null ? null : entityId(ENTITY_KINDS.FRAMEWORK, frameworkName),
+      indicators: flakyIndicators,
       evidenceIds: [],
     });
   }
@@ -4325,7 +4430,37 @@ export function buildEntities(scanResult, repositoryIdValue) {
         );
         return null;
       }
-      return { data: { provider }, fields: { provider } };
+      // Phase 11 — the testing-related CI fact. `unknown` is the default so a
+      // ScanResult that declares nothing about a workflow's commands cannot read as
+      // "this workflow runs no tests".
+      const testExecution = entry.testExecution === undefined ? "unknown" : entry.testExecution;
+      if (!CI_TEST_EXECUTION_STATES.includes(testExecution)) {
+        fail(
+          issuesList,
+          `scanResult.cicd.evidence[${path}].testExecution`,
+          "must be a documented CI test-execution state",
+        );
+        return null;
+      }
+      let reason = null;
+      if (entry.reason !== undefined && entry.reason !== null) {
+        reason = identifier(entry.reason);
+        if (reason === null) {
+          fail(
+            issuesList,
+            `scanResult.cicd.evidence[${path}].reason`,
+            "must be a bounded reason identifier",
+          );
+          return null;
+        }
+      }
+      const testRunners = identifierArray(entry.testRunners, MAX_RUNNERS_PER_RECORD);
+      const testLevels = identifierArray(entry.testLevels, 8);
+      const coverageCommands = identifierArray(entry.coverageCommands, MAX_RUNNERS_PER_RECORD);
+      return {
+        data: { provider, testExecution, testRunners, testLevels, coverageCommands, reason },
+        fields: { provider, testExecution, testRunners, testLevels, coverageCommands, reason },
+      };
     },
   );
 

@@ -25,6 +25,7 @@
 import { FILESYSTEM_ERROR_KINDS } from "../../filesystem/index.js";
 
 import { parentDirectory } from "../policies/ignore.js";
+import { classifyTestCommand } from "../policies/testing.js";
 import { findRule } from "./match.js";
 
 /**
@@ -47,6 +48,21 @@ const BOUNDED_STRING_LIMITS = Object.freeze({
 });
 
 const MAX_SCRIPT_KEYS = 100;
+
+/** Test-related script keys recorded with their command, and the value bound. */
+const MAX_TEST_SCRIPTS = 50;
+const MAX_SCRIPT_COMMAND_LENGTH = 500;
+
+/**
+ * Which manifest script names are *test-related* for Phase 11.
+ *
+ * Matched case-insensitively as a substring of the script name, so `test`,
+ * `test:unit`, `test:coverage`, `e2e`, `integration` and `spec` are recorded while
+ * `build`, `lint` and `start` are not. The vocabulary is deliberately about script
+ * *names a repository chooses*; whether the command inside actually runs a runner
+ * is decided separately by `classifyTestCommand`.
+ */
+const TEST_SCRIPT_NAME_PATTERN = /(test|spec|e2e|coverage|integration)/i;
 
 const PACKAGE_DEPENDENCY_SECTIONS = Object.freeze([
   "dependencies",
@@ -183,6 +199,57 @@ export function extractPackageManifest(value) {
     scripts: scriptKeys.slice(0, MAX_SCRIPT_KEYS),
     scriptsTruncated: scriptKeys.length > MAX_SCRIPT_KEYS,
     dependencySections,
+    ...extractTestScripts(value.scripts),
+  };
+}
+
+/**
+ * Extract the test-related script commands from a `package.json` `scripts` object.
+ *
+ * Only the *command values* of test-related script names are recorded, bounded in
+ * count and length. A script whose name is test-related but whose value is not a
+ * string is recorded with `command: null`, so "this script exists but declared no
+ * command text" is distinguishable from "this script does not exist". Each command
+ * is classified into the closed runner vocabulary the same way a CI command is, so
+ * the model carries runner ids rather than making a rule re-parse the text.
+ */
+function extractTestScripts(scripts) {
+  if (!isPlainObject(scripts)) return { testScript: null, testScripts: [], testScriptsTruncated: false };
+
+  const names = Object.keys(scripts)
+    .filter((name) => TEST_SCRIPT_NAME_PATTERN.test(name))
+    .sort();
+
+  const testScripts = [];
+  let truncated = false;
+  for (const name of names) {
+    if (testScripts.length >= MAX_TEST_SCRIPTS) {
+      truncated = true;
+      break;
+    }
+    const raw = scripts[name];
+    let command = null;
+    let commandTruncated = false;
+    if (typeof raw === "string") {
+      command = raw.length > MAX_SCRIPT_COMMAND_LENGTH ? raw.slice(0, MAX_SCRIPT_COMMAND_LENGTH) : raw;
+      commandTruncated = raw.length > MAX_SCRIPT_COMMAND_LENGTH;
+    }
+    const classification = classifyTestCommand(command);
+    testScripts.push({
+      name: boundedString(name, 200),
+      command,
+      commandTruncated,
+      runners: [...classification.runners],
+      levels: [...classification.levels],
+      coverage: [...classification.coverage],
+    });
+  }
+
+  const testEntry = testScripts.find((entry) => entry.name === "test");
+  return {
+    testScript: testEntry === undefined ? null : testEntry.command,
+    testScripts,
+    testScriptsTruncated: truncated,
   };
 }
 

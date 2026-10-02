@@ -54,8 +54,8 @@ export async function runDetectors(view) {
     // Dependency acquisition reads the manifests the detector above inventoried,
     // so it can never read a file the scan did not observe.
     dependencies: await detectDependencies(view, manifests),
-    tests: detectTesting(view),
-    cicd: detectCicd(view),
+    tests: await detectTesting(view),
+    cicd: await detectCicd(view),
     documentation: detectDocumentation(view),
     configuration: detectConfiguration(view),
     git: await detectGit(view),
