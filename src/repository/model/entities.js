@@ -108,6 +108,22 @@ export const CI_TEST_EXECUTION_STATES = Object.freeze([
   "unknown",
 ]);
 
+/**
+ * How well a CI workflow's own configuration was interpreted (Official Roadmap Phase 13).
+ *
+ *   interpreted      the workflow was read in full and its structure was interpretable: the
+ *                    absence of a fact is meaningful
+ *   partial          the read stopped at a byte cap, or the document's structure could not be
+ *                    fully interpreted (unterminated scalars): presence is meaningful, absence
+ *                    is not
+ *   not-interpreted  the workflow was never interpreted (binary content, an errored read):
+ *                    nothing about it is established
+ */
+export const CI_CONTENT_STATES = Object.freeze(["interpreted", "partial", "not-interpreted"]);
+
+/** Whether a workflow's permissions were explicitly declared (Phase 13). */
+export const CI_PERMISSION_MODES = Object.freeze(["explicit", "not-established"]);
+
 /** Manifest parse statuses the scanner can report. */
 export const MANIFEST_PARSE_STATUSES = Object.freeze([
   "parsed",
@@ -296,6 +312,12 @@ const MAX_SCRIPT_KEYS = 100;
 const MAX_TEST_SCRIPTS = 50;
 const MAX_SCRIPT_COMMAND_LENGTH = 500;
 const MAX_RUNNERS_PER_RECORD = 16;
+/**
+ * Cap on one Phase 13 CI/CD observation list. The acquisition vocabulary is closed and much
+ * smaller than this, so the cap cannot silently drop an observation — it only bounds a
+ * hostile ScanResult.
+ */
+const MAX_CICD_OBSERVATIONS = 24;
 /** A script name may carry `:` (npm's `test:unit` convention), unlike an identifier. */
 const SCRIPT_NAME_PATTERN = /^[A-Za-z0-9._:/-]{1,200}$/;
 const MAX_DEPENDENCY_SECTIONS = 8;
@@ -4462,6 +4484,61 @@ export function buildEntities(scanResult, repositoryIdValue) {
       // as an empty list, which a rule must treat as "not established", never as "this
       // workflow runs no linter".
       const qualityCommands = identifierArray(entry.qualityCommands, MAX_RUNNERS_PER_RECORD);
+      // Phase 13 — how well the workflow's own configuration was interpreted. `undefined`
+      // (an older scan) reads as `not-interpreted`, which a rule must treat as "this
+      // workflow's CI/CD configuration is not established", never as "it has none".
+      const contentState =
+        entry.contentState === undefined ? "not-interpreted" : entry.contentState;
+      if (!CI_CONTENT_STATES.includes(contentState)) {
+        fail(
+          issuesList,
+          `scanResult.cicd.evidence[${path}].contentState`,
+          "must be a documented CI content state",
+        );
+        return null;
+      }
+      const permissionsMode =
+        entry.permissionsMode === undefined ? "not-established" : entry.permissionsMode;
+      if (!CI_PERMISSION_MODES.includes(permissionsMode)) {
+        fail(
+          issuesList,
+          `scanResult.cicd.evidence[${path}].permissionsMode`,
+          "must be a documented CI permission mode",
+        );
+        return null;
+      }
+      // Phase 13 — whether this provider configures permissions at all. `undefined` (an older
+      // scan) reads as `false`, which a rule must treat as "this provider has no permissions
+      // concept", never as "the workflow declared none".
+      if (
+        entry.permissionsConfigurable !== undefined &&
+        typeof entry.permissionsConfigurable !== "boolean"
+      ) {
+        fail(
+          issuesList,
+          `scanResult.cicd.evidence[${path}].permissionsConfigurable`,
+          "must be a boolean when present",
+        );
+        return null;
+      }
+      const permissionsConfigurable = entry.permissionsConfigurable === true;
+      // The twelve Phase 13 fact lists. Each is a bounded, closed-vocabulary identifier set
+      // the acquisition layer classified from the workflow's content; the model projects
+      // them verbatim and never re-derives them.
+      const cicdFacts = {
+        triggers: identifierArray(entry.triggers, MAX_CICD_OBSERVATIONS),
+        triggerRestrictions: identifierArray(entry.triggerRestrictions, MAX_CICD_OBSERVATIONS),
+        permissions: identifierArray(entry.permissions, MAX_CICD_OBSERVATIONS),
+        secretRefs: identifierArray(entry.secretRefs, MAX_CICD_OBSERVATIONS),
+        dependencyInstallation: identifierArray(entry.dependencyInstallation, MAX_CICD_OBSERVATIONS),
+        builds: identifierArray(entry.builds, MAX_CICD_OBSERVATIONS),
+        deployments: identifierArray(entry.deployments, MAX_CICD_OBSERVATIONS),
+        environments: identifierArray(entry.environments, MAX_CICD_OBSERVATIONS),
+        artifacts: identifierArray(entry.artifacts, MAX_CICD_OBSERVATIONS),
+        caches: identifierArray(entry.caches, MAX_CICD_OBSERVATIONS),
+        rollbacks: identifierArray(entry.rollbacks, MAX_CICD_OBSERVATIONS),
+        deploymentProtection: identifierArray(entry.deploymentProtection, MAX_CICD_OBSERVATIONS),
+      };
       return {
         data: {
           provider,
@@ -4470,6 +4547,10 @@ export function buildEntities(scanResult, repositoryIdValue) {
           testLevels,
           coverageCommands,
           qualityCommands,
+          contentState,
+          permissionsMode,
+          permissionsConfigurable,
+          ...cicdFacts,
           reason,
         },
         fields: {
@@ -4479,6 +4560,10 @@ export function buildEntities(scanResult, repositoryIdValue) {
           testLevels,
           coverageCommands,
           qualityCommands,
+          contentState,
+          permissionsMode,
+          permissionsConfigurable,
+          ...cicdFacts,
           reason,
         },
       };

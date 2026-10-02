@@ -220,6 +220,52 @@ export {
   toolingEvidence,
 } from "./code-quality/index.js";
 
+// Official roadmap Phase 13 — the CI/CD Analyzer, and the fourth official-roadmap
+// production analyzer. Purely additive: the Rule Engine is unchanged, the security, testing
+// and code-quality packs are untouched, and the CI/CD pack is a *consumer* of the same generic
+// framework (rules, registry, analyzer adapter). Its own files label it "Official Roadmap
+// Phase 13"; a bare `Phase 8C`/`Phase 11` inside it names this repository's internal
+// architecture layer, not an official roadmap phase.
+export {
+  CICD_ANALYZER_ID,
+  CICD_ANALYZER_NAME,
+  CICD_ANALYZER_SCOPE,
+  CICD_BASES,
+  CICD_BOUNDED_READ_REASONS,
+  CICD_CATEGORY,
+  CICD_CONFIDENCE,
+  CICD_CONTENT_STATES,
+  CICD_DOMAIN_IDS,
+  CICD_INTERPRETATION_FAILURE_REASONS,
+  CICD_LIMITS,
+  CICD_PERMISSION_MODES,
+  CICD_PROVIDERS,
+  CICD_RULE_DOMAINS,
+  CICD_RULE_ID_PREFIX,
+  CICD_RULE_IDS,
+  CICD_RULE_PACK_VERSION,
+  CICD_RULE_VERSION,
+  CICD_STATES,
+  anyBounded,
+  anyFailure,
+  anyInterpreted,
+  anyNotInterpreted,
+  ciProviders,
+  ciWorkflows,
+  cicdAbsence,
+  cicdRuleSetIssues,
+  cicdRules,
+  createAbsenceRule,
+  createCicdAnalyzer,
+  createCicdRuleRegistry,
+  createPresenceRule,
+  createRelationRule,
+  evidenceIdsForWorkflows,
+  observationsFor,
+  summarizeCicd,
+  workflowRecord,
+} from "./cicd/index.js";
+
 // Phase 15 — the architecture rule pack. The minimum integration that proves the
 // Phase 15 architecture graph is consumable through the accepted Rule Engine: one
 // informational inventory rule, its own registry and analyzer adapter. Purely
