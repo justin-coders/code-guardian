@@ -124,6 +124,46 @@ export {
   symlinkTargets,
 } from "./security/index.js";
 
+// Official roadmap Phase 11 — the Testing Analyzer, and the second official-roadmap
+// production analyzer. Purely additive: the Rule Engine is unchanged, the security pack
+// is untouched, and the testing pack is a *consumer* of the same generic framework
+// (rules, registry, analyzer adapter). Its own files label it "Official Roadmap Phase
+// 11"; a bare `Phase 8C`/`Phase 10` inside it names this repository's internal
+// architecture layer, not an official roadmap phase.
+export {
+  ASSET_BASIS,
+  COVERAGE_COMMAND_IDS,
+  TESTING_ANALYZER_ID,
+  TESTING_ANALYZER_NAME,
+  TESTING_ANALYZER_SCOPE,
+  TESTING_BASES,
+  TESTING_CATEGORY,
+  TESTING_CONFIDENCE,
+  TESTING_RULE_ID_PREFIX,
+  TESTING_RULE_IDS,
+  TESTING_RULE_PACK_VERSION,
+  TESTING_RULE_VERSION,
+  TESTING_STATES,
+  TEST_RUNNER_IDS,
+  TEST_RUNNER_LEVELS,
+  ciInventory,
+  createTestingAnalyzer,
+  createTestingRuleRegistry,
+  frameworkInventory,
+  frameworkNamed,
+  frameworkNames,
+  manifestInventory,
+  nodeManifestFacts,
+  summarizeTesting,
+  testConfigurations,
+  testDirectories,
+  testFiles,
+  testInventory,
+  testingRuleSetIssues,
+  testingRules,
+  testingSignals,
+} from "./testing/index.js";
+
 // Phase 15 — the architecture rule pack. The minimum integration that proves the
 // Phase 15 architecture graph is consumable through the accepted Rule Engine: one
 // informational inventory rule, its own registry and analyzer adapter. Purely
