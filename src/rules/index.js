@@ -395,6 +395,61 @@ export {
   wordTokens,
 } from "./dependency-analysis/index.js";
 
+// Official Roadmap Phase 16 — the API Analysis rule pack. The thirteen official API domains
+// (input validation, schema validation, authentication, authorization, error handling, status
+// codes, pagination, rate limiting, CORS, OpenAPI, request limits, logging and correlation IDs)
+// implemented as one domain analyzer over the accepted API and middleware graphs. Purely
+// additive — the Rule Engine is unchanged, the existing API/middleware inventory packs are
+// untouched, and this pack consumes the same generic framework. Six domains read a structural
+// middleware classification, one is an artifact rule and six abstain (`unknown`) because the
+// model establishes no fact for them.
+export {
+  API_ANALYSIS_ANALYZER_ID,
+  API_ANALYSIS_ANALYZER_NAME,
+  API_ANALYSIS_ANALYZER_SCOPE,
+  API_ANALYSIS_BASES,
+  API_ANALYSIS_BODY_METHODS,
+  API_ANALYSIS_CATEGORY,
+  API_ANALYSIS_CONFIDENCE,
+  API_ANALYSIS_DOMAIN_CLASSIFICATION,
+  API_ANALYSIS_DOMAINS,
+  API_ANALYSIS_LIMITS,
+  API_ANALYSIS_OPENAPI_BASENAMES,
+  API_ANALYSIS_RULE_ID_PREFIX,
+  API_ANALYSIS_RULE_IDS,
+  API_ANALYSIS_RULE_PACK_VERSION,
+  API_ANALYSIS_RULE_VERSION,
+  API_ANALYSIS_STATES,
+  API_ANALYSIS_SUBJECTS,
+  apiAnalysisRuleSetIssues,
+  apiAnalysisRules,
+  apiGraphCoverage,
+  apiSubject,
+  authenticationRules,
+  authorizationRules,
+  correlationIdsRules,
+  corsRules,
+  createApiAnalysisAnalyzer,
+  createApiAnalysisRuleRegistry,
+  errorHandlingRules,
+  fileInventoryCoverage,
+  inputValidationRules,
+  loggingRules,
+  middlewareCoverageGap,
+  middlewareGraphCoverage,
+  openapiArtifacts,
+  openapiRules,
+  paginationRules,
+  rateLimitingRules,
+  requestLimitsRules,
+  routeAbsenceReason,
+  routeControls,
+  routeCoverageGap,
+  schemaValidationRules,
+  statusCodesRules,
+  summarizeApiAnalysis,
+} from "./api-analysis/index.js";
+
 // Phase 16 — the import rule pack. The minimum integration that proves the Phase 16
 // import graph is consumable through the accepted Rule Engine: one informational
 // inventory rule, its own registry and analyzer adapter. Purely additive — the Rule

@@ -35,7 +35,10 @@ jobs:
       # classification, model projections and rule pack are reached by no other included suite.
       # The official roadmap Phase 14 Architecture Analysis Analyzer joins for the same reason:
       # its module graph over the import graph, its declared-direction and pattern reads, and its
-      # nine rule pack are reached by no other included suite.
+      # nine rule pack are reached by no other included suite. The official roadmap Phase 16 API
+      # Analyzer joins for the same reason again: its thirteen-domain rule pack over the API and
+      # middleware graphs, and its applicability and coverage-abstention semantics, are reached by
+      # no other included suite.
       #
       # This is a named set rather than `npm test`, because the full suite is not yet clean
       # on hosted runners: filesystem.test.js (working-directory/permission cases),
@@ -64,6 +67,8 @@ jobs:
           tests/dependency-analysis-rules.test.js
           tests/dependency-analysis-analyzer.test.js
           tests/dependency-intelligence.test.js
+          tests/api-analysis-rules.test.js
+          tests/api-analysis-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 
