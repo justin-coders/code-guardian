@@ -33,6 +33,9 @@ jobs:
       # projections and rule pack are reached by no other included suite. The official roadmap
       # Phase 13 CI/CD Analyzer joins for the same reason again: its workflow content
       # classification, model projections and rule pack are reached by no other included suite.
+      # The official roadmap Phase 14 Architecture Analysis Analyzer joins for the same reason:
+      # its module graph over the import graph, its declared-direction and pattern reads, and its
+      # nine rule pack are reached by no other included suite.
       #
       # This is a named set rather than `npm test`, because the full suite is not yet clean
       # on hosted runners: filesystem.test.js (working-directory/permission cases),
@@ -56,6 +59,8 @@ jobs:
           tests/code-quality-analyzer.test.js
           tests/cicd-rules.test.js
           tests/cicd-analyzer.test.js
+          tests/architecture-rules.test.js
+          tests/architecture-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 

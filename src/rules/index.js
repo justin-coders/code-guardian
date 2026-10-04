@@ -295,6 +295,46 @@ export {
   createArchitectureRuleRegistry,
 } from "./architecture/index.js";
 
+// Official Roadmap Phase 14 — the Architecture Analysis rule pack. The nine official
+// architecture domains (module boundaries, dependency direction, circular dependencies,
+// layer violations, coupling, cohesion indicators, large modules, boundary leakage and
+// architecture patterns) implemented as one domain analyzer over the accepted import,
+// symbol and architecture graphs. Purely additive — the Rule Engine is unchanged, the
+// other packs are untouched, and this pack consumes the same generic framework.
+export {
+  ARCHITECTURE_ANALYSIS_ANALYZER_ID,
+  ARCHITECTURE_ANALYSIS_ANALYZER_NAME,
+  ARCHITECTURE_ANALYSIS_ANALYZER_SCOPE,
+  ARCHITECTURE_ANALYSIS_BASES,
+  ARCHITECTURE_ANALYSIS_CATEGORY,
+  ARCHITECTURE_ANALYSIS_CONFIDENCE,
+  ARCHITECTURE_ANALYSIS_LIMITS,
+  ARCHITECTURE_ANALYSIS_RULE_ID_PREFIX,
+  ARCHITECTURE_ANALYSIS_RULE_IDS,
+  ARCHITECTURE_ANALYSIS_RULE_PACK_VERSION,
+  ARCHITECTURE_ANALYSIS_RULE_VERSION,
+  ARCHITECTURE_ANALYSIS_STATES,
+  ARCHITECTURE_PATTERNS,
+  LOCAL_PACKAGE_SPEC_KINDS,
+  ROOT_MODULE_PATH,
+  architectureAnalysisRuleSetIssues,
+  architectureAnalysisRules,
+  architectureCouplingRules,
+  architectureDependencyRules,
+  architectureLayerRules,
+  architectureLeakageRules,
+  architectureModuleRules,
+  architecturePatternRules,
+  buildModuleGraph,
+  createArchitectureAnalysisAnalyzer,
+  createArchitectureAnalysisRuleRegistry,
+  declaredLocalDirections,
+  findModuleCycles,
+  isEntryFile,
+  summarizeArchitecture,
+  workspacePatternFacts,
+} from "./architecture-analysis/index.js";
+
 // Phase 16 — the import rule pack. The minimum integration that proves the Phase 16
 // import graph is consumable through the accepted Rule Engine: one informational
 // inventory rule, its own registry and analyzer adapter. Purely additive — the Rule
