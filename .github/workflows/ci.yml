@@ -61,6 +61,9 @@ jobs:
           tests/cicd-analyzer.test.js
           tests/architecture-rules.test.js
           tests/architecture-analyzer.test.js
+          tests/dependency-analysis-rules.test.js
+          tests/dependency-analysis-analyzer.test.js
+          tests/dependency-intelligence.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 

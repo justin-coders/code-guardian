@@ -335,6 +335,66 @@ export {
   workspacePatternFacts,
 } from "./architecture-analysis/index.js";
 
+// Official Roadmap Phase 15 — the Dependency Analysis rule pack. The eight official
+// dependency domains (outdated, known vulnerabilities, unused, duplicate versions,
+// concentration, lockfile integrity, package manager consistency and supply-chain
+// indicators) implemented over the accepted dependency substrate, with external
+// versioned intelligence supplied through the analysis context. Purely additive — the
+// Rule Engine is unchanged, the existing dependency inventory pack is untouched, and
+// this pack consumes the same generic framework.
+export {
+  DEPENDENCY_ANALYSIS_ANALYZER_ID,
+  DEPENDENCY_ANALYSIS_ANALYZER_NAME,
+  DEPENDENCY_ANALYSIS_ANALYZER_SCOPE,
+  DEPENDENCY_ANALYSIS_BASES,
+  DEPENDENCY_ANALYSIS_CATEGORY,
+  DEPENDENCY_ANALYSIS_CONFIDENCE,
+  DEPENDENCY_ANALYSIS_LIMITS,
+  DEPENDENCY_ANALYSIS_RULE_ID_PREFIX,
+  DEPENDENCY_ANALYSIS_RULE_IDS,
+  DEPENDENCY_ANALYSIS_RULE_PACK_VERSION,
+  DEPENDENCY_ANALYSIS_RULE_VERSION,
+  DEPENDENCY_ANALYSIS_STATES,
+  DEPENDENCY_INTELLIGENCE_STATES,
+  INTERPRETED_LOCKFILES,
+  PACKAGE_MANAGER_BY_LOCKFILE,
+  SEMVER_ECOSYSTEMS,
+  UNUSUAL_SOURCE_SPEC_KINDS,
+  advisoriesByPackage,
+  compareVersions,
+  createDependencyAnalysisAnalyzer,
+  createDependencyAnalysisRuleRegistry,
+  dependencyAnalysisRuleSetIssues,
+  dependencyAnalysisRules,
+  dependencyConcentrationRules,
+  dependencyCoverageEstablished,
+  dependencyDuplicateRules,
+  dependencyEntities,
+  dependencyGraphEstablished,
+  dependencyLockfileRules,
+  dependencyManagerRules,
+  dependencyOutdatedRules,
+  dependencyResolutions,
+  dependencySupplyChainRules,
+  dependencyUnusedRules,
+  dependencyVulnerabilityRules,
+  exactDeclaredVersion,
+  isComparableEcosystem,
+  isReferenced,
+  lockfileFacts,
+  manifestEntities,
+  normalizeDependencyIntelligence,
+  packageRootOf,
+  parseVersion,
+  readDependencyIntelligence,
+  releasesByPackage,
+  satisfiesRange,
+  sourceById,
+  summarizeDependencyAnalysis,
+  usageEvidence,
+  wordTokens,
+} from "./dependency-analysis/index.js";
+
 // Phase 16 — the import rule pack. The minimum integration that proves the Phase 16
 // import graph is consumable through the accepted Rule Engine: one informational
 // inventory rule, its own registry and analyzer adapter. Purely additive — the Rule
