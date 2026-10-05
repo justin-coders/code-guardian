@@ -69,6 +69,8 @@ jobs:
           tests/dependency-intelligence.test.js
           tests/api-analysis-rules.test.js
           tests/api-analysis-analyzer.test.js
+          tests/reliability-analysis-rules.test.js
+          tests/reliability-analysis-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
 

@@ -450,6 +450,70 @@ export {
   summarizeApiAnalysis,
 } from "./api-analysis/index.js";
 
+// Official Roadmap Phase 17 — the Reliability Analysis rule pack. The ten official reliability
+// domains (timeouts, retry behavior, circuit breaking, graceful shutdown, health checks, failure
+// handling, resource cleanup, transaction handling, queue behavior and observability) implemented
+// as one domain analyzer over the accepted API, middleware, semantic and container substrates.
+// Purely additive — the Rule Engine is unchanged, every earlier pack is untouched, and this pack
+// consumes the same generic framework. No new acquisition: eight domains read an observed usage (a
+// package import plus a symbol occurrence, or a named local helper), one is structural (health
+// checks) and one is multi-dimensional (observability).
+export {
+  RELIABILITY_ANALYSIS_ANALYZER_ID,
+  RELIABILITY_ANALYSIS_ANALYZER_NAME,
+  RELIABILITY_ANALYSIS_ANALYZER_SCOPE,
+  RELIABILITY_ANALYSIS_BASES,
+  RELIABILITY_ANALYSIS_CATEGORY,
+  RELIABILITY_ANALYSIS_CONFIDENCE,
+  RELIABILITY_ANALYSIS_DOMAINS,
+  RELIABILITY_ANALYSIS_LIMITS,
+  RELIABILITY_ANALYSIS_RULE_ID_PREFIX,
+  RELIABILITY_ANALYSIS_RULE_IDS,
+  RELIABILITY_ANALYSIS_RULE_PACK_VERSION,
+  RELIABILITY_ANALYSIS_RULE_VERSION,
+  RELIABILITY_ANALYSIS_STATES,
+  RELIABILITY_ANALYSIS_SUBJECTS,
+  RELIABILITY_CONTAINER_SECTION,
+  RELIABILITY_HEALTH_PATH_SEGMENTS,
+  RELIABILITY_LOCAL_VOCABULARY,
+  RELIABILITY_OBSERVABILITY_DIMENSIONS,
+  RELIABILITY_PACKAGE_VOCABULARY,
+  RELIABILITY_SERVICE_RUNTIME_PACKAGES,
+  circuitBreakingRules,
+  containerCoverageGap,
+  containerDefinitions,
+  containerFacts,
+  containerHealthchecks,
+  containerSection,
+  createReliabilityAnalysisAnalyzer,
+  createReliabilityAnalysisRuleRegistry,
+  failureHandlingRules,
+  gracefulShutdownRules,
+  hasLoggingMiddleware,
+  healthChecksRules,
+  healthRoutes,
+  isHealthShapedPath,
+  observabilityDimensions,
+  observabilityRules,
+  queueBehaviorRules,
+  reliabilityAnalysisRuleSetIssues,
+  reliabilityAnalysisRules,
+  reliabilityRoutes,
+  reliabilitySubject,
+  resourceCleanupRules,
+  retryBehaviorRules,
+  routeMiddleware,
+  runtimeUsages,
+  summarizeReliabilityAnalysis,
+  symbolCoverageGap,
+  symbolGraphCoverage,
+  symbolSourceEvidenceId,
+  testFilePaths,
+  timeoutsRules,
+  transactionHandlingRules,
+  usagesForDomain,
+} from "./reliability-analysis/index.js";
+
 // Phase 16 — the import rule pack. The minimum integration that proves the Phase 16
 // import graph is consumable through the accepted Rule Engine: one informational
 // inventory rule, its own registry and analyzer adapter. Purely additive — the Rule
