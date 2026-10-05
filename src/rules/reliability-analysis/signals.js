@@ -582,13 +582,32 @@ export function routeMiddleware(query) {
   const graph = query.middlewareGraph();
   if (graph.established !== true) return Object.freeze({ established: false, byRoute: new Map() });
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  // A route's own declaration evidence lives on the API graph's route node, keyed by the same
+  // `route:METHOD:/path` identity the middleware graph's route view uses. Read, never re-derived.
+  const api = query.apiGraph();
+  const routeEvidenceById = new Map(
+    (api.established === true ? api.nodes : []).map((node) => [node.id, [...node.evidenceIds]]),
+  );
   const byRoute = new Map();
   for (const view of graph.routes) {
     const chain = (view.middleware ?? [])
       .map((id) => nodeById.get(id))
       .filter((entry) => entry !== undefined)
-      .map((entry) => ({ id: entry.id, name: entry.name, classification: entry.classification }));
-    byRoute.set(view.route, { protection: view.protection, middleware: chain });
+      .map((entry) =>
+        Object.freeze({
+          id: entry.id,
+          name: entry.name,
+          classification: entry.classification,
+          // The middleware node's own registration/classification provenance, carried through
+          // rather than dropped so a consumer can cite it.
+          evidenceIds: Object.freeze([...(entry.evidenceIds ?? [])]),
+        }),
+      );
+    byRoute.set(view.route, {
+      protection: view.protection,
+      middleware: chain,
+      evidenceIds: Object.freeze([...(routeEvidenceById.get(view.route) ?? [])]),
+    });
   }
   return Object.freeze({ established: true, byRoute });
 }
@@ -606,18 +625,48 @@ export function hasLoggingMiddleware(query) {
 }
 
 /**
+ * The logging classification's provenance, read from the middleware graph.
+ *
+ * Reuses `routeMiddleware()` so the middleware rule and this signal can never disagree. The
+ * evidence is the union of the route's own declaration evidence and each logging-classified
+ * middleware node's registration evidence — both sides of the claim the observability rule makes —
+ * unique and sorted so two runs over one RepositoryModel cite the same ids in the same order.
+ *
+ * @returns {{ middleware: boolean, evidenceIds: string[] }} Whether a logging middleware was
+ *   observed, and the model evidence behind it (empty only if the model carries none).
+ */
+export function loggingMiddlewareEvidence(query) {
+  const { established, byRoute } = routeMiddleware(query);
+  if (!established) return Object.freeze({ middleware: false, evidenceIds: Object.freeze([]) });
+  const ids = new Set();
+  let observed = false;
+  for (const view of byRoute.values()) {
+    const logging = view.middleware.filter(
+      (entry) => entry.classification === MIDDLEWARE_CLASSIFICATIONS.LOGGING,
+    );
+    if (logging.length === 0) continue;
+    observed = true;
+    for (const id of view.evidenceIds) ids.add(id);
+    for (const entry of logging) for (const id of entry.evidenceIds) ids.add(id);
+  }
+  return Object.freeze({ middleware: observed, evidenceIds: Object.freeze([...ids].sort()) });
+}
+
+/**
  * The observability dimensions, each with the evidence the model establishes for it.
  *
  * Multi-dimensional on purpose (§54): logging, metrics, tracing and error reporting are separate,
  * and the pack never collapses them into a boolean. The logging dimension additionally reads the
- * middleware graph's existing `logging` classification (reused, not re-derived).
+ * middleware graph's existing `logging` classification (reused, not re-derived) and carries the
+ * route/middleware provenance that classification rests on.
  *
- * @returns {object} `{ dimension: { established, usages, middleware } }`.
+ * @returns {object} `{ dimension: { established, usages, middleware, evidenceIds } }`.
  */
 export function observabilityDimensions(query) {
   const { usages } = runtimeUsages(query);
   const obs = usages.filter((usage) => usage.domain === "observability");
-  const loggingMiddleware = hasLoggingMiddleware(query);
+  const loggingEvidence = loggingMiddlewareEvidence(query);
+  const loggingMiddleware = loggingEvidence.middleware;
   const dimensions = {};
   for (const dimension of Object.keys(RELIABILITY_OBSERVABILITY_DIMENSIONS)) {
     const matched = obs.filter((usage) => usage.dimension === dimension);
@@ -626,6 +675,9 @@ export function observabilityDimensions(query) {
       established: matched.length > 0 || middleware,
       usages: Object.freeze(matched),
       middleware,
+      // The logging dimension keeps the middleware/route provenance the finding must cite, so a
+      // consumer never has to render a claim whose evidence the signal layer discarded.
+      evidenceIds: Object.freeze(dimension === "logging" ? [...loggingEvidence.evidenceIds] : []),
     });
   }
   return Object.freeze(dimensions);

@@ -70,13 +70,13 @@ function detect(context) {
       });
     }
 
-    if (evidence.middleware) {
+    if (evidence.middleware && evidence.evidenceIds.length > 0) {
       candidates.push({
         confidence: RELIABILITY_ANALYSIS_CONFIDENCE.NAME_DERIVED,
         title: "A logging-shaped middleware reaches a route",
         description:
           "A route is reached by a middleware the middleware graph classified `logging` — a registration on the request path. This establishes the logging dimension from a registration, derived from the middleware's name alone; it does not claim structured logging or that every request is logged, and it does not restate the Phase 16 request-logging gap.",
-        evidence: [],
+        evidence: [...evidence.evidenceIds],
         metadata: {
           basis: BASIS,
           state: RELIABILITY_ANALYSIS_STATES.ESTABLISHED,

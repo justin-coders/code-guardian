@@ -242,6 +242,20 @@ export default worker;
 `,
 };
 
+// N₂ — a logging-shaped middleware registered on the request path.
+const LOGGING_MIDDLEWARE = {
+  "package.json": pkg({ dependencies: { express: "^4.18.0" } }),
+  "src/middleware/logger.js": `export function logger(req, res, next) { next(); }\n`,
+  "src/app.js": `import express from "express";
+import { logger } from "./middleware/logger.js";
+const app = express();
+app.use(logger);
+const listUsers = (req, res) => res.json([]);
+app.get("/users", listUsers);
+export default app;
+`,
+};
+
 // N — observability via a logging package.
 const OBSERVABILITY = {
   "package.json": pkg({ dependencies: { express: "^4.18.0", pino: "^8.0.0" } }),
@@ -608,10 +622,33 @@ describe("reliability analysis analyzer: evidence and fingerprints", () => {
     const evidenceById = model.indexes.evidenceById;
     for (const finding of result.findings) {
       assert.ok(Array.isArray(finding.evidence), finding.ruleId);
+      // Every emitted finding must be evidence-backed: an empty citation array is not enough.
+      assert.ok(finding.evidence.length > 0, `${finding.ruleId} cites no evidence`);
       for (const id of finding.evidence) {
         assert.ok(evidenceById[id] !== undefined, `${finding.ruleId} cites ${id}`);
       }
     }
+  });
+
+  it("cites route and middleware provenance for the middleware logging finding", async () => {
+    const model = await scanModel(LOGGING_MIDDLEWARE);
+    const result = await runAnalyzer(model);
+    assert.equal(stateOf(result, "observability"), STATES.ESTABLISHED);
+    const logging = findingsOf(result, IDS.OBSERVABILITY).find(
+      (finding) => finding.metadata.dimension === "logging",
+    );
+    assert.ok(logging, "expected a logging-dimension observability finding");
+    assert.equal(logging.metadata.evidenceClass, "middleware");
+    assert.ok(logging.evidence.length > 0);
+    const evidenceById = model.indexes.evidenceById;
+    for (const id of logging.evidence) {
+      assert.ok(evidenceById[id] !== undefined, `cites ${id}`);
+    }
+    // Both sides of the claim: the route's own declaration and the middleware's registration.
+    assert.deepEqual(logging.evidence, [
+      "evidence:api:api-source:src/app.js",
+      "evidence:middleware:middleware-source:src/app.js",
+    ]);
   });
 
   it("gives every finding a distinct canonical fingerprint", async () => {
