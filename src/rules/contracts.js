@@ -75,6 +75,12 @@ export const ABNORMAL_RULE_STATUSES = Object.freeze([
  *                           registration, or a descriptor is malformed
  *   duplicate-rule          a rule id is already registered
  *   unknown-rule            an id was selected that is not registered
+ *   disabled-rule           an id was explicitly selected while configuration
+ *                           disables it (Phase 18) — never executed silently
+ *   unknown-category        a category was requested that no registered rule
+ *                           declares (Phase 18)
+ *   invalid-configuration   a registry configuration object violated the closed
+ *                           Phase 18 configuration schema
  *   invalid-applicability   `rule.applicability` is not the contracted selector
  *                           object, or applicability evaluation returned nonsense
  *   rule-failure            `detect()` threw or rejected
@@ -91,6 +97,9 @@ export const RULE_FAILURE_KINDS = Object.freeze({
   INVALID_RULE: "invalid-rule",
   DUPLICATE_RULE: "duplicate-rule",
   UNKNOWN_RULE: "unknown-rule",
+  DISABLED_RULE: "disabled-rule",
+  UNKNOWN_CATEGORY: "unknown-category",
+  INVALID_CONFIGURATION: "invalid-configuration",
   INVALID_APPLICABILITY: "invalid-applicability",
   RULE_FAILURE: "rule-failure",
   INVALID_RULE_RESULT: "invalid-rule-result",
@@ -112,6 +121,9 @@ export const RULE_FAILURE_CODES = Object.freeze({
   invalidRule: "CG_RULE_INVALID",
   duplicateRule: "CG_RULE_DUPLICATE",
   unknownRule: "CG_RULE_UNKNOWN",
+  disabledRule: "CG_RULE_DISABLED",
+  unknownCategory: "CG_RULE_CATEGORY_UNKNOWN",
+  invalidConfiguration: "CG_RULE_CONFIGURATION_INVALID",
   invalidApplicability: "CG_RULE_APPLICABILITY_INVALID",
   threw: "CG_RULE_THREW",
   invalidRuleResult: "CG_RULE_RESULT_INVALID",
@@ -176,3 +188,47 @@ export const APPLICABILITY_COVERAGE = Object.freeze({
 /** Bounds applied to rule-supplied identity text. */
 export const MAX_IDENTIFIER_LENGTH = 120;
 export const MAX_ERROR_MESSAGE_LENGTH = 500;
+
+/**
+ * The closed top-level keys a Phase 18 registry configuration may declare
+ * (`createRuleRegistry` → `configure`). Unknown keys are rejected, never ignored,
+ * so a misspelled configuration cannot silently change what a run means.
+ *
+ *   enabled       explicit rule ids to enable (overrides category/include filters)
+ *   disabled      explicit rule ids to disable (wins over `enabled` and exclusions)
+ *   includeRules  when non-empty, only these rule ids stay enabled
+ *   excludeRules  these rule ids are disabled
+ *   categories    when non-empty, only rules in these categories stay enabled
+ *   ruleOptions   per-rule declarative data, keyed by a registered rule id
+ */
+export const RULE_CONFIGURATION_KEYS = Object.freeze([
+  "enabled",
+  "disabled",
+  "includeRules",
+  "excludeRules",
+  "categories",
+  "ruleOptions",
+]);
+
+/**
+ * The closed selector keys a Phase 18 registry `filter` may declare.
+ *
+ * Keys combine with AND; the values inside one key combine with OR.
+ */
+export const RULE_FILTER_KEYS = Object.freeze([
+  "id",
+  "namespace",
+  "category",
+  "version",
+  "tags",
+  "deprecated",
+  "enabled",
+]);
+
+/**
+ * How many values one configuration list (or one filter selector) may carry.
+ *
+ * The registry is a bounded descriptor structure: a configuration is data a host
+ * supplies, so it must not be able to grow a registry without limit.
+ */
+export const MAX_CONFIGURATION_VALUES = 1000;

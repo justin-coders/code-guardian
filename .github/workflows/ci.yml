@@ -52,6 +52,7 @@ jobs:
       - run: >-
           node --test
           tests/rule-engine.test.js
+          tests/rule-registry.test.js
           tests/analyzer-framework.test.js
           tests/security-acquisition.test.js
           tests/security-rules.test.js

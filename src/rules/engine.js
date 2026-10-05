@@ -108,9 +108,18 @@ export function createRuleEngine({
   }
 
   const engine = {
-    /** Evaluate every registered rule. */
+    /**
+     * Evaluate every registered, enabled rule.
+     *
+     * Phase 18 configuration can disable a rule; a disabled rule is still
+     * registered but must not be selected for execution, so `runAll` asks the
+     * registry for its enabled ids when it exposes them (a plain Phase 10 registry
+     * has none disabled and returns all ids).
+     */
     async runAll(context, options = {}) {
-      return engine.run(registry.ids(), context, options);
+      const ids =
+        typeof registry.enabledIds === "function" ? registry.enabledIds() : registry.ids();
+      return engine.run(ids, context, options);
     },
 
     /**
