@@ -38,7 +38,9 @@ jobs:
       # nine rule pack are reached by no other included suite. The official roadmap Phase 16 API
       # Analyzer joins for the same reason again: its thirteen-domain rule pack over the API and
       # middleware graphs, and its applicability and coverage-abstention semantics, are reached by
-      # no other included suite.
+      # no other included suite. The official roadmap Phase 19 Guardian Engine (the canonical
+      # analysis engine, its configuration/selection/risk/result contracts and its dependency
+      # boundary) joins for the same reason: no other included suite reaches the Guardian Core.
       #
       # This is a named set rather than `npm test`, because the full suite is not yet clean
       # on hosted runners: filesystem.test.js (working-directory/permission cases),
@@ -74,6 +76,7 @@ jobs:
           tests/reliability-analysis-analyzer.test.js
           tests/repository-model.test.js
           tests/repository-query.test.js
+          tests/guardian-engine.test.js
 
   audit:
     runs-on: ubuntu-latest
